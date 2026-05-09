@@ -1,0 +1,7 @@
+[Unit]
+Description=KTC Mail firewall policy monitor
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/ktc-mail/firewall_monitor.py
