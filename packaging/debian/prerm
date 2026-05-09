@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" = remove ]]; then
+  systemctl disable --now ktc-mail-setup.service ktc-mail-firewall-monitor.timer 2>/dev/null || true
+fi
