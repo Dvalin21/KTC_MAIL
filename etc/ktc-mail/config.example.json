@@ -1,0 +1,16 @@
+{
+  "domain": "example.com",
+  "hostname": "mail.example.com",
+  "dns_provider": "cloudflare",
+  "certificate_mode": "dns-01-api",
+  "open_ports": [22, 25, 80, 443, 587, 993, 4190],
+  "security": {
+    "admin_mfa_required": true,
+    "fail2ban_enabled": true,
+    "rspamd_enabled": true,
+    "dmarc_policy_target": "reject",
+    "mta_sts_enabled": true,
+    "tls_rpt_enabled": true,
+    "audit_log_retention_days": 365
+  }
+}
