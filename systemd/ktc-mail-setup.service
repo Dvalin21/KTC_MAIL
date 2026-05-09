@@ -1,0 +1,19 @@
+[Unit]
+Description=KTC Mail initial web setup GUI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/lib/ktc-mail/app.py --host 0.0.0.0 --port 8080
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/etc/ktc-mail /var/lib/ktc-mail
+
+[Install]
+WantedBy=multi-user.target
