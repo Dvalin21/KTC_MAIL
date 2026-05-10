@@ -6,11 +6,12 @@ KTC Mail is a bare-metal Debian/Ubuntu mail server suite scaffold. The goal is a
 
 This repository now contains the first implementation slice:
 
-- A standard-library Python first-run web GUI that launches on the server IP and collects domain, hostname, DNS provider, administrator email, and certificate mode.
-- DNS plan generation for A, AAAA, MX, SPF, DKIM, DMARC, optional DANE TLSA, and autodiscovery SRV records.
-- A conservative iptables/ip6tables firewall monitor for required mail ports and chain ordering.
+- A standard-library Python first-run web GUI that launches on the server IP and collects domain, hostname, public IPs, DNS provider, administrator email, and certificate mode.
+- DNS plan generation and first-pass automation for A, AAAA, MX, SPF, DKIM, DMARC, TLS-RPT, optional DANE TLSA, split admin/SOGo hostnames, and autodiscovery SRV records.
+- A conservative iptables/ip6tables firewall monitor that reads the setup profile so DNS-01 keeps port 80 closed unless HTTP-01 is selected.
 - Debian packaging metadata that installs the GUI, firewall monitor, helper scripts, examples, documentation, and systemd units.
-- A bootstrap script that installs the proven open-source stack: Postfix, Dovecot, Rspamd, Redis, Fail2ban, Nginx, iptables, and supporting tools.
+- ACME issue/renew tooling with DNS-01 hooks, HTTP-01 fallback, TLSA regeneration, and service reload hooks.
+- A bootstrap script that installs the proven open-source stack: Postfix, Dovecot, Rspamd, Redis, Fail2ban, Nginx, certbot, iptables, and supporting tools.
 
 ## Target production stack
 
@@ -27,7 +28,7 @@ This repository now contains the first implementation slice:
 ## Quick developer checks
 
 ```bash
-python3 -m py_compile src/ktc_mail_admin/app.py src/ktc_mail_admin/firewall_monitor.py
+python3 -m py_compile src/ktc_mail_admin/app.py src/ktc_mail_admin/firewall_monitor.py src/ktc_mail_admin/dns_provider.py src/ktc_mail_admin/acme_manager.py
 bash -n scripts/bootstrap-mail-stack.sh scripts/ktc-mail-open-ports.sh packaging/debian/postinst packaging/debian/prerm
 ```
 
@@ -42,7 +43,7 @@ Then open `http://127.0.0.1:8080` and submit the initial domain setup form.
 
 ## What you are missing before production
 
-- DNS provider adapter priority and token scope requirements.
+- DNS provider adapter implementation and token scope requirements.
 - A final decision on nftables versus iptables as the primary firewall backend.
 - Admin identity design: local accounts, OIDC, LDAP, MFA, RBAC, and break-glass access.
 - Backup design: destination, retention, restore testing, mailbox encryption, and secret custody.
@@ -50,4 +51,4 @@ Then open `http://127.0.0.1:8080` and submit the initial domain setup form.
 - Webmail decision: none, Roundcube, SnappyMail, or another maintained client.
 - Compliance requirements that affect logging, retention, encryption, and access controls.
 
-See `docs/architecture.md` and `docs/security.md` for the detailed plan.
+See `docs/architecture.md`, `docs/security.md`, and `docs/implementation-plan.md` for the detailed plan.

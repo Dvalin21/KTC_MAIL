@@ -5,8 +5,10 @@
 - The first-run GUI is a small Python standard-library service, reducing bootstrap dependency risk.
 - The systemd unit uses `NoNewPrivileges`, `PrivateTmp`, `ProtectSystem`, `ProtectHome`, and explicit writable paths.
 - The firewall monitor checks both `iptables` and `ip6tables` for the KTC chain, required ports, and chain ordering.
-- The default port model allows only `22/tcp`, `25/tcp`, `80/tcp`, `443/tcp`, `587/tcp`, `993/tcp`, and optional `4190/tcp`.
-- DNS setup includes SPF, DKIM, DMARC, optional DANE TLSA, and client autodiscovery records.
+- The default port model keeps port 80 closed for DNS-01 and allows it only for HTTP-01.
+- DNS setup includes SPF, DKIM, DMARC, TLS-RPT, optional DANE TLSA, and client autodiscovery records.
+- Cloudflare DNS automation uses the stored API token only from the root-readable secrets file.
+- ACME renewal hooks regenerate TLSA records and reload Postfix, Dovecot, and Nginx after successful certificate renewal.
 
 ## Recommended enterprise additions
 

@@ -10,7 +10,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y \
   postfix postfix-pcre dovecot-core dovecot-imapd dovecot-lmtpd dovecot-sieve dovecot-managesieved \
-  rspamd redis-server fail2ban python3 python3-venv nginx openssl ca-certificates curl jq \
+  rspamd redis-server fail2ban python3 python3-venv nginx openssl certbot ca-certificates curl jq \
   iptables iptables-persistent unattended-upgrades
 
 systemctl enable --now redis-server rspamd fail2ban postfix dovecot nginx
