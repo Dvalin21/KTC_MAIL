@@ -3,7 +3,7 @@ set -euo pipefail
 
 install -d -m 0750 -o root -g root /etc/ktc-mail /var/lib/ktc-mail
 systemctl daemon-reload || true
-systemctl enable ktc-mail-setup.service ktc-mail-firewall-monitor.timer || true
+systemctl enable ktc-mail-setup.service ktc-mail-firewall-monitor.timer ktc-mail-acme-renew.timer || true
 systemctl restart ktc-mail-setup.service || true
 cat <<'MSG'
 KTC Mail setup GUI is available at http://SERVER_IP:8080.

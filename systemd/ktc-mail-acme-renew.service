@@ -1,0 +1,14 @@
+[Unit]
+Description=KTC Mail ACME certificate renewal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/lib/ktc-mail/acme_manager.py renew
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/etc/ktc-mail /var/lib/ktc-mail /etc/letsencrypt

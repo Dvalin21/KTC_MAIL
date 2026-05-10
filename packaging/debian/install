@@ -1,11 +1,16 @@
 src/ktc_mail_admin/app.py usr/lib/ktc-mail/
 src/ktc_mail_admin/firewall_monitor.py usr/lib/ktc-mail/
+src/ktc_mail_admin/acme_manager.py usr/lib/ktc-mail/
+src/ktc_mail_admin/dns_provider.py usr/lib/ktc-mail/
 scripts/bootstrap-mail-stack.sh usr/lib/ktc-mail/
 scripts/ktc-mail-open-ports.sh usr/sbin/
 systemd/ktc-mail-setup.service lib/systemd/system/
 systemd/ktc-mail-firewall-monitor.service lib/systemd/system/
 systemd/ktc-mail-firewall-monitor.timer lib/systemd/system/
+systemd/ktc-mail-acme-renew.timer lib/systemd/system/
+systemd/ktc-mail-acme-renew.service lib/systemd/system/
 etc/ktc-mail/config.example.json usr/share/doc/ktc-mail/examples/
 README.md usr/share/doc/ktc-mail/
 docs/architecture.md usr/share/doc/ktc-mail/
 docs/security.md usr/share/doc/ktc-mail/
+docs/implementation-plan.md usr/share/doc/ktc-mail/
