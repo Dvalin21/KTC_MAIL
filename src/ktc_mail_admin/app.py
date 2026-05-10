@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import ipaddress
 import json
 import os
 import re
@@ -22,6 +23,20 @@ from urllib.parse import parse_qs
 CONFIG_DIR = Path(os.environ.get("KTC_MAIL_CONFIG_DIR", "/etc/ktc-mail"))
 STATE_DIR = Path(os.environ.get("KTC_MAIL_STATE_DIR", "/var/lib/ktc-mail"))
 SETUP_PATH = CONFIG_DIR / "setup.json"
+SECRETS_PATH = CONFIG_DIR / "secrets.json"
+DEFAULT_OPEN_PORTS = [22, 25, 443, 587, 993, 4190]
+HTTP01_OPEN_PORTS = [22, 25, 80, 443, 587, 993, 4190]
+
+IMPLEMENTATION_PHASES = [
+    ("Phase 0", "Threat model and hard rules"),
+    ("Phase 1", "First-run installer and setup profile"),
+    ("Phase 2", "DNS and certificate automation"),
+    ("Phase 3", "Mail stack configuration"),
+    ("Phase 4", "Firewall and abuse controls"),
+    ("Phase 5", "Admin GUI and identity"),
+    ("Phase 6", "Backup, restore, and observability"),
+    ("Phase 7", "Release hardening"),
+]
 DOMAIN_PATTERN = re.compile(r"^(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))+$")
 HOSTNAME_PATTERN = re.compile(r"^(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))+$")
 
@@ -52,19 +67,30 @@ button { border:0; border-radius:16px; padding:1rem 1.2rem; font-weight:800; fon
 """
 
 
-def dns_records(domain: str, hostname: str) -> list[dict[str, str]]:
+def dns_records(domain: str, hostname: str, admin_host: str, webmail_host: str, public_ipv4: str, public_ipv6: str = "") -> list[dict[str, str]]:
     """Return baseline DNS records required for a modern mail domain."""
-    return [
-        {"type": "A", "name": hostname, "value": "<this server public IPv4>", "purpose": "Mail host address"},
-        {"type": "AAAA", "name": hostname, "value": "<this server public IPv6>", "purpose": "Mail host IPv6 address"},
+    records = [
+        {"type": "A", "name": hostname, "value": public_ipv4, "purpose": "Mail host address"},
+        {"type": "CNAME", "name": admin_host, "value": f"{hostname}.", "purpose": "Admin GUI endpoint, separate from webmail"},
+        {"type": "CNAME", "name": webmail_host, "value": f"{hostname}.", "purpose": "SOGo webmail endpoint"},
         {"type": "MX", "name": domain, "value": f"10 {hostname}.", "purpose": "Inbound mail routing"},
-        {"type": "TXT", "name": domain, "value": f"v=spf1 mx -all", "purpose": "SPF anti-spoofing"},
+        {"type": "TXT", "name": domain, "value": "v=spf1 mx -all", "purpose": "SPF anti-spoofing"},
         {"type": "TXT", "name": f"_dmarc.{domain}", "value": "v=DMARC1; p=quarantine; rua=mailto:dmarc@" + domain, "purpose": "DMARC reporting and policy"},
+        {"type": "TXT", "name": f"_smtp._tls.{domain}", "value": "v=TLSRPTv1; rua=mailto:tls-rpt@" + domain, "purpose": "SMTP TLS reporting"},
         {"type": "TXT", "name": f"default._domainkey.{domain}", "value": "<rspamd generated DKIM public key>", "purpose": "DKIM signing"},
-        {"type": "TLSA", "name": f"_25._tcp.{hostname}", "value": "<DANE TLSA from active certificate>", "purpose": "Optional DANE SMTP TLS pin"},
+        {"type": "TLSA", "name": f"_25._tcp.{hostname}", "value": "<DANE TLSA from active certificate>", "purpose": "Optional DANE SMTP TLS pin, update on renewal"},
         {"type": "SRV", "name": f"_submission._tcp.{domain}", "value": f"0 1 587 {hostname}.", "purpose": "Autodiscovery for submission"},
         {"type": "SRV", "name": f"_imaps._tcp.{domain}", "value": f"0 1 993 {hostname}.", "purpose": "Autodiscovery for IMAPS"},
     ]
+    if public_ipv6:
+        records.insert(1, {"type": "AAAA", "name": hostname, "value": public_ipv6, "purpose": "Mail host IPv6 address"})
+    return records
+
+
+def open_ports_for(certificate_mode: str) -> list[int]:
+    if certificate_mode == "http-01":
+        return HTTP01_OPEN_PORTS.copy()
+    return DEFAULT_OPEN_PORTS.copy()
 
 
 def render_page(title: str, body: str, status: HTTPStatus = HTTPStatus.OK) -> bytes:
@@ -84,18 +110,39 @@ def render_page(title: str, body: str, status: HTTPStatus = HTTPStatus.OK) -> by
     return document.encode("utf-8")
 
 
+def save_json_private(path: Path, payload: dict[str, object]) -> None:
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+
+
 def save_setup(values: dict[str, str]) -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     STATE_DIR.mkdir(parents=True, exist_ok=True)
+    admin_host = values.get("admin_host", f"admin.{values['domain']}")
+    webmail_host = values.get("webmail_host", f"webmail.{values['domain']}")
     payload = {
         "domain": values["domain"],
         "hostname": values["hostname"],
-        "dns_provider": values["dns_provider"],
+        "admin_host": admin_host,
+        "webmail_host": webmail_host,
         "admin_email": values["admin_email"],
+        "public_ipv4": values["public_ipv4"],
+        "public_ipv6": values.get("public_ipv6", ""),
+        "dns_provider": values["dns_provider"],
         "certificate_mode": values["certificate_mode"],
-        "dns_records": dns_records(values["domain"], values["hostname"]),
+        "manage_system_hostname": values.get("manage_system_hostname") == "on",
+        "open_ports": open_ports_for(values["certificate_mode"]),
+        "dns_records": dns_records(values["domain"], values["hostname"], admin_host, webmail_host, values["public_ipv4"], values.get("public_ipv6", "")),
+        "renewal_hooks": {
+            "update_tlsa_on_certificate_renewal": values["certificate_mode"] == "dns-01-api",
+            "reload_services": ["postfix", "dovecot", "nginx"],
+        },
+        "implementation_phase": "Phase 2",
     }
-    SETUP_PATH.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    save_json_private(SETUP_PATH, payload)
+    token = values.get("dns_api_token", "")
+    if token:
+        save_json_private(SECRETS_PATH, {"dns_provider": values["dns_provider"], "dns_api_token": token})
 
 
 def validate_setup(fields: dict[str, str]) -> list[str]:
@@ -106,11 +153,37 @@ def validate_setup(fields: dict[str, str]) -> list[str]:
         errors.append("Enter a valid mail server hostname such as mail.example.com.")
     if "@" not in fields.get("admin_email", ""):
         errors.append("Enter a valid administrator email address.")
+    try:
+        if ipaddress.ip_address(fields.get("public_ipv4", "")).version != 4:
+            errors.append("Enter a valid public IPv4 address.")
+    except ValueError:
+        errors.append("Enter a valid public IPv4 address.")
+    public_ipv6 = fields.get("public_ipv6", "")
+    if public_ipv6:
+        try:
+            if ipaddress.ip_address(public_ipv6).version != 6:
+                errors.append("Enter a valid public IPv6 address or leave IPv6 blank.")
+        except ValueError:
+            errors.append("Enter a valid public IPv6 address or leave IPv6 blank.")
     if fields.get("dns_provider") not in {"cloudflare", "route53", "digitalocean", "hetzner", "manual"}:
         errors.append("Choose a supported DNS provider.")
-    if fields.get("certificate_mode") not in {"dns-01-api", "upload-existing"}:
+    if fields.get("certificate_mode") not in {"dns-01-api", "http-01", "upload-existing"}:
         errors.append("Choose a valid certificate mode.")
+    for host_field in ("admin_host", "webmail_host"):
+        if not HOSTNAME_PATTERN.match(fields.get(host_field, "")):
+            errors.append(f"Enter a valid {host_field.replace('_', ' ')} such as admin.example.com.")
+    if fields.get("admin_host") == fields.get("webmail_host"):
+        errors.append("Admin GUI and SOGo webmail hostnames must be different.")
+    if fields.get("certificate_mode") == "dns-01-api" and fields.get("dns_provider") == "manual":
+        errors.append("DNS-01 API mode needs a real DNS provider, not manual DNS.")
     return errors
+
+
+def phase_cards() -> str:
+    return "".join(
+        f"<section class='card'><h3>{html.escape(number)}</h3><p>{html.escape(name)}</p></section>"
+        for number, name in IMPLEMENTATION_PHASES
+    )
 
 
 def status_cards() -> str:
@@ -153,10 +226,10 @@ class KtcMailHandler(BaseHTTPRequestHandler):
             self.respond(render_page("Setup needs attention", body, HTTPStatus.BAD_REQUEST), HTTPStatus.BAD_REQUEST)
             return
         save_setup(fields)
-        records = "\n".join(f"{r['type']:5} {r['name']:35} {r['value']}  # {r['purpose']}" for r in dns_records(fields["domain"], fields["hostname"]))
+        records = "\n".join(f"{r['type']:5} {r['name']:35} {r['value']}  # {r['purpose']}" for r in dns_records(fields["domain"], fields["hostname"], fields["admin_host"], fields["webmail_host"], fields["public_ipv4"], fields.get("public_ipv6", "")))
         body = f"""
 <section class="hero"><div><span class="pill">✅ Setup profile saved</span><h1>DNS plan ready for {html.escape(fields['domain'])}</h1>
-<p>KTC Mail has stored the bootstrap profile. The next implementation stage wires provider-specific DNS APIs, ACME DNS-01 issuance, and service templating.</p>
+<p>KTC Mail stored the bootstrap profile, least-open firewall ports, separate admin/SOGo hostnames, and renewal hook intent. DNS API tokens are written separately with 0600 permissions.</p>
 <div class="records">{html.escape(records)}</div></div><aside class="card"><h3>Next safe step</h3><p>Run the package bootstrap on a fresh Debian or Ubuntu server, then verify DNS before enabling inbound SMTP.</p></aside></section>
 """
         self.respond(render_page("Setup saved", body))
@@ -182,19 +255,26 @@ class KtcMailHandler(BaseHTTPRequestHandler):
       <label>Mail domain<input name="domain" placeholder="example.com" value="{html.escape(fields.get('domain',''))}" required></label>
       <label>Mail hostname<input name="hostname" placeholder="mail.example.com" value="{html.escape(fields.get('hostname',''))}" required></label>
       <label>Admin email<input name="admin_email" type="email" placeholder="admin@example.com" value="{html.escape(fields.get('admin_email',''))}" required></label>
+      <label>Server public IPv4<input name="public_ipv4" placeholder="203.0.113.10" value="{html.escape(fields.get('public_ipv4',''))}" required></label>
+      <label>Server public IPv6<input name="public_ipv6" placeholder="2001:db8::10" value="{html.escape(fields.get('public_ipv6',''))}"></label>
+      <label>Admin GUI hostname<input name="admin_host" placeholder="admin.example.com" value="{html.escape(fields.get('admin_host',''))}" required></label>
+      <label>SOGo webmail hostname<input name="webmail_host" placeholder="webmail.example.com" value="{html.escape(fields.get('webmail_host',''))}" required></label>
       <label>DNS provider<select name="dns_provider">
         <option value="cloudflare">Cloudflare API</option><option value="route53">AWS Route 53</option><option value="digitalocean">DigitalOcean</option><option value="hetzner">Hetzner DNS</option><option value="manual">Manual DNS for lab use</option>
       </select></label>
-      <label>Certificates<select name="certificate_mode"><option value="dns-01-api">ACME DNS-01 through provider API</option><option value="upload-existing">Upload existing enterprise certificate</option></select></label>
-      <button type="submit">Build DNS and TLS plan</button>
+      <label>DNS API token<input name="dns_api_token" type="password" autocomplete="off" placeholder="Stored separately with 0600 permissions"></label>
+      <label>Certificates<select name="certificate_mode"><option value="dns-01-api">ACME DNS-01 through provider API</option><option value="http-01">ACME HTTP-01, opens port 80</option><option value="upload-existing">Upload existing enterprise certificate</option></select></label>
+      <label><input name="manage_system_hostname" type="checkbox"> Let KTC Mail set the system hostname during activation</label>
+      <button type="submit">Build DNS, TLS, and firewall plan</button>
     </form>
   </aside>
 </section>
 <section class="grid">
   <article class="card"><h3>Enterprise controls</h3><p>Planned controls include MFA for admins, immutable audit logs, least-privilege service users, MTA-STS, TLS-RPT, DKIM rotation, DMARC enforcement, and encrypted backups.</p></article>
   <article class="card"><h3>Open source core</h3><p>Use mature packages instead of reinventing mail: Postfix, Dovecot, Rspamd, Redis, Fail2ban, OpenDKIM-compatible DNS, nftables/iptables, and ACME DNS APIs.</p></article>
-  <article class="card"><h3>Ports policy</h3><p>Only 22/tcp, 25/tcp, 80/tcp during bootstrap, 443/tcp, 587/tcp, 993/tcp, and optional 4190/tcp are expected open; everything else is denied by default.</p></article>
+  <article class="card"><h3>Ports policy</h3><p>Only 22/tcp, 25/tcp, 443/tcp, 587/tcp, 993/tcp, and optional 4190/tcp are expected open. Port 80/tcp is added only for HTTP-01 certificate mode; DNS-01 keeps it closed.</p></article>
 </section>
+<section class="card"><h2>Build phases</h2><p>This project is being built in locked phases. Current code is Phase 2: DNS and certificate automation.</p><div class="grid">{phase_cards()}</div></section>
 """
 
     def respond(self, body: bytes, status: HTTPStatus = HTTPStatus.OK) -> None:
