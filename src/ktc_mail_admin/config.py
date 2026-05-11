@@ -362,8 +362,8 @@ class SecurityPolicy:
     10% can use Advanced Settings to change them.
     """
 
-    # Firewall
-    ports_open: frozenset[int] = frozenset({22, 25, 443, 587, 993})
+    # Firewall — 465 is SMTPS (deprecated but still used by many clients)
+    ports_open: frozenset[int] = frozenset({22, 25, 443, 465, 587, 993})
     http01_mode: bool = False  # when True, adds port 80
     managesieve_enabled: bool = False  # port 4190
 
@@ -408,7 +408,7 @@ class SecurityPolicy:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SecurityPolicy:
         return cls(
-            ports_open=frozenset(data.get("ports_open", [22, 25, 443, 587, 993])),
+            ports_open=frozenset(data.get("ports_open", [22, 25, 443, 465, 587, 993])),
             http01_mode=bool(data.get("http01_mode", False)),
             managesieve_enabled=bool(data.get("managesieve_enabled", False)),
             ssh_key_only=bool(data.get("ssh_key_only", True)),
@@ -651,15 +651,59 @@ class SetupProfile:
             rs.add(DnsRecord("CNAME", host, cname_target, purpose=purpose))
 
         # SRV records — service discovery
+        # Submission (STARTTLS, port 587) — standard mail submission
         rs.add(DnsRecord(
             "SRV", f"_submission._tcp.{self.domain}",
             f"0 1 587 {self.hostname}.",
-            purpose="Submission service discovery",
+            purpose="Mail submission STARTTLS",
         ))
+        # Submissions (implicit TLS, port 465) — legacy but still widely used
+        rs.add(DnsRecord(
+            "SRV", f"_submissions._tcp.{self.domain}",
+            f"0 1 465 {self.hostname}.",
+            purpose="Mail submission implicit TLS",
+        ))
+        # IMAPS (port 993)
         rs.add(DnsRecord(
             "SRV", f"_imaps._tcp.{self.domain}",
             f"0 1 993 {self.hostname}.",
             purpose="IMAPS service discovery",
+        ))
+        # POP3S (port 995) — for clients that prefer POP3 over IMAP
+        rs.add(DnsRecord(
+            "SRV", f"_pop3s._tcp.{self.domain}",
+            f"0 1 995 {self.hostname}.",
+            purpose="POP3S service discovery",
+        ))
+        # Sieve (port 4190) — email filtering rule management
+        rs.add(DnsRecord(
+            "SRV", f"_sieve._tcp.{self.domain}",
+            f"0 1 4190 {self.hostname}.",
+            purpose="ManageSieve service discovery",
+        ))
+        # Autodiscover (Outlook, port 443 via HTTPS)
+        rs.add(DnsRecord(
+            "SRV", f"_autodiscover._tcp.{self.domain}",
+            f"0 1 443 {self.hostname}.",
+            purpose="Outlook autodiscovery",
+        ))
+        # Autoconfig (Thunderbird, port 443 via HTTPS)
+        rs.add(DnsRecord(
+            "SRV", f"_autoconfig._tcp.{self.domain}",
+            f"0 1 443 {self.hostname}.",
+            purpose="Thunderbird autoconfig",
+        ))
+        # CardDAV (contacts, port 443 via HTTPS)
+        rs.add(DnsRecord(
+            "SRV", f"_carddav._tcp.{self.domain}",
+            f"0 1 443 {self.hostname}.",
+            purpose="CardDAV contacts sync",
+        ))
+        # CalDAV (calendar, port 443 via HTTPS)
+        rs.add(DnsRecord(
+            "SRV", f"_caldav._tcp.{self.domain}",
+            f"0 1 443 {self.hostname}.",
+            purpose="CalDAV calendar sync",
         ))
 
         # MTA-STS reporting (policy file served via HTTPS, not DNS TXT)

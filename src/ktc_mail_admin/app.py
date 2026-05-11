@@ -627,9 +627,9 @@ document.addEventListener('DOMContentLoaded', function() {{
         _add_item("Public IPv4", profile.public_ipv4 or "Not detected",
                   "⚠" if not profile.public_ipv4 else "✓",
                   "badge-warn" if not profile.public_ipv4 else "badge-ok")
-        _add_item("Public IPv6", profile.public_ipv6 or "Not detected",
+        _add_item("Public IPv6", profile.public_ipv6 or "Not available",
                   "✓" if profile.public_ipv6 else "—",
-                  "badge-ok" if profile.public_ipv6 else "badge-warn")
+                  "badge-ok" if profile.public_ipv6 else "badge-ok")
 
         if profile.registrar:
             _add_item("Registrar", _provider_display_name(profile.registrar), "detected", "badge-ok")
