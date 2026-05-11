@@ -1,11 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-install -d -m 0750 -o root -g root /etc/ktc-mail /var/lib/ktc-mail
+install -d -m 0750 -o root -g root /etc/ktc-mail /var/lib/ktc-mail /etc/ktc-mail/dkim
 systemctl daemon-reload || true
 systemctl enable ktc-mail-setup.service ktc-mail-firewall-monitor.timer ktc-mail-acme-renew.timer || true
 systemctl restart ktc-mail-setup.service || true
+
+# Apply default SSH policy (key-only) if no custom config exists
+if [[ ! -f /etc/ssh/sshd_config.d/ktc-mail.conf ]]; then
+  /usr/lib/ktc-mail/ssh_policy.py apply 2>/dev/null || true
+fi
+
 cat <<'MSG'
-KTC Mail setup GUI is available at http://SERVER_IP:8080.
-Complete the DNS and TLS wizard before enabling production mail flow.
+
+╔═════════════════════════════════════════════════════════╗
+║  KTC Mail setup GUI is available at                    ║
+║                                                         ║
+║     http://SERVER_IP:8080                                ║
+║                                                         ║
+║  Complete the DNS and TLS wizard before enabling         ║
+║  production mail flow.                                   ║
+║                                                         ║
+║  Three things you need:                                  ║
+║    1. Your domain (e.g. example.com)                     ║
+║    2. Your DNS provider API key                          ║
+║    3. Your admin email address                           ║
+║                                                         ║
+║  Everything else is auto-detected.                       ║
+╚═════════════════════════════════════════════════════════╝
 MSG

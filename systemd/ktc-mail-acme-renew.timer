@@ -2,7 +2,9 @@
 Description=Run KTC Mail ACME renewal twice daily
 
 [Timer]
-OnCalendar=*-*-* 03,15:17:00
+# Once daily with randomized delay — sufficient for LE rate limits
+OnCalendar=daily
+RandomizedDelaySec=6h
 RandomizedDelaySec=45m
 Persistent=true
 

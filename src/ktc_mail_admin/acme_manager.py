@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""ACME issue/renew/deploy orchestration for KTC Mail."""
+"""ACME issue/renew/deploy orchestration for KTC Mail.
+
+One wildcard certificate per domain, with explicit SANs for all 7
+service hostnames. On renewal, TLSA records are regenerated and the
+DNS provider is updated before services are reloaded.
+
+Certbot is the ACME client. DNS-01 uses provider API hooks. HTTP-01
+uses a webroot. The deploy hook is chained directly in the certbot
+renew command.
+"""
 
 from __future__ import annotations
 
@@ -14,166 +23,396 @@ import sys
 from pathlib import Path
 from typing import Any
 
-CONFIG_DIR = Path(os.environ.get("KTC_MAIL_CONFIG_DIR", "/etc/ktc-mail"))
-STATE_DIR = Path(os.environ.get("KTC_MAIL_STATE_DIR", "/var/lib/ktc-mail"))
-SETUP_PATH = CONFIG_DIR / "setup.json"
-TLS_STATE_PATH = STATE_DIR / "tls-state.json"
-ACME_WEBROOT = STATE_DIR / "acme-webroot"
-CERT_NAME = "ktc-mail"
-DNS_HOOK = "/usr/lib/ktc-mail/dns_provider.py"
-ACME_HOOK = "/usr/lib/ktc-mail/acme_manager.py"
+from .config import (
+    CONFIG_DIR,
+    STATE_DIR,
+    SETUP_PATH,
+    TLS_STATE_PATH,
+    ACME_WEBROOT,
+    CERT_NAME,
+    DNS_HOOK,
+    ACME_HOOK,
+    DnsRecord,
+    DnsRecordSet,
+    SetupProfile,
+    save_json_private,
+    read_json,
+)
+
+
+class AcmeError(RuntimeError):
+    """Certificate automation cannot complete safely."""
+
+
+# ── Binary paths (env-overridable for testing) ──────────────────────────────
+
 CERTBOT_BIN = os.environ.get("KTC_CERTBOT_BIN", "certbot")
 SYSTEMCTL_BIN = os.environ.get("KTC_SYSTEMCTL_BIN", "systemctl")
 OPENSSL_BIN = os.environ.get("KTC_OPENSSL_BIN", "openssl")
 
 
-class AcmeError(RuntimeError):
-    """Raised when certificate automation cannot complete safely."""
+# ── Profile loading ────────────────────────────────────────────────────────
 
 
-def load_setup(config: Path = SETUP_PATH) -> dict[str, Any]:
+def load_profile(config: Path = SETUP_PATH) -> SetupProfile:
+    """Load the setup profile and return a SetupProfile object."""
     if not config.exists():
         raise AcmeError(f"missing setup profile: {config}")
-    return json.loads(config.read_text(encoding="utf-8"))
+    data = read_json(config)
+    return SetupProfile.from_dict(data)
 
 
-def cert_domains(setup: dict[str, Any]) -> list[str]:
-    values = [setup.get("hostname"), setup.get("admin_host"), setup.get("webmail_host")]
-    domains: list[str] = []
-    for value in values:
-        if value and value not in domains:
-            domains.append(str(value))
-    if not domains:
-        raise AcmeError("setup profile has no certificate hostnames")
-    return domains
+# ── Certbot command construction ───────────────────────────────────────────
 
 
-def run(command: list[str], dry_run: bool = False) -> None:
-    printable = " ".join(command)
-    if dry_run:
-        print(f"dry-run: {printable}")
-        return
-    result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-    if result.returncode != 0:
-        raise AcmeError(f"command failed: {printable}\n{result.stderr.strip()}")
-    if result.stdout.strip():
-        print(result.stdout.strip())
+def certbot_issue_command(profile: SetupProfile) -> list[str]:
+    """Build the certbot command for initial certificate issuance.
 
+    Produces a wildcard cert with explicit SANs for all 7 hostnames.
+    """
+    cmd = [
+        CERTBOT_BIN, "certonly",
+        "--non-interactive",
+        "--agree-tos",
+        "--email", profile.admin_email,
+        "--cert-name", CERT_NAME,
+    ]
 
-def certbot_issue_command(setup: dict[str, Any], config: Path = SETUP_PATH) -> list[str]:
-    domains = cert_domains(setup)
-    command = [CERTBOT_BIN, "certonly", "--non-interactive", "--agree-tos", "--email", str(setup["admin_email"]), "--cert-name", CERT_NAME]
-    if setup.get("certificate_mode") == "http-01":
-        command.extend(["--webroot", "-w", str(ACME_WEBROOT)])
-    elif setup.get("certificate_mode") == "dns-01-api":
-        quoted_config = shlex.quote(str(config))
-        command.extend([
+    # Key type: ECDSA P-256 (modern, smaller, equally secure)
+    cmd.extend(["--key-type", "ecdsa", "--elliptic-curve", "secp256r1"])
+
+    if profile.certificate_mode == "http-01":
+        cmd.extend(["--webroot", "-w", str(ACME_WEBROOT)])
+        # No wildcard for HTTP-01 (HTTP-01 can't validate wildcards)
+        for name in profile.all_hostnames:
+            cmd.extend(["-d", name])
+    elif profile.certificate_mode == "dns-01":
+        quoted_config = shlex.quote(str(SETUP_PATH))
+        cmd.extend([
             "--manual",
-            "--preferred-challenges",
-            "dns",
+            "--preferred-challenges", "dns",
             "--manual-auth-hook",
             f"{DNS_HOOK} acme-auth --config {quoted_config}",
             "--manual-cleanup-hook",
             f"{DNS_HOOK} acme-cleanup --config {quoted_config}",
             "--manual-public-ip-logging-ok",
         ])
+        # Wildcard + all explicit SANs
+        for name in profile.cert_san_names:
+            cmd.extend(["-d", name])
     else:
-        raise AcmeError(f"certificate mode is not automated: {setup.get('certificate_mode')}")
-    for domain in domains:
-        command.extend(["-d", domain])
-    return command
+        raise AcmeError(
+            f"certificate mode not automated: {profile.certificate_mode}",
+        )
+
+    return cmd
 
 
 def certbot_renew_command() -> list[str]:
-    return [CERTBOT_BIN, "renew", "--deploy-hook", f"{ACME_HOOK} deploy-hook"]
+    """Build the certbot renew command with deploy hook."""
+    return [
+        CERTBOT_BIN, "renew",
+        "--deploy-hook", f"{ACME_HOOK} deploy-hook",
+    ]
+
+
+# ── Certificate path ────────────────────────────────────────────────────────
 
 
 def certificate_path() -> Path:
+    """Return the path to the current fullchain certificate.
+
+    Respects the RENEWED_LINEAGE env var set by certbot renew.
+    """
     env_path = os.environ.get("RENEWED_LINEAGE")
     if env_path:
         return Path(env_path) / "fullchain.pem"
     return Path("/etc/letsencrypt/live") / CERT_NAME / "fullchain.pem"
 
 
-def tlsa_value(cert_path: Path) -> str:
+# ── TLSA value computation ──────────────────────────────────────────────────
+
+
+def compute_tlsa_value(cert_path: Path) -> str:
+    """Compute TLSA 3 1 1 value from a certificate file.
+
+    Usage 3 = domain-issued certificate (DANE-TA, not CA constraint)
+    Selector 1 = subject public key
+    Matching type 1 = SHA-256 digest
+
+    Returns the TLSA string: "3 1 1 <hexdigest>"
+    """
     if not cert_path.exists():
-        raise AcmeError(f"certificate not found for TLSA generation: {cert_path}")
-    pubkey = subprocess.run([OPENSSL_BIN, "x509", "-in", str(cert_path), "-pubkey", "-noout"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        raise AcmeError(f"certificate not found: {cert_path}")
+
+    # Extract public key from certificate
+    pubkey = subprocess.run(
+        [OPENSSL_BIN, "x509", "-in", str(cert_path), "-pubkey", "-noout"],
+        capture_output=True, check=False,
+    )
     if pubkey.returncode != 0:
-        raise AcmeError(f"openssl failed extracting public key: {pubkey.stderr.decode('utf-8', errors='replace')}")
-    der = subprocess.run([OPENSSL_BIN, "pkey", "-pubin", "-outform", "DER"], input=pubkey.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        raise AcmeError(f"openssl pubkey extraction failed: {pubkey.stderr.decode()}")
+
+    # Convert to DER and compute SHA-256
+    der = subprocess.run(
+        [OPENSSL_BIN, "pkey", "-pubin", "-outform", "DER"],
+        input=pubkey.stdout,
+        capture_output=True, check=False,
+    )
     if der.returncode != 0:
-        raise AcmeError(f"openssl failed encoding public key: {der.stderr.decode('utf-8', errors='replace')}")
+        raise AcmeError(f"openssl DER conversion failed: {der.stderr.decode()}")
+
     digest = hashlib.sha256(der.stdout).hexdigest()
     return f"3 1 1 {digest}"
 
 
-def update_tlsa_in_setup(setup: dict[str, Any], config: Path, cert_path: Path, dry_run: bool) -> None:
-    if not setup.get("renewal_hooks", {}).get("update_tlsa_on_certificate_renewal"):
-        return
-    value = tlsa_value(cert_path)
-    target_name = f"_25._tcp.{setup['hostname']}"
-    changed = False
-    for record in setup.get("dns_records", []):
-        if record.get("type") == "TLSA" and record.get("name") == target_name:
-            record["value"] = value
-            changed = True
-    if not changed:
-        setup.setdefault("dns_records", []).append({"type": "TLSA", "name": target_name, "value": value, "purpose": "DANE SMTP TLS pin"})
-    if dry_run:
-        print(f"dry-run: update TLSA {target_name} {value}")
-        return
-    config.write_text(json.dumps(setup, indent=2) + "\n", encoding="utf-8")
-    config.chmod(0o600)
-    run([DNS_HOOK, "apply", "--config", str(config)], dry_run=False)
+# ── TLSA DNS record generation ──────────────────────────────────────────────
 
 
-def reload_services(setup: dict[str, Any], dry_run: bool) -> None:
-    for service in setup.get("renewal_hooks", {}).get("reload_services", []):
-        run([SYSTEMCTL_BIN, "reload-or-restart", str(service)], dry_run=dry_run)
+def generate_tlsa_records(profile: SetupProfile, cert_path: Path) -> list[DnsRecord]:
+    """Generate TLSA records for all SMTP/IMAP service endpoints.
+
+    Returns a list of DnsRecord objects ready to be pushed to DNS.
+    """
+    tlsa_value = compute_tlsa_value(cert_path)
+    records: list[DnsRecord] = []
+
+    # SMTP on port 25 — primary mail server hostname
+    records.append(DnsRecord(
+        "TLSA",
+        f"_25._tcp.{profile.hostname}.",
+        tlsa_value,
+        ttl=300,
+        purpose="DANE SMTP TLS pin",
+    ))
+
+    # SMTP on port 25 — explicit smtp hostname (when different)
+    if profile.smtp_host != profile.hostname:
+        records.append(DnsRecord(
+            "TLSA",
+            f"_25._tcp.{profile.smtp_host}.",
+            tlsa_value,
+            ttl=300,
+            purpose="DANE SMTP TLS pin (smtp endpoint)",
+        ))
+
+    # IMAPS on port 993
+    records.append(DnsRecord(
+        "TLSA",
+        f"_993._tcp.{profile.hostname}.",
+        tlsa_value,
+        ttl=300,
+        purpose="DANE IMAPS TLS pin",
+    ))
+
+    # IMAPS on explicit imap hostname
+    if profile.imap_host != profile.hostname:
+        records.append(DnsRecord(
+            "TLSA",
+            f"_993._tcp.{profile.imap_host}.",
+            tlsa_value,
+            ttl=300,
+            purpose="DANE IMAPS TLS pin (imap endpoint)",
+        ))
+
+    return records
 
 
-def write_tls_state(setup: dict[str, Any], dry_run: bool) -> None:
-    if dry_run:
-        return
+# ── Deploy hook ──────────────────────────────────────────────────────────────
+
+
+def deploy_hook_certonly(profile: SetupProfile, dry_run: bool = False) -> int:
+    """Post-issuance/post-renewal deployment: update DNS + reload services.
+
+    This is called by certbot's --deploy-hook after every successful
+    renewal. It regenerates TLSA records and pushes them to the DNS
+    provider before reloading mail services.
+    """
+    cert_path = certificate_path()
+
+    # Only update TLSA if configured
+    if profile.update_tlsa_on_renewal:
+        tlsa_records = generate_tlsa_records(profile, cert_path)
+        if dry_run:
+            for rec in tlsa_records:
+                print(f"dry-run: TLSA {rec.name} → {rec.value}")
+        else:
+            # Update the setup profile's DNS records with new TLSA values
+            setup_data = read_json(SETUP_PATH)
+            dns_records = setup_data.get("dns_records", [])
+
+            # Update existing TLSA records in setup profile
+            for tlsa in tlsa_records:
+                found = False
+                for existing in dns_records:
+                    if (existing.get("type") == "TLSA" and
+                            existing.get("name") == tlsa.name):
+                        existing["value"] = tlsa.value
+                        found = True
+                        break
+                if not found:
+                    dns_records.append({
+                        "type": "TLSA",
+                        "name": tlsa.name,
+                        "value": tlsa.value,
+                        "purpose": tlsa.purpose,
+                    })
+
+            setup_data["dns_records"] = dns_records
+            save_json_private(SETUP_PATH, setup_data)
+
+            # Push TLSA updates via DNS provider
+            try:
+                from . import dns_provider as dns_mod
+                secrets_path = CONFIG_DIR / "secrets.json"
+                secrets = read_json(secrets_path) if secrets_path.exists() else {}
+                transport = dns_mod.provider_from_config(
+                    setup_data, secrets, dry_run=False,
+                )
+                for tlsa in tlsa_records:
+                    print(f"dns: updating TLSA {tlsa.name}")
+                    # Try to find existing record first
+                    existing = None
+                    for rec in transport.list_all(profile.domain):
+                        if rec.type == "TLSA" and rec.name == tlsa.name:
+                            existing = rec
+                            break
+                    if existing:
+                        transport.update(existing, tlsa)
+                    else:
+                        transport.create(tlsa)
+            except Exception as exc:
+                print(f"dns warning: TLSA update failed: {exc}", file=sys.stderr)
+    else:
+        print("TLSA update disabled by configuration")
+
+    # Reload services
+    reload_services(profile, dry_run=dry_run)
+
+    # Write TLS state
+    if not dry_run:
+        write_tls_state(profile)
+        print(f"TLS state written: {TLS_STATE_PATH}")
+
+    return 0
+
+
+def reload_services(profile: SetupProfile, dry_run: bool = False) -> None:
+    """Reload (or restart if reload not supported) mail services."""
+    for service in profile.reload_services:
+        if dry_run:
+            print(f"dry-run: {SYSTEMCTL_BIN} reload-or-restart {service}")
+        else:
+            result = subprocess.run(
+                [SYSTEMCTL_BIN, "reload-or-restart", service],
+                capture_output=True, text=True, check=False,
+            )
+            if result.returncode != 0:
+                print(f"service warning: {service} reload: {result.stderr.strip()}",
+                      file=sys.stderr)
+            else:
+                print(f"service: {service} reloaded")
+
+
+def write_tls_state(profile: SetupProfile) -> None:
+    """Persist TLS state for health checks and monitoring."""
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    payload = {"cert_name": CERT_NAME, "domains": cert_domains(setup), "certificate_path": str(certificate_path())}
-    TLS_STATE_PATH.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    TLS_STATE_PATH.chmod(0o600)
+    payload = {
+        "cert_name": CERT_NAME,
+        "domains": profile.cert_san_names,
+        "primary_domain": profile.domain,
+        "certificate_path": str(certificate_path()),
+        "updated_at": __import__("time").time(),
+    }
+    save_json_private(TLS_STATE_PATH, payload)
+
+
+# ── Issue command ──────────────────────────────────────────────────────────
 
 
 def issue(config: Path, dry_run: bool) -> int:
-    setup = load_setup(config)
-    if setup.get("certificate_mode") == "http-01" and not dry_run:
+    """Issue initial certificate."""
+    profile = load_profile(config)
+
+    if profile.certificate_mode == "http-01" and not dry_run:
         ACME_WEBROOT.mkdir(parents=True, exist_ok=True)
-    run(certbot_issue_command(setup, config), dry_run=dry_run)
-    write_tls_state(setup, dry_run=dry_run)
+
+    cmd = certbot_issue_command(profile)
+    printable = " ".join(cmd)
+
+    if dry_run:
+        print(f"dry-run: {printable}")
+        return 0
+
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        raise AcmeError(
+            f"certbot failed (exit {result.returncode}):\n"
+            f"{result.stderr.strip()}"
+        )
+    if result.stdout.strip():
+        print(result.stdout.strip())
+
+    # Run deploy hook after successful issuance
+    deploy_hook_certonly(profile, dry_run=False)
     return 0
+
+
+# ── Renew command ──────────────────────────────────────────────────────────
 
 
 def renew(dry_run: bool) -> int:
-    run(certbot_renew_command(), dry_run=dry_run)
+    """Renew all certificates via certbot renew."""
+    cmd = certbot_renew_command()
+    printable = " ".join(cmd)
+
+    if dry_run:
+        print(f"dry-run: {printable}")
+        return 0
+
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        raise AcmeError(
+            f"certbot renew failed (exit {result.returncode}):\n"
+            f"{result.stderr.strip()}"
+        )
+    if result.stdout.strip():
+        print(result.stdout.strip())
     return 0
+
+
+# ── Deploy hook CLI entry (called by certbot after renewal) ────────────────
 
 
 def deploy_hook(config: Path, dry_run: bool) -> int:
-    setup = load_setup(config)
-    update_tlsa_in_setup(setup, config, certificate_path(), dry_run=dry_run)
-    reload_services(setup, dry_run=dry_run)
-    write_tls_state(setup, dry_run=dry_run)
-    return 0
+    """Called by certbot after successful renewal."""
+    profile = load_profile(config)
+    return deploy_hook_certonly(profile, dry_run=dry_run)
+
+
+# ── Tool check ─────────────────────────────────────────────────────────────
 
 
 def check_tools(mode: str) -> None:
-    if shutil.which(CERTBOT_BIN) is None and mode in {"issue", "renew"}:
+    """Verify required binaries are available."""
+    if shutil.which(CERTBOT_BIN) is None and mode in ("issue", "renew"):
         raise AcmeError(f"missing required binary: {CERTBOT_BIN}")
-    if shutil.which(OPENSSL_BIN) is None and mode == "deploy-hook":
+    if shutil.which(OPENSSL_BIN) is None and mode in ("deploy-hook", "issue"):
         raise AcmeError(f"missing required binary: {OPENSSL_BIN}")
 
 
+# ── CLI entry point ────────────────────────────────────────────────────────
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="KTC Mail ACME automation")
-    parser.add_argument("command", choices=("issue", "renew", "deploy-hook"))
+    parser = argparse.ArgumentParser(
+        description="KTC Mail ACME certificate automation",
+    )
+    parser.add_argument(
+        "command",
+        choices=("issue", "renew", "deploy-hook"),
+        help="Operation to perform",
+    )
     parser.add_argument("--config", type=Path, default=SETUP_PATH)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -181,15 +420,19 @@ def main() -> int:
     try:
         if not args.dry_run:
             check_tools(args.command)
+
         if args.command == "issue":
             return issue(args.config, args.dry_run)
         if args.command == "renew":
             return renew(args.dry_run)
-        return deploy_hook(args.config, args.dry_run)
+        if args.command == "deploy-hook":
+            return deploy_hook(args.config, args.dry_run)
+
+        return 1
     except AcmeError as exc:
         print(f"acme error: {exc}", file=sys.stderr)
         return 1
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())
