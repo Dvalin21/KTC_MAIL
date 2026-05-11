@@ -196,6 +196,15 @@ def generate_tlsa_records(profile: SetupProfile, cert_path: Path) -> list[DnsRec
             purpose="DANE SMTP TLS pin (smtp endpoint)",
         ))
 
+    # Submissions on port 465 — SMTP over implicit TLS (legacy)
+    records.append(DnsRecord(
+        "TLSA",
+        f"_465._tcp.{profile.hostname}.",
+        tlsa_value,
+        ttl=300,
+        purpose="DANE SMTPS TLS pin",
+    ))
+
     # IMAPS on port 993
     records.append(DnsRecord(
         "TLSA",
