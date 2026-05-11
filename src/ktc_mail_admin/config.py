@@ -669,12 +669,7 @@ class SetupProfile:
             f"0 1 993 {self.hostname}.",
             purpose="IMAPS service discovery",
         ))
-        # POP3S (port 995) — for clients that prefer POP3 over IMAP
-        rs.add(DnsRecord(
-            "SRV", f"_pop3s._tcp.{self.domain}",
-            f"0 1 995 {self.hostname}.",
-            purpose="POP3S service discovery",
-        ))
+        # POP3 intentionally omitted. Modern mail uses IMAP.
         # Sieve (port 4190) — email filtering rule management
         rs.add(DnsRecord(
             "SRV", f"_sieve._tcp.{self.domain}",
