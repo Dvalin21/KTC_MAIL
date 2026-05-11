@@ -2,5 +2,5 @@
 set -euo pipefail
 
 if [[ "${1:-}" = remove ]]; then
-  systemctl disable --now ktc-mail-setup.service ktc-mail-firewall-monitor.timer 2>/dev/null || true
+  systemctl disable --now ktc-mail-setup.service ktc-mail-firewall-monitor.timer ktc-mail-acme-renew.timer ktc-mail-ops-check.timer ktc-mail-backup.timer ktc-mail-admin.service 2>/dev/null || true
 fi

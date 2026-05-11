@@ -1,0 +1,9 @@
+[Unit]
+Description=Run KTC Mail ops checks hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+
+[Install]
+WantedBy=timers.target

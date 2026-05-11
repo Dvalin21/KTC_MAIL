@@ -1,0 +1,13 @@
+[Unit]
+Description=Render and check KTC Mail Phase 4 security controls
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/lib/ktc-mail/security_controls.py check --config /etc/ktc-mail/setup.json
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/ktc-mail

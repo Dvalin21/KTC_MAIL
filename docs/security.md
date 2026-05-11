@@ -5,8 +5,15 @@
 - The first-run GUI is a small Python standard-library service, reducing bootstrap dependency risk.
 - The systemd unit uses `NoNewPrivileges`, `PrivateTmp`, `ProtectSystem`, `ProtectHome`, and explicit writable paths.
 - The firewall monitor checks both `iptables` and `ip6tables` for the KTC chain, required ports, and chain ordering.
-- The default port model allows only `22/tcp`, `25/tcp`, `80/tcp`, `443/tcp`, `587/tcp`, `993/tcp`, and optional `4190/tcp`.
-- DNS setup includes SPF, DKIM, DMARC, optional DANE TLSA, and client autodiscovery records.
+- The default port model keeps port 80 closed for DNS-01 and allows it only for HTTP-01.
+- DNS setup includes SPF, DKIM, DMARC, TLS-RPT, optional DANE TLSA, and client autodiscovery records.
+- Cloudflare DNS automation uses the stored API token only from the root-readable secrets file.
+- ACME renewal hooks regenerate TLSA records and reload Postfix, Dovecot, and Nginx after successful certificate renewal.
+- Phase 3 renders mail service configs into a staging directory for review instead of overwriting `/etc` directly.
+- Phase 4 uses nftables as the primary firewall backend while retaining generated iptables compatibility output.
+- Fail2ban jails, Postfix rate-limit snippets, queue checks, and quarantine policy artifacts are generated from the setup profile.
+- Phase 5 admin portal stores PBKDF2 password hashes, role assignments, sessions, recovery codes, and audit logs in root-readable files.
+- Phase 6 renders restic backup, restore-drill, health-check, DNS drift, and ops policy artifacts without enabling external alert delivery by default.
 
 ## Recommended enterprise additions
 

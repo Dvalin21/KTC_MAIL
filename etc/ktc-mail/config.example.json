@@ -1,9 +1,38 @@
 {
   "domain": "example.com",
   "hostname": "mail.example.com",
+  "admin_host": "admin.example.com",
+  "webmail_host": "webmail.example.com",
+  "admin_email": "admin@example.com",
+  "public_ipv4": "203.0.113.10",
+  "public_ipv6": "2001:db8::10",
   "dns_provider": "cloudflare",
   "certificate_mode": "dns-01-api",
-  "open_ports": [22, 25, 80, 443, 587, 993, 4190],
+  "manage_system_hostname": true,
+  "open_ports": [22, 25, 443, 587, 993, 4190],
+  "dns_records": [],
+  "renewal_hooks": {
+    "update_tlsa_on_certificate_renewal": true,
+    "reload_services": ["postfix", "dovecot", "nginx"]
+  },
+  "abuse_controls": {
+    "crowdsec_decision": "defer until package maturity and ops policy are approved",
+    "submission_message_rate_limit": 100,
+    "submission_connection_rate_limit": 20,
+    "sasl_auth_failures_findtime": 600,
+    "sasl_auth_failures_maxretry": 5,
+    "quarantine_group": "ktc-quarantine"
+  },
+  "ops_controls": {
+    "backup_repository": "sftp:user@backup-host:/srv/restic/ktc-mail",
+    "backup_paths": ["/etc/ktc-mail", "/var/lib/ktc-mail", "/var/vmail", "/var/lib/rspamd/dkim"],
+    "retention": {"daily": 7, "weekly": 4, "monthly": 6},
+    "queue_alert_threshold": 500,
+    "disk_alert_percent": 85,
+    "certificate_expiry_days": 21,
+    "audit_log_target": "local-jsonl; remote syslog/SIEM pending"
+  },
+  "implementation_phase": "Phase 6",
   "security": {
     "admin_mfa_required": true,
     "fail2ban_enabled": true,

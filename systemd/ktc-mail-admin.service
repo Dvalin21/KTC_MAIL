@@ -1,0 +1,19 @@
+[Unit]
+Description=KTC Mail admin portal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/lib/ktc-mail/admin_portal.py serve --host 127.0.0.1 --port 8081
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/etc/ktc-mail /var/lib/ktc-mail
+
+[Install]
+WantedBy=multi-user.target

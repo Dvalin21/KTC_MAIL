@@ -1,0 +1,13 @@
+[Unit]
+Description=KTC Mail restic backup
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/lib/ktc-mail/ops_controls.py backup --config /etc/ktc-mail/setup.json
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/ktc-mail /var/vmail /etc/ktc-mail

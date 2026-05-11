@@ -1,0 +1,13 @@
+[Unit]
+Description=Render KTC Mail stack configuration
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/lib/ktc-mail/config_render.py --config /etc/ktc-mail/setup.json --output-dir /var/lib/ktc-mail/rendered-config
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/ktc-mail

@@ -6,11 +6,16 @@ KTC Mail is a bare-metal Debian/Ubuntu mail server suite scaffold. The goal is a
 
 This repository now contains the first implementation slice:
 
-- A standard-library Python first-run web GUI that launches on the server IP and collects domain, hostname, DNS provider, administrator email, and certificate mode.
-- DNS plan generation for A, AAAA, MX, SPF, DKIM, DMARC, optional DANE TLSA, and autodiscovery SRV records.
-- A conservative iptables/ip6tables firewall monitor for required mail ports and chain ordering.
+- A standard-library Python first-run web GUI that launches on the server IP and collects domain, hostname, public IPs, DNS provider, administrator email, and certificate mode.
+- DNS plan generation and first-pass automation for A, AAAA, MX, SPF, DKIM, DMARC, TLS-RPT, optional DANE TLSA, split admin/SOGo hostnames, and autodiscovery SRV records.
+- A conservative iptables/ip6tables firewall monitor that reads the setup profile so DNS-01 keeps port 80 closed unless HTTP-01 is selected.
 - Debian packaging metadata that installs the GUI, firewall monitor, helper scripts, examples, documentation, and systemd units.
-- A bootstrap script that installs the proven open-source stack: Postfix, Dovecot, Rspamd, Redis, Fail2ban, Nginx, iptables, and supporting tools.
+- ACME issue/renew tooling with DNS-01 hooks, HTTP-01 fallback, TLSA regeneration, and service reload hooks.
+- Phase 3 mail stack rendering for Postfix, Dovecot, Rspamd, Nginx admin/webmail vhosts, and SOGo baseline configuration.
+- Phase 4 nftables-first firewall rendering/enforcement, iptables compatibility output, Fail2ban baseline, and outbound abuse policy artifacts.
+- Phase 5 admin portal foundation with local admin bootstrap, secure sessions, roles, recovery codes, and audit logging.
+- Phase 6 restic backup, restore-drill, health-check, DNS drift, and observability control artifacts.
+- A bootstrap script that installs the proven open-source stack: Postfix, Dovecot, Rspamd, Redis, Fail2ban, Nginx, certbot, restic, nftables, iptables, and supporting tools.
 
 ## Target production stack
 
@@ -21,14 +26,14 @@ This repository now contains the first implementation slice:
 | Spam/security policy | Rspamd, Redis, Fail2ban, optional CrowdSec |
 | Admin GUI | KTC Mail Python service, later hardened behind HTTPS and MFA |
 | TLS | ACME DNS-01 provider APIs, service reload hooks, optional DANE TLSA updates |
-| Firewall | iptables/ip6tables monitor now; nftables should be evaluated as the future primary backend |
+| Firewall | nftables-first policy renderer/enforcer with iptables/ip6tables compatibility output and monitor |
 | Packaging | `.deb` for Debian/Ubuntu bare-metal installation |
 
 ## Quick developer checks
 
 ```bash
-python3 -m py_compile src/ktc_mail_admin/app.py src/ktc_mail_admin/firewall_monitor.py
-bash -n scripts/bootstrap-mail-stack.sh scripts/ktc-mail-open-ports.sh packaging/debian/postinst packaging/debian/prerm
+python3 -m py_compile src/ktc_mail_admin/app.py src/ktc_mail_admin/firewall_monitor.py src/ktc_mail_admin/dns_provider.py src/ktc_mail_admin/acme_manager.py src/ktc_mail_admin/config_render.py src/ktc_mail_admin/security_controls.py src/ktc_mail_admin/admin_portal.py src/ktc_mail_admin/ops_controls.py
+bash -n scripts/bootstrap-mail-stack.sh scripts/ktc-mail-open-ports.sh scripts/ktc-mail-render-config.sh scripts/ktc-mail-security-controls.sh scripts/ktc-mail-ops-controls.sh packaging/debian/postinst packaging/debian/prerm
 ```
 
 ## Prototype run
@@ -42,7 +47,7 @@ Then open `http://127.0.0.1:8080` and submit the initial domain setup form.
 
 ## What you are missing before production
 
-- DNS provider adapter priority and token scope requirements.
+- DNS provider adapter implementation and token scope requirements.
 - A final decision on nftables versus iptables as the primary firewall backend.
 - Admin identity design: local accounts, OIDC, LDAP, MFA, RBAC, and break-glass access.
 - Backup design: destination, retention, restore testing, mailbox encryption, and secret custody.
@@ -50,4 +55,4 @@ Then open `http://127.0.0.1:8080` and submit the initial domain setup form.
 - Webmail decision: none, Roundcube, SnappyMail, or another maintained client.
 - Compliance requirements that affect logging, retention, encryption, and access controls.
 
-See `docs/architecture.md` and `docs/security.md` for the detailed plan.
+See `docs/architecture.md`, `docs/security.md`, and `docs/implementation-plan.md` for the detailed plan.
