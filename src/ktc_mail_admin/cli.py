@@ -24,8 +24,9 @@ Usage:
   ktc-mail ssh apply               Apply SSH hardening
   ktc-mail ssh remove              Remove SSH policy
   ktc-mail ssh status              Check SSH policy
-  ktc-mail config render           Print config to stdout
-  ktc-mail config write            Write config to /etc
+   ktc-mail config render           Print config to stdout
+   ktc-mail config write            Write config to /etc
+   ktc-mail dkim generate           Generate DKIM keypair and print DNS record
 """
 
 from __future__ import annotations
@@ -182,6 +183,12 @@ def cmd_ssh(args: argparse.Namespace) -> int:
         return 1
 
 
+def cmd_dkim(args: argparse.Namespace) -> int:
+    """Generate DKIM keypair and write to disk."""
+    from .config_renderer import dkim_write
+    return dkim_write(args)
+
+
 def cmd_config(args: argparse.Namespace) -> int:
     """Dispatch to config_renderer module functions."""
     from .config_renderer import main as cr_main
@@ -262,6 +269,17 @@ def main() -> int:
     )
     p_cfg.add_argument("--dest", type=Path, default=Path("/etc"))
 
+    # ── dkim ───────────────────────────────────────────────────────────
+    p_dkim = sub.add_parser("dkim", help="DKIM key management")
+    p_dkim.add_argument(
+        "dkim_cmd", choices=("generate",),
+        help="DKIM operation",
+    )
+    p_dkim.add_argument(
+        "--selector", default="default",
+        help="DKIM selector name (default: default)",
+    )
+
     args = parser.parse_args()
 
     dispatch = {
@@ -271,6 +289,7 @@ def main() -> int:
         "firewall": cmd_firewall,
         "ssh": cmd_ssh,
         "config": cmd_config,
+        "dkim": cmd_dkim,
     }
 
     handler = dispatch.get(args.command)
