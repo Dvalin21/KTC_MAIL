@@ -27,6 +27,10 @@ Usage:
    ktc-mail config render           Print config to stdout
    ktc-mail config write            Write config to /etc
    ktc-mail dkim generate           Generate DKIM keypair and print DNS record
+   ktc-mail user add <email>        Create mail user
+   ktc-mail user del <email>        Remove mail user
+   ktc-mail user list               List mail users
+   ktc-mail user passwd <email>     Change user password
 """
 
 from __future__ import annotations
@@ -189,6 +193,12 @@ def cmd_dkim(args: argparse.Namespace) -> int:
     return dkim_write(args)
 
 
+def cmd_user(args: argparse.Namespace) -> int:
+    """Mail user account management."""
+    from .user_manager import cmd_user as dispatch
+    return dispatch(args)
+
+
 def cmd_config(args: argparse.Namespace) -> int:
     """Dispatch to config_renderer module functions."""
     from .config_renderer import main as cr_main
@@ -280,6 +290,19 @@ def main() -> int:
         help="DKIM selector name (default: default)",
     )
 
+    # ── user ───────────────────────────────────────────────────────────
+    p_user = sub.add_parser("user", help="Mail user account management")
+    p_user.add_argument(
+        "user_cmd", choices=("add", "del", "list", "passwd"),
+        help="User operation",
+    )
+    p_user.add_argument("email", nargs="?",
+                        help="User email address (required for add/del/passwd)")
+    p_user.add_argument("--password",
+                        help="Password (omit for prompt)")
+    p_user.add_argument("--quota", default="1G",
+                        help="Mailbox quota (default: 1G)")
+
     args = parser.parse_args()
 
     dispatch = {
@@ -290,6 +313,7 @@ def main() -> int:
         "ssh": cmd_ssh,
         "config": cmd_config,
         "dkim": cmd_dkim,
+        "user": cmd_user,
     }
 
     handler = dispatch.get(args.command)
