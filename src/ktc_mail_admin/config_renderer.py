@@ -19,7 +19,9 @@ Design rules:
 from __future__ import annotations
 
 import argparse
+import base64
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -720,6 +722,72 @@ def write_all(
         written[relpath] = full_path
 
     return written
+
+
+# ── DKIM key generation ──────────────────────────────────────────────────
+
+
+def dkim_generate(
+    domain: str,
+    selector: str = "default",
+    bits: int = 2048,
+) -> tuple[bytes, str]:
+    """Generate DKIM keypair and DNS record.
+
+    Shells out to openssl — the canonical tool for RSA key generation.
+    No Python crypto library dependency. No reimplementation of RSA.
+
+    Returns:
+        (private_key_pem, dns_txt_record_string)
+
+    The private key is returned as PEM bytes — caller decides where to
+    write it. The DNS record is a ready-to-publish TXT value.
+    """
+    priv = subprocess.run(
+        ["openssl", "genrsa", str(bits)],
+        capture_output=True, check=True,
+    ).stdout
+
+    pub_der = subprocess.run(
+        ["openssl", "rsa", "-pubin", "-outform", "DER"],
+        input=subprocess.run(
+            ["openssl", "rsa", "-pubout"],
+            input=priv, capture_output=True, check=True,
+        ).stdout,
+        capture_output=True, check=True,
+    ).stdout
+
+    b64 = base64.b64encode(pub_der).decode()
+    record = f"v=DKIM1; k=rsa; p={b64}"
+    return priv, record
+
+
+def dkim_write(args: argparse.Namespace) -> int:
+    """CLI handler for `ktc-mail dkim generate`."""
+    from .config import DKIM_DIR, read_json, SetupProfile
+
+    data = read_json(args.config)
+    profile = SetupProfile.from_dict(data)
+    selector = args.selector
+
+    priv_pem, dns_record = dkim_generate(profile.domain, selector)
+
+    if args.dry_run:
+        print(f"dry-run: would write key to {DKIM_DIR / selector}.private")
+        print(f"dry-run: DNS TXT \"{selector}._domainkey.{profile.domain}\"")
+        print(dns_record)
+        return 0
+
+    path = DKIM_DIR / f"{selector}.private"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(priv_pem)
+    path.chmod(0o600)
+
+    print(f"wrote: {path}")
+    print()
+    print(f"DNS TXT record for {selector}._domainkey.{profile.domain}:")
+    print(dns_record)
+    return 0
 
 
 # ── MTA-STS policy file ──────────────────────────────────────────────────
