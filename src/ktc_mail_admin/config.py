@@ -13,12 +13,9 @@ Rules:
 from __future__ import annotations
 
 import hashlib
-import ipaddress
 import os
 import re
-import secrets
 import subprocess
-from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -38,8 +35,9 @@ SSH_CONFIG_PATH = Path("/etc/ssh/sshd_config")
 ACME_WEBROOT = STATE_DIR / "acme-webroot"
 
 CERT_NAME = "ktc-mail"
-DNS_HOOK = "/usr/lib/ktc-mail/dns_provider.py"
-ACME_HOOK = "/usr/lib/ktc-mail/acme_manager.py"
+KTC_MAIL_BIN = "/usr/bin/ktc-mail"
+DNS_HOOK = "/usr/lib/ktc-mail/dns_provider.py"  # legacy hook path (keep for compat)
+ACME_HOOK = "/usr/lib/ktc-mail/acme_manager.py"  # legacy hook path (keep for compat)
 
 # Known DNS provider IDs
 PROVIDER_CLOUDFLARE = "cloudflare"
@@ -79,6 +77,7 @@ class DnsRecord:
     ttl: int = 300
     priority: int | None = None  # MX/SRV preference
     purpose: str = ""  # Human-readable documentation, NOT serialised
+    proxied: bool = False  # Cloudflare proxy status (mail records MUST be False)
 
     def key(self) -> str:
         """Unique key for this record within a zone.
@@ -100,6 +99,8 @@ class DnsRecord:
         }
         if self.priority is not None:
             d["priority"] = self.priority
+        if self.proxied:
+            d["proxied"] = True
         return d
 
     @classmethod
@@ -110,11 +111,13 @@ class DnsRecord:
             value=str(data["value"]),
             ttl=int(data.get("ttl", 300)),
             priority=int(data["priority"]) if data.get("priority") else None,
+            proxied=bool(data.get("proxied", False)),
         )
 
     def __repr__(self) -> str:
         prio = f" [{self.priority}]" if self.priority is not None else ""
-        return f"{self.type:5} {self.name:40} {self.value}{prio}"
+        proxy = " 🔶" if self.proxied else ""
+        return f"{self.type:5} {self.name:40} {self.value}{prio}{proxy}"
 
 
 # ── DNS record set ─────────────────────────────────────────────────────────
@@ -219,7 +222,10 @@ class DnsRecordSet:
         for key in sorted(common_keys):
             local = self._records[key]
             remote_rec = remote._records[key]
-            if local.value != remote_rec.value or local.ttl != remote_rec.ttl:
+            if (local.value != remote_rec.value
+                    or local.ttl != remote_rec.ttl
+                    or (local.proxied != remote_rec.proxied
+                        and local.type in {"A", "AAAA", "CNAME"})):
                 to_update.append((remote_rec, local))
 
         return DnsDiff(to_create, to_update, to_delete)
@@ -789,23 +795,24 @@ def json_dumps(obj: Any) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"))
 
 
-def save_json_private(path: Path, payload: dict[str, Any]) -> None:
+def save_json_private(path: Path | str, payload: dict[str, Any]) -> None:
     """Write a JSON file with 0600 permissions, atomically.
 
     Uses tempfile + rename to avoid the chmod race window that
-    write-then-chmod creates.
+    write-then-chmod creates.  Accepts Path or str.
     """
     import json
-    tmp = path.with_suffix(".tmp")
+    p = Path(path)
+    tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     tmp.chmod(0o600)
-    tmp.rename(path)  # atomic on the same filesystem
+    tmp.rename(p)  # atomic on the same filesystem
 
 
-def read_json(path: Path) -> dict[str, Any]:
-    """Read and parse a JSON file."""
+def read_json(path: Path | str) -> dict[str, Any]:
+    """Read and parse a JSON file.  Accepts Path or str."""
     import json
-    return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
 def detect_public_ipv4() -> str:

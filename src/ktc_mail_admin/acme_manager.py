@@ -30,8 +30,7 @@ from .config import (
     TLS_STATE_PATH,
     ACME_WEBROOT,
     CERT_NAME,
-    DNS_HOOK,
-    ACME_HOOK,
+    KTC_MAIL_BIN,
     DnsRecord,
     DnsRecordSet,
     SetupProfile,
@@ -92,9 +91,9 @@ def certbot_issue_command(profile: SetupProfile) -> list[str]:
             "--manual",
             "--preferred-challenges", "dns",
             "--manual-auth-hook",
-            f"{DNS_HOOK} acme-auth --config {quoted_config}",
+            f"{KTC_MAIL_BIN} acme auth --config {quoted_config}",
             "--manual-cleanup-hook",
-            f"{DNS_HOOK} acme-cleanup --config {quoted_config}",
+            f"{KTC_MAIL_BIN} acme cleanup --config {quoted_config}",
             "--manual-public-ip-logging-ok",
         ])
         # Wildcard + all explicit SANs
@@ -112,7 +111,7 @@ def certbot_renew_command() -> list[str]:
     """Build the certbot renew command with deploy hook."""
     return [
         CERTBOT_BIN, "renew",
-        "--deploy-hook", f"{ACME_HOOK} deploy-hook",
+        "--deploy-hook", f"{KTC_MAIL_BIN} acme deploy-hook --config {SETUP_PATH}",
     ]
 
 

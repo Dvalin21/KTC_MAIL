@@ -1,0 +1,289 @@
+#!/usr/bin/env python3
+"""KTC Mail — unified command-line interface.
+
+Single entry point for ALL operations. No more 4 argparse CLIs with
+inconsistent error handling. This replaces the separate main() in:
+  - dns_provider.py
+  - acme_manager.py
+  - firewall_monitor.py
+  - ssh_policy.py
+  - config_renderer.py
+
+Usage:
+  ktc-mail setup                   Start first-run web GUI
+  ktc-mail dns apply               Push DNS records
+  ktc-mail dns verify              Verify DNS records
+  ktc-mail dns plan                Show DNS plan
+  ktc-mail acme issue              Issue certificate
+  ktc-mail acme renew              Renew certificates
+  ktc-mail acme deploy-hook        Post-renewal deploy hook
+  ktc-mail acme auth               ACME DNS-01 auth hook
+  ktc-mail acme cleanup            ACME DNS-01 cleanup hook
+  ktc-mail firewall check          Verify firewall rules
+  ktc-mail firewall enforce        Enforce firewall rules
+  ktc-mail ssh apply               Apply SSH hardening
+  ktc-mail ssh remove              Remove SSH policy
+  ktc-mail ssh status              Check SSH policy
+  ktc-mail config render           Print config to stdout
+  ktc-mail config write            Write config to /etc
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+from .config import SETUP_PATH, SECRETS_PATH
+
+
+def cmd_setup(args: argparse.Namespace) -> int:
+    """Start the first-run setup web GUI on :8080."""
+    from .app import main as app_main
+
+    # Forward relevant args
+    sys.argv = ["app.py"]
+    if args.expose:
+        sys.argv.append("--expose")
+    sys.argv.extend(["--host", args.host, "--port", str(args.port)])
+    return app_main()
+
+
+def cmd_dns(args: argparse.Namespace) -> int:
+    """Dispatch to dns_provider module functions."""
+    from .dns_provider import (
+        sync_records,
+        verify_records,
+        ptr_report,
+        provider_from_config,
+    )
+    from .config import SetupProfile, read_json, save_json_private, DNS_STATE_PATH
+    import time
+
+    setup = read_json(args.config)
+    profile = SetupProfile.from_dict(setup)
+    secrets = {} if args.dry_run else read_json(args.secrets)
+    transport = provider_from_config(setup, secrets, dry_run=args.dry_run)
+
+    if args.dns_cmd == "plan":
+        print(profile.generate_dns_plan())
+        print()
+        print(ptr_report(profile))
+        return 0
+
+    if args.dns_cmd == "apply":
+        local = profile.generate_dns_records()
+        actions = sync_records(local, transport, profile.domain, args.dry_run)
+        for action in actions:
+            print(action)
+        if not args.dry_run:
+            state = {
+                "domain": profile.domain,
+                "records": [r.to_dict() for r in local],
+                "hash": local.content_hash(),
+                "updated_at": int(time.time()),
+                "actions": actions,
+            }
+            save_json_private(DNS_STATE_PATH, state)
+        return 0
+
+    if args.dns_cmd == "verify":
+        local = profile.generate_dns_records()
+        issues = verify_records(local, transport, profile.domain)
+        if issues:
+            for issue in issues:
+                print(f"DRIFT: {issue}", file=sys.stderr)
+            return 1
+        print("DNS verification: all records match provider state.")
+        return 0
+
+    return 1
+
+
+def cmd_acme(args: argparse.Namespace) -> int:
+    """Dispatch to acme_manager module functions."""
+    from .acme_manager import (
+        issue,
+        renew,
+        deploy_hook,
+        acme_hook,
+        check_tools,
+        AcmeError,
+    )
+
+    try:
+        if args.acme_cmd == "issue":
+            if not args.dry_run:
+                check_tools("issue")
+            return issue(args.config, args.dry_run)
+
+        if args.acme_cmd == "renew":
+            if not args.dry_run:
+                check_tools("renew")
+            return renew(args.dry_run)
+
+        if args.acme_cmd == "deploy-hook":
+            return deploy_hook(args.config, args.dry_run)
+
+        if args.acme_cmd == "auth":
+            return acme_hook(
+                args.config, args.secrets, cleanup=False,
+                dry_run=args.dry_run,
+                propagation_seconds=args.propagation_seconds,
+            )
+
+        if args.acme_cmd == "cleanup":
+            return acme_hook(
+                args.config, args.secrets, cleanup=True,
+                dry_run=args.dry_run,
+                propagation_seconds=0,
+            )
+
+        return 1
+    except AcmeError as exc:
+        print(f"acme error: {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_firewall(args: argparse.Namespace) -> int:
+    """Dispatch to firewall_monitor module functions."""
+    from .firewall_monitor import main as fw_main
+
+    # Build argv for the existing firewall_monitor.main()
+    sys.argv = ["firewall_monitor.py"]
+    if args.enforce:
+        sys.argv.append("--enforce")
+    sys.argv.extend(["--config", str(args.config)])
+    sys.argv.extend(["--ipv4-bin", args.ipv4_bin])
+    sys.argv.extend(["--ipv6-bin", args.ipv6_bin])
+    return fw_main()
+
+
+def cmd_ssh(args: argparse.Namespace) -> int:
+    """Dispatch to ssh_policy module functions."""
+    from .ssh_policy import write_config, remove_policy, status, SshPolicyError
+
+    try:
+        if args.ssh_cmd == "apply":
+            write_config(
+                password_auth=args.password_auth,
+                permit_root_login=args.permit_root_login,
+                dry_run=args.dry_run,
+            )
+            return 0
+        if args.ssh_cmd == "remove":
+            remove_policy(dry_run=args.dry_run)
+            return 0
+        if args.ssh_cmd == "status":
+            return status()
+        return 1
+    except SshPolicyError as exc:
+        print(f"ssh policy error: {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_config(args: argparse.Namespace) -> int:
+    """Dispatch to config_renderer module functions."""
+    from .config_renderer import main as cr_main
+
+    sys.argv = ["config_renderer.py", args.config_cmd]
+    sys.argv.extend(["--config", str(args.config)])
+    if args.config_cmd == "write":
+        sys.argv.extend(["--dest", str(args.dest)])
+        if args.dry_run:
+            sys.argv.append("--dry-run")
+    return cr_main()
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="KTC Mail — bare-metal Debian/Ubuntu mail server suite",
+    )
+    parser.add_argument(
+        "--config", type=Path, default=SETUP_PATH,
+        help="Setup profile path (default: /etc/ktc-mail/setup.json)",
+    )
+    parser.add_argument(
+        "--secrets", type=Path, default=SECRETS_PATH,
+        help="Secrets file path (default: /etc/ktc-mail/secrets.json)",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Preview changes without writing",
+    )
+
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    # ── setup ──────────────────────────────────────────────────────────
+    p_setup = sub.add_parser("setup", help="Start first-run setup GUI")
+    p_setup.add_argument("--host", default="127.0.0.1")
+    p_setup.add_argument("--port", type=int, default=8080)
+    p_setup.add_argument("--expose", action="store_true")
+
+    # ── dns ────────────────────────────────────────────────────────────
+    p_dns = sub.add_parser("dns", help="DNS record management")
+    p_dns.add_argument(
+        "dns_cmd", choices=("plan", "apply", "verify"),
+        help="DNS operation",
+    )
+
+    # ── acme ───────────────────────────────────────────────────────────
+    p_acme = sub.add_parser("acme", help="ACME certificate automation")
+    p_acme.add_argument(
+        "acme_cmd",
+        choices=("issue", "renew", "deploy-hook", "auth", "cleanup"),
+        help="ACME operation",
+    )
+    p_acme.add_argument(
+        "--propagation-seconds", type=int, default=45,
+        help="DNS propagation wait time (auth only)",
+    )
+
+    # ── firewall ───────────────────────────────────────────────────────
+    p_fw = sub.add_parser("firewall", help="Firewall policy management")
+    p_fw.add_argument("--enforce", action="store_true")
+    p_fw.add_argument("--ipv4-bin", default="iptables")
+    p_fw.add_argument("--ipv6-bin", default="ip6tables")
+
+    # ── ssh ────────────────────────────────────────────────────────────
+    p_ssh = sub.add_parser("ssh", help="SSH policy management")
+    p_ssh.add_argument(
+        "ssh_cmd", choices=("apply", "remove", "status"),
+        help="SSH operation",
+    )
+    p_ssh.add_argument("--password-auth", action="store_true")
+    p_ssh.add_argument("--permit-root-login", action="store_true")
+
+    # ── config ─────────────────────────────────────────────────────────
+    p_cfg = sub.add_parser("config", help="Mail stack configuration")
+    p_cfg.add_argument(
+        "config_cmd", choices=("render", "write"),
+        help="Config operation",
+    )
+    p_cfg.add_argument("--dest", type=Path, default=Path("/etc"))
+
+    args = parser.parse_args()
+
+    dispatch = {
+        "setup": cmd_setup,
+        "dns": cmd_dns,
+        "acme": cmd_acme,
+        "firewall": cmd_firewall,
+        "ssh": cmd_ssh,
+        "config": cmd_config,
+    }
+
+    handler = dispatch.get(args.command)
+    if handler is None:
+        parser.print_help()
+        return 1
+
+    try:
+        return handler(args)
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
