@@ -1,17 +1,45 @@
+# ── Python library modules ─────────────────────────────────────────
 src/ktc_mail_admin/__init__.py usr/lib/ktc-mail/
 src/ktc_mail_admin/config.py usr/lib/ktc-mail/
 src/ktc_mail_admin/app.py usr/lib/ktc-mail/
+src/ktc_mail_admin/cli.py usr/lib/ktc-mail/
+src/ktc_mail_admin/config_renderer.py usr/lib/ktc-mail/
+src/ktc_mail_admin/admin_server.py usr/lib/ktc-mail/
+src/ktc_mail_admin/user_manager.py usr/lib/ktc-mail/
 src/ktc_mail_admin/firewall_monitor.py usr/lib/ktc-mail/
 src/ktc_mail_admin/acme_manager.py usr/lib/ktc-mail/
 src/ktc_mail_admin/dns_provider.py usr/lib/ktc-mail/
 src/ktc_mail_admin/ssh_policy.py usr/lib/ktc-mail/
+src/ktc_mail_admin/fail2ban.py usr/lib/ktc-mail/
+src/ktc_mail_admin/backup_manager.py usr/lib/ktc-mail/
+
+# ── Jinja2 templates ──────────────────────────────────────────────
+src/ktc_mail_admin/templates/base.html usr/lib/ktc-mail/templates/
+src/ktc_mail_admin/templates/login.html usr/lib/ktc-mail/templates/
+src/ktc_mail_admin/templates/dashboard.html usr/lib/ktc-mail/templates/
+src/ktc_mail_admin/templates/users.html usr/lib/ktc-mail/templates/
+src/ktc_mail_admin/templates/dkim.html usr/lib/ktc-mail/templates/
+src/ktc_mail_admin/templates/logs.html usr/lib/ktc-mail/templates/
+src/ktc_mail_admin/templates/dns_status.html usr/lib/ktc-mail/templates/
+src/ktc_mail_admin/templates/certs.html usr/lib/ktc-mail/templates/
+src/ktc_mail_admin/templates/queue.html usr/lib/ktc-mail/templates/
+src/ktc_mail_admin/templates/settings.html usr/lib/ktc-mail/templates/
+src/ktc_mail_admin/templates/backup.html usr/lib/ktc-mail/templates/
+
+# ── Scripts ───────────────────────────────────────────────────────
 scripts/bootstrap-mail-stack.sh usr/lib/ktc-mail/
 scripts/ktc-mail-open-ports.sh usr/sbin/
+
+# ── Systemd units ─────────────────────────────────────────────────
 systemd/ktc-mail-setup.service lib/systemd/system/
 systemd/ktc-mail-firewall-monitor.service lib/systemd/system/
 systemd/ktc-mail-firewall-monitor.timer lib/systemd/system/
 systemd/ktc-mail-acme-renew.timer lib/systemd/system/
 systemd/ktc-mail-acme-renew.service lib/systemd/system/
+systemd/ktc-mail-backup.service lib/systemd/system/
+systemd/ktc-mail-backup.timer lib/systemd/system/
+
+# ── Documentation ─────────────────────────────────────────────────
 etc/ktc-mail/config.example.json usr/share/doc/ktc-mail/examples/
 README.md usr/share/doc/ktc-mail/
 docs/architecture.md usr/share/doc/ktc-mail/

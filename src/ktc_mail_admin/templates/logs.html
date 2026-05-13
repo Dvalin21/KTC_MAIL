@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Log Viewer{% endblock %}
+{% block content %}
+
+<h1>Log Viewer</h1>
+
+<form method="get" action="/logs" class="form-inline" style="margin-bottom:1rem">
+  <div style="flex:0 0 140px">
+    <label class="form-row" style="font-size:0.8rem;font-weight:600">Source</label>
+    <select name="source">
+      <option value="mail" {% if source == 'mail' %}selected{% endif %}>Mail Log</option>
+      <option value="audit" {% if source == 'audit' %}selected{% endif %}>Audit Log</option>
+    </select>
+  </div>
+  <div style="flex:0 0 80px">
+    <label class="form-row" style="font-size:0.8rem;font-weight:600">Lines</label>
+    <select name="lines">
+      {% for n in [50, 100, 200, 500] %}
+      <option value="{{ n }}" {% if lines == n %}selected{% endif %}>{{ n }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div style="flex:1">
+    <label class="form-row" style="font-size:0.8rem;font-weight:600">Filter (keyword)</label>
+    <input name="filter" type="text" value="{{ filter }}" placeholder="e.g. warning, error, rspamd...">
+  </div>
+  <button type="submit" style="margin-bottom:0.25rem">View</button>
+</form>
+
+<div class="card" style="padding:0">
+  <pre style="margin:0;border-radius:0.5rem;max-height:70vh;overflow-y:auto">{{ log_text }}</pre>
+</div>
+
+{% endblock %}

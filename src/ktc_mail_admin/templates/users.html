@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}Users{% endblock %}
+{% block content %}
+
+<h1>Mail Users</h1>
+
+{% if error %}
+<div class="msg msg-err">{{ error }}</div>
+{% endif %}
+{% if msg %}
+<div class="msg msg-ok">{{ msg }}</div>
+{% endif %}
+
+{# ── Add user form ── #}
+<div class="card" style="margin-bottom:1.5rem">
+  <h2>Add user</h2>
+  <form method="post" action="/users/add" class="form-inline" style="margin-top:0.75rem">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div style="flex:2">
+      <label class="form-row" style="font-size:0.8rem;font-weight:600;margin-bottom:0.25rem">Email</label>
+      <input name="email" type="email" placeholder="user@{{ profile.domain if profile else 'example.com' }}" required>
+    </div>
+    <div style="flex:1">
+      <label class="form-row" style="font-size:0.8rem;font-weight:600;margin-bottom:0.25rem">Password</label>
+      <input name="password" type="password" placeholder="••••••••" required>
+    </div>
+    <div style="flex:0 0 80px">
+      <label class="form-row" style="font-size:0.8rem;font-weight:600;margin-bottom:0.25rem">Quota</label>
+      <select name="quota">
+        <option value="256M">256M</option>
+        <option value="512M">512M</option>
+        <option value="1G" selected>1G</option>
+        <option value="5G">5G</option>
+        <option value="10G">10G</option>
+        <option value="unlimited">∞</option>
+      </select>
+    </div>
+    <button type="submit" style="margin-bottom:0.25rem">Add</button>
+  </form>
+</div>
+
+{# ── User list ── #}
+<div class="card">
+  <h2>Existing users</h2>
+  {% if users %}
+  <table>
+    <thead>
+      <tr><th>Email</th><th>Quota</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for user in users %}
+      <tr>
+        <td><strong>{{ user.email }}</strong></td>
+        <td><span class="badge badge-ok">{{ user.quota }}</span></td>
+        <td style="text-align:right">
+          <form method="post" action="/users/del" style="display:inline"
+                onsubmit="return confirm('Remove {{ user.email }}?')">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="email" value="{{ user.email }}">
+            <button type="submit" class="danger small">Delete</button>
+          </form>
+          <button class="secondary small" onclick="showPasswordForm('{{ user.email }}')">Password</button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">No mail users yet. Add one above.</p>
+  {% endif %}
+</div>
+
+{# ── Password change dialog ── #}
+<div id="password-dialog" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.4);display:none;align-items:center;justify-content:center;z-index:100">
+  <div style="background:var(--card);border-radius:1rem;padding:2rem;max-width:400px;width:90%">
+    <h2 style="margin-bottom:1rem">Change password</h2>
+    <form method="post" action="/users/passwd" id="password-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="email" id="pw-email">
+      <div class="form-row">
+        <label>New password</label>
+        <input name="password" type="password" id="pw-input" required>
+      </div>
+      <div class="btn-row">
+        <button type="submit">Change</button>
+        <button type="button" class="secondary" onclick="hidePasswordForm()">Cancel</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+function showPasswordForm(email) {
+  document.getElementById('pw-email').value = email;
+  document.getElementById('pw-input').value = '';
+  var dlg = document.getElementById('password-dialog');
+  dlg.style.display = 'flex';
+}
+function hidePasswordForm() {
+  document.getElementById('password-dialog').style.display = 'none';
+}
+</script>
+
+{% endblock %}

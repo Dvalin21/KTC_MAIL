@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block title %}Backup{% endblock %}
+{% block content %}
+
+<h1>Backup</h1>
+
+{% if error %}
+<div class="msg msg-err">{{ error }}</div>
+{% endif %}
+{% if msg %}
+<div class="msg msg-ok">{{ msg }}</div>
+{% endif %}
+
+<div class="card-grid">
+  {# ── Status card ── #}
+  <div class="card">
+    <h2>Status</h2>
+    <table>
+      <tr><td style="padding-left:0;font-size:0.8rem;color:var(--muted)">Engine</td>
+          <td style="padding-left:0">{{ restic_version }}</td></tr>
+      <tr><td style="padding-left:0;font-size:0.8rem;color:var(--muted)">Repository</td>
+          <td style="padding-left:0;font-size:0.8rem;font-family:monospace">
+            {% if config.repository %}
+              {{ config.repository[:40] }}{% if config.repository|length > 40 %}…{% endif %}
+            {% else %}
+              <em class="empty">not configured</em>
+            {% endif %}
+          </td></tr>
+      <tr><td style="padding-left:0;font-size:0.8rem;color:var(--muted)">Schedule</td>
+          <td style="padding-left:0">
+            {% if config.enabled %}
+              <span class="badge badge-ok">{{ config.schedule }}</span>
+            {% else %}
+              <span class="badge badge-unknown">disabled</span>
+            {% endif %}
+          </td></tr>
+      <tr><td style="padding-left:0;font-size:0.8rem;color:var(--muted)">Last success</td>
+          <td style="padding-left:0;font-size:0.8rem">{{ last_success_str }}</td></tr>
+      <tr><td style="padding-left:0;font-size:0.8rem;color:var(--muted)">Last run</td>
+          <td style="padding-left:0;font-size:0.8rem">{{ last_run_str }}</td></tr>
+      {% if status.last_failure %}
+      <tr><td style="padding-left:0;font-size:0.8rem;color:var(--muted)">Last failure</td>
+          <td style="padding-left:0;font-size:0.8rem;color:var(--red)">{{ last_failure_str }}</td></tr>
+      {% endif %}
+    </table>
+  </div>
+
+  {# ── Last snapshot card ── #}
+  <div class="card">
+    <h2>Last Snapshot</h2>
+    {% if status.last_snapshot %}
+    <table>
+      <tr><td style="padding-left:0;font-size:0.8rem;color:var(--muted)">Snapshot ID</td>
+          <td style="padding-left:0;font-size:0.65rem;font-family:monospace">{{ status.last_snapshot[:16] }}…</td></tr>
+      <tr><td style="padding-left:0;font-size:0.8rem;color:var(--muted)">Files</td>
+          <td style="padding-left:0">{{ "{:,}".format(status.file_count) }}</td></tr>
+      <tr><td style="padding-left:0;font-size:0.8rem;color:var(--muted)">Size</td>
+          <td style="padding-left:0">{{ size_str }}</td></tr>
+    </table>
+    {% else %}
+    <p class="empty">No backup has been run yet.</p>
+    {% endif %}
+  </div>
+
+  {# ── Backup paths card ── #}
+  <div class="card">
+    <h2>Protected Paths</h2>
+    {% if config.paths %}
+    <ul style="list-style:none;padding:0;font-size:0.8rem;">
+      {% for path in config.paths %}
+      <li style="padding:0.25rem 0;font-family:monospace">{{ path }}</li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="empty">No paths configured.</p>
+    {% endif %}
+  </div>
+</div>
+
+{# ── Actions ── #}
+<div class="card" style="margin-bottom:1.5rem">
+  <h2>Actions</h2>
+  <div class="btn-row" style="margin-top:0.75rem;flex-wrap:wrap">
+
+    {% if config.repository and restic_installed %}
+    <form method="post" action="/backup/run" style="display:inline">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="success">Run backup now</button>
+    </form>
+    {% endif %}
+
+    {% if not config.repository %}
+    <span style="font-size:0.8rem;color:var(--muted);padding:0.5rem 0">
+      Configure backup via the command line:
+      <code style="background:#f1f5f9;padding:0.1rem 0.3rem;border-radius:0.25rem">
+        ktc-mail backup init &lt;repository-url&gt;
+      </code>
+    </span>
+    {% endif %}
+
+    {% if not restic_installed %}
+    <span style="font-size:0.8rem;color:var(--red);padding:0.5rem 0">
+      restic is not installed.
+      <code style="background:#fee2e2;padding:0.1rem 0.3rem;border-radius:0.25rem">
+        apt install restic
+      </code>
+    </span>
+    {% endif %}
+  </div>
+</div>
+
+{% endblock %}

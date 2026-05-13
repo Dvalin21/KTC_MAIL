@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Mail Queue{% endblock %}
+{% block content %}
+
+<h1>Mail Queue</h1>
+
+{% if error %}
+<div class="msg msg-err">{{ error }}</div>
+{% endif %}
+{% if msg %}
+<div class="msg msg-ok">{{ msg }}</div>
+{% endif %}
+
+{# ── Summary + actions ── #}
+<div class="card-grid">
+  <div class="card">
+    <div class="stat-label">Queued messages</div>
+    <div class="stat-value">{{ entries|length }}</div>
+  </div>
+  <div class="card">
+    <div class="stat-label">Total size</div>
+    <div class="stat-value" style="font-size:1.2rem">
+      {% set total = entries|sum(attribute='size') %}
+      {% if total > 1048576 %}
+        {{ (total / 1048576)|round(1) }} MB
+      {% elif total > 1024 %}
+        {{ (total / 1024)|round(1) }} KB
+      {% else %}
+        {{ total }} bytes
+      {% endif %}
+    </div>
+  </div>
+  <div class="card" style="display:flex;align-items:center;justify-content:center">
+    <div>
+      <form method="post" action="/queue/flush" style="display:inline"
+            onsubmit="return confirm('Flush entire queue?')">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="secondary">Flush all</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+{# ── Queue entries ── #}
+<div class="card">
+  <h2>Messages</h2>
+  {% if entries %}
+  <table>
+    <thead>
+      <tr><th>ID</th><th>Size</th><th>Arrived</th><th>Sender</th><th>Recipients</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for entry in entries %}
+      <tr>
+        <td style="font-size:0.75rem;font-family:monospace">{{ entry.queue_id }}</td>
+        <td style="font-size:0.8rem">{{ entry.size }}</td>
+        <td style="font-size:0.8rem;white-space:nowrap">{{ entry.arrival_time }}</td>
+        <td style="font-size:0.8rem">{{ entry.sender }}</td>
+        <td style="font-size:0.75rem;max-width:200px;word-break:break-all">
+          {% for rcpt in entry.recipients %}
+            <div>{{ rcpt }}</div>
+          {% endfor %}
+        </td>
+        <td style="text-align:right">
+          <form method="post" action="/queue/del" style="display:inline"
+                onsubmit="return confirm('Delete {{ entry.queue_id }}?')">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="queue_id" value="{{ entry.queue_id }}">
+            <button type="submit" class="danger small">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">Mail queue is empty.</p>
+  {% endif %}
+</div>
+
+{% endblock %}

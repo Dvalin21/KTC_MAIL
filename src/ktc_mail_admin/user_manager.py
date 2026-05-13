@@ -216,8 +216,15 @@ def user_list(dry_run: bool = False) -> int:
     return 0
 
 
-def user_passwd(email: str, dry_run: bool = False) -> int:
-    """Change a user's password."""
+def user_passwd(email: str, password: str | None = None,
+                dry_run: bool = False) -> int:
+    """Change a user's password.
+
+    Args:
+        email: The user's email address.
+        password: New password. If None, prompts interactively.
+        dry_run: If True, only print what would be done.
+    """
     if "@" not in email:
         print(f"error: '{email}' is not a valid email address", file=sys.stderr)
         return 1
@@ -232,16 +239,22 @@ def user_passwd(email: str, dry_run: bool = False) -> int:
                 print(f"dry-run: would change password for '{email}'")
                 new_lines.append(l)
                 continue
-            import getpass
-            pw = getpass.getpass(f"New password for {email}: ")
-            confirm = getpass.getpass("Confirm: ")
-            if pw != confirm:
-                print("error: passwords do not match", file=sys.stderr)
-                return 1
-            if not pw:
-                print("error: password cannot be empty", file=sys.stderr)
-                return 1
-            hash_str = _hash_password(pw)
+            if password is None:
+                import getpass
+                pw = getpass.getpass(f"New password for {email}: ")
+                confirm = getpass.getpass("Confirm: ")
+                if pw != confirm:
+                    print("error: passwords do not match", file=sys.stderr)
+                    return 1
+                if not pw:
+                    print("error: password cannot be empty", file=sys.stderr)
+                    return 1
+                hash_str = _hash_password(pw)
+            else:
+                if not password:
+                    print("error: password cannot be empty", file=sys.stderr)
+                    return 1
+                hash_str = _hash_password(password)
             parsed = _parse_passwd(l)
             if parsed is None:
                 new_lines.append(l)
@@ -285,8 +298,13 @@ def cmd_user(args: argparse.Namespace) -> int:
             kw["password"] = args.password
         kw["quota"] = args.quota
         return handler(**kw)
-    if args.user_cmd in ("del", "passwd"):
+    if args.user_cmd == "del":
         return handler(**common, email=args.email)
+    if args.user_cmd == "passwd":
+        kw = {**common, "email": args.email}
+        if args.password:
+            kw["password"] = args.password
+        return handler(**kw)
     if args.user_cmd in ("list",):
         return handler(**common)
     return 1

@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+
+<h1>Settings</h1>
+
+{% if error %}
+<div class="msg msg-err">{{ error }}</div>
+{% endif %}
+{% if msg %}
+<div class="msg msg-ok">{{ msg }}</div>
+{% endif %}
+
+<div class="card-grid">
+  {# ── Admin info ── #}
+  <div class="card">
+    <h2>Admin Account</h2>
+    <table>
+      <tr><td style="padding-left:0;font-size:0.8rem;color:var(--muted)">Email</td>
+          <td style="padding-left:0">{{ admin_email or '(not set)' }}</td></tr>
+      <tr><td style="padding-left:0;font-size:0.8rem;color:var(--muted)">Password</td>
+          <td style="padding-left:0"><span class="badge badge-ok">configured</span></td></tr>
+    </table>
+  </div>
+
+  {# ── Change password ── #}
+  <div class="card">
+    <h2>Change Password</h2>
+    <form method="post" action="/settings/password" style="margin-top:0.75rem">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="form-row">
+        <label>Current password</label>
+        <input name="current_password" type="password" required>
+      </div>
+      <div class="form-row">
+        <label>New password</label>
+        <input name="new_password" type="password" required minlength="8">
+      </div>
+      <div class="form-row">
+        <label>Confirm new password</label>
+        <input name="confirm_password" type="password" required>
+      </div>
+      <button type="submit">Update password</button>
+    </form>
+  </div>
+
+  {# ── System info ── #}
+  <div class="card">
+    <h2>System</h2>
+    <table>
+      <tr><td style="padding-left:0;font-size:0.8rem;color:var(--muted)">Config dir</td>
+          <td style="padding-left:0;font-size:0.8rem;font-family:monospace">{{ config_dir }}</td></tr>
+      <tr><td style="padding-left:0;font-size:0.8rem;color:var(--muted)">State dir</td>
+          <td style="padding-left:0;font-size:0.8rem;font-family:monospace">{{ state_dir }}</td></tr>
+      {% if profile %}
+      <tr><td style="padding-left:0;font-size:0.8rem;color:var(--muted)">Domain</td>
+          <td style="padding-left:0;font-size:0.8rem">{{ profile.domain }}</td></tr>
+      <tr><td style="padding-left:0;font-size:0.8rem;color:var(--muted)">DNS provider</td>
+          <td style="padding-left:0;font-size:0.8rem">{{ profile.dns_provider or 'manual' }}</td></tr>
+      {% endif %}
+    </table>
+  </div>
+</div>
+
+{% endblock %}
