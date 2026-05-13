@@ -11,7 +11,8 @@ src/ktc_mail_admin/acme_manager.py usr/lib/ktc-mail/
 src/ktc_mail_admin/dns_provider.py usr/lib/ktc-mail/
 src/ktc_mail_admin/ssh_policy.py usr/lib/ktc-mail/
 src/ktc_mail_admin/fail2ban.py usr/lib/ktc-mail/
-src/ktc_mail_admin/backup_manager.py usr/lib/ktc-mail/
+src/ktc_mail_admin/backup_manager.py
+src/ktc_mail_admin/rate_limiter.py usr/lib/ktc-mail/
 
 # ── Jinja2 templates ──────────────────────────────────────────────
 src/ktc_mail_admin/templates/base.html usr/lib/ktc-mail/templates/
@@ -38,6 +39,7 @@ systemd/ktc-mail-acme-renew.timer lib/systemd/system/
 systemd/ktc-mail-acme-renew.service lib/systemd/system/
 systemd/ktc-mail-backup.service lib/systemd/system/
 systemd/ktc-mail-backup.timer lib/systemd/system/
+systemd/ktc-mail-rate-limit.service lib/systemd/system/
 
 # ── Documentation ─────────────────────────────────────────────────
 etc/ktc-mail/config.example.json usr/share/doc/ktc-mail/examples/

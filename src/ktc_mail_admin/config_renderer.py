@@ -130,6 +130,20 @@ def render_postfix_main_cf(profile: SetupProfile) -> str:
         "# to have at least reject_unauth_destination — without it smtpd refuses to start.",
         "smtpd_relay_restrictions = permit_mynetworks, permit_sasl_authenticated, reject_unauth_destination",
         "",
+    ]
+    # Per-user outbound rate limiting via policy daemon (Phase 4)
+    if profile.security.per_user_rate_limit.enabled:
+        port = profile.security.per_user_rate_limit.policy_port
+        lines.extend([
+            "# Per-user rate limiting via check_policy_service",
+            f"smtpd_recipient_restrictions = "
+            f"check_policy_service inet:127.0.0.1:{port}, "
+            f"permit_mynetworks, "
+            f"permit_sasl_authenticated, "
+            f"reject_unauth_destination",
+            "",
+        ])
+    lines.extend([
         "# ── Queue ───────────────────────────────────────────────────",
         "maximal_queue_lifetime = 4d",
         "bounce_queue_lifetime = 4d",

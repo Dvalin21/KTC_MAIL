@@ -374,6 +374,53 @@ class DkimKeyPair:
         return DnsRecord("TXT", name, value, purpose="DKIM signing key")
 
 
+# ── Per-user outbound rate limiting ───────────────────────────────────────
+
+
+@dataclass
+class RateLimitConfig:
+    """Per-user (SASL-authenticated) outbound rate limits.
+
+    Applied by a Postfix policy daemon (rate_limiter.py) that tracks
+    send counts per authenticated user and rejects senders who exceed
+    the configured thresholds.
+
+    These limits prevent a compromised mailbox from sending bulk spam
+    and getting the server blacklisted.  The daemon runs as a systemd
+    service and communicates with Postfix via ``check_policy_service``
+    on localhost.
+
+    Defaults are generous enough for legitimate use but tight enough
+    to catch a spam run within minutes.
+    """
+    enabled: bool = True
+    messages_per_hour: int = 100
+    messages_per_day: int = 1000
+    recipients_per_message: int = 50
+    policy_port: int = 12345
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "messages_per_hour": self.messages_per_hour,
+            "messages_per_day": self.messages_per_day,
+            "recipients_per_message": self.recipients_per_message,
+            "policy_port": self.policy_port,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> RateLimitConfig:
+        if not data:
+            return cls()
+        return cls(
+            enabled=bool(data.get("enabled", True)),
+            messages_per_hour=int(data.get("messages_per_hour", 100)),
+            messages_per_day=int(data.get("messages_per_day", 1000)),
+            recipients_per_message=int(data.get("recipients_per_message", 50)),
+            policy_port=int(data.get("policy_port", 12345)),
+        )
+
+
 # ── Security policy ────────────────────────────────────────────────────────
 
 
@@ -402,6 +449,7 @@ class SecurityPolicy:
     geoip_blocking: bool = True
     postfix_anvil_rates: bool = True
     dnsbl_checking: bool = True
+    per_user_rate_limit: RateLimitConfig = field(default_factory=RateLimitConfig)
 
     # Postfix postscreen
     postscreen_enabled: bool = True
@@ -426,6 +474,7 @@ class SecurityPolicy:
             "fail2ban_enabled": self.fail2ban_enabled,
             "crowdsec_enabled": self.crowdsec_enabled,
             "geoip_blocking": self.geoip_blocking,
+            "per_user_rate_limit": self.per_user_rate_limit.to_dict(),
         }
 
     @classmethod
@@ -440,6 +489,8 @@ class SecurityPolicy:
             fail2ban_enabled=bool(data.get("fail2ban_enabled", True)),
             crowdsec_enabled=bool(data.get("crowdsec_enabled", True)),
             geoip_blocking=bool(data.get("geoip_blocking", True)),
+            per_user_rate_limit=RateLimitConfig.from_dict(
+                data.get("per_user_rate_limit")),
         )
 
 
