@@ -39,6 +39,23 @@ KTC_MAIL_BIN = "/usr/bin/ktc-mail"
 DNS_HOOK = "/usr/lib/ktc-mail/dns_provider.py"  # legacy hook path (keep for compat)
 ACME_HOOK = "/usr/lib/ktc-mail/acme_manager.py"  # legacy hook path (keep for compat)
 
+# Backup paths (Phase 6)
+BACKUP_CONFIG_PATH = CONFIG_DIR / "backup.json"
+BACKUP_STATE_PATH = STATE_DIR / "backup-state.json"
+RESTIC_PASSWORD_PATH = CONFIG_DIR / "restic-password"
+
+# Default backup source paths (mailbox data first — that's the important one)
+BACKUP_DEFAULT_PATHS: tuple[str, ...] = (
+    "/var/mail/",           # mailbox data — the actual emails
+    "/etc/ktc-mail/",       # ktc-mail config, DKIM keys, secrets
+    "/etc/postfix/",        # Postfix configuration
+    "/etc/dovecot/",        # Dovecot configuration
+    "/etc/rspamd/",         # Rspamd configuration
+    "/etc/nginx/",          # Nginx configuration
+    "/var/lib/ktc-mail/",   # ktc-mail state (DNS, TLS, audit)
+    "/etc/letsencrypt/",    # TLS certificates
+)
+
 # Known DNS provider IDs
 PROVIDER_CLOUDFLARE = "cloudflare"
 PROVIDER_NAMEECHEAP = "namecheap"

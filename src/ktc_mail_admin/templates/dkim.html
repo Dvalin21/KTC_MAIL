@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}DKIM Keys{% endblock %}
+{% block content %}
+
+<h1>DKIM Keys</h1>
+
+{% if error %}
+<div class="msg msg-err">{{ error }}</div>
+{% endif %}
+{% if msg %}
+<div class="msg msg-ok">{{ msg }}</div>
+{% endif %}
+
+{% if not profile %}
+<div class="msg msg-err">
+  <strong>Setup not complete.</strong>
+  No setup profile found. Run <code>ktc-mail setup</code> first.
+</div>
+{% else %}
+
+{# ── Existing keys ── #}
+<div class="card" style="margin-bottom:1.5rem">
+  <h2>Existing Keys</h2>
+  {% if keys %}
+  <table>
+    <thead>
+      <tr><th>Selector</th><th>DNS Record (copy to your DNS provider)</th><th>Size</th><th>Modified</th></tr>
+    </thead>
+    <tbody>
+      {% for key in keys %}
+      <tr>
+        <td><strong>{{ key.selector }}</strong></td>
+        <td style="font-size:0.75rem;font-family:monospace;max-width:360px;word-break:break-all;line-height:1.4">{{ key.dns_record }}</td>
+        <td style="font-size:0.8rem">{{ key.size }} bytes</td>
+        <td style="font-size:0.8rem;white-space:nowrap">{{ key.modified|int|datetime_from_ts }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">No DKIM keys generated yet. Generate one below.</p>
+  {% endif %}
+</div>
+
+{# ── Generate new key ── #}
+<div class="card">
+  <h2>Generate New Key</h2>
+  <p style="font-size:0.8rem;color:var(--muted);margin-bottom:0.75rem">
+    Generating a new key overwrites the existing key with the same selector.
+    Update your DNS provider with the new record after generation.
+  </p>
+  <form method="post" action="/dkim/generate" class="form-inline" style="margin-top:0.75rem">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div style="flex:1">
+      <label class="form-row" style="font-size:0.8rem;font-weight:600;margin-bottom:0.25rem">Selector</label>
+      <input name="selector" type="text" value="default" placeholder="e.g. default or 2026-05">
+    </div>
+    <button type="submit" style="margin-bottom:0.25rem">Generate</button>
+  </form>
+</div>
+
+{% endif %}
+{% endblock %}

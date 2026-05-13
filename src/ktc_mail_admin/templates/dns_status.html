@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}DNS Status{% endblock %}
+{% block content %}
+
+<h1>DNS Status</h1>
+
+{% if error %}
+<div class="msg msg-err">{{ error }}</div>
+{% endif %}
+{% if msg %}
+<div class="msg msg-ok">{{ msg }}</div>
+{% endif %}
+
+{% if not profile %}
+<div class="msg msg-err">
+  <strong>Setup not complete.</strong>
+  No setup profile found. Run <code>ktc-mail setup</code> first.
+</div>
+{% else %}
+
+{# ── Summary card ── #}
+<div class="card-grid">
+  <div class="card">
+    <div class="stat-label">Domain</div>
+    <div class="stat-value" style="font-size:1.2rem">{{ profile.domain }}</div>
+  </div>
+  <div class="card">
+    <div class="stat-label">Expected records</div>
+    <div class="stat-value">{{ expected_records|length }}</div>
+  </div>
+  <div class="card">
+    <div class="stat-label">Last synced</div>
+    <div class="stat-value" style="font-size:1rem">
+      {% if dns_state and dns_state.updated_at %}
+        {{ dns_state.updated_at|int|datetime_from_ts }}
+      {% else %}
+        <span class="badge badge-warn">never</span>
+      {% endif %}
+    </div>
+  </div>
+  <div class="card">
+    <div class="stat-label">DNS provider</div>
+    <div class="stat-value" style="font-size:1rem">
+      {% if profile.dns_provider %}{{ profile.dns_provider }}{% else %}<span class="badge badge-warn">not set</span>{% endif %}
+    </div>
+  </div>
+</div>
+
+{# ── Action buttons ── #}
+<div class="btn-row" style="margin-bottom:1.5rem">
+  <form method="post" action="/dns/verify" style="display:inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="secondary">Verify records</button>
+  </form>
+  <form method="post" action="/dns/apply" style="display:inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit">Push records</button>
+  </form>
+</div>
+
+{# ── Expected records table ── #}
+<div class="card" style="margin-bottom:1.5rem">
+  <h2>Expected Records</h2>
+  {% if expected_records %}
+  <table>
+    <thead>
+      <tr><th>Type</th><th>Name</th><th>Value</th><th>TTL</th></tr>
+    </thead>
+    <tbody>
+      {% for rec in expected_records %}
+      <tr>
+        <td><span class="badge badge-ok">{{ rec.type }}</span></td>
+        <td style="font-size:0.8rem;font-family:monospace">{{ rec.name }}</td>
+        <td style="font-size:0.75rem;font-family:monospace;max-width:300px;word-break:break-all">{{ rec.value }}</td>
+        <td style="font-size:0.8rem">{{ rec.ttl }}s</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">No DNS state yet. Run <code>ktc-mail dns apply</code> from the command line or use the Push button above.</p>
+  {% endif %}
+</div>
+
+{% endif %}
+{% endblock %}

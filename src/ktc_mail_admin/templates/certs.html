@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+{% block title %}Certificate{% endblock %}
+{% block content %}
+
+<h1>Certificate</h1>
+
+{% if error %}
+<div class="msg msg-err">{{ error }}</div>
+{% endif %}
+{% if msg %}
+<div class="msg msg-ok">{{ msg }}</div>
+{% endif %}
+
+{% if not profile %}
+<div class="msg msg-err">
+  <strong>Setup not complete.</strong>
+  No setup profile found. Run <code>ktc-mail setup</code> first.
+</div>
+{% else %}
+
+{# ── Summary cards ── #}
+<div class="card-grid">
+  <div class="card">
+    <div class="stat-label">Certificate mode</div>
+    <div class="stat-value" style="font-size:1rem"><span class="badge badge-ok">{{ profile.certificate_mode }}</span></div>
+  </div>
+  <div class="card">
+    <div class="stat-label">Expiry</div>
+    <div class="stat-value" style="font-size:1rem">
+      {% if cert_details.get('end_date') %}
+        {% set days = cert_details.get('expiry_days', -1) %}
+        {% if days == 0 %}
+          <span class="badge badge-err">expires today</span>
+        {% elif days is not none and days < 30 %}
+          <span class="badge badge-warn">{{ cert_details.end_date }}</span>
+        {% else %}
+          {{ cert_details.end_date }}
+        {% endif %}
+        {% if days is not none and days >= 0 %}
+          <span style="font-size:0.75rem;color:var(--muted)">({{ days }} days left)</span>
+        {% endif %}
+      {% else %}
+        <span class="badge badge-unknown">unknown</span>
+      {% endif %}
+    </div>
+  </div>
+  <div class="card">
+    <div class="stat-label">Last renewed</div>
+    <div class="stat-value" style="font-size:1rem">
+      {% if tls_state and tls_state.updated_at %}
+        {{ tls_state.updated_at|int|datetime_from_ts }}
+      {% else %}
+        <span class="badge badge-warn">never</span>
+      {% endif %}
+    </div>
+  </div>
+  <div class="card">
+    <div class="stat-label">Certificate path</div>
+    <div class="stat-value" style="font-size:0.75rem;font-family:monospace">{{ cert_path }}</div>
+  </div>
+</div>
+
+{# ── Renew button ── #}
+<div class="btn-row" style="margin-bottom:1.5rem">
+  <form method="post" action="/certs/renew" style="display:inline"
+        onsubmit="return confirm('Renew certificate now? This may take a moment.')">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit">Renew now</button>
+  </form>
+</div>
+
+{# ── Certificate details ── #}
+<div class="card" style="margin-bottom:1.5rem">
+  <h2>Certificate Details</h2>
+  {% if cert_details %}
+  <table>
+    <tbody>
+      <tr>
+        <td style="padding-left:0;font-size:0.8rem;color:var(--muted);width:120px">Subject</td>
+        <td style="padding-left:0;font-size:0.8rem;font-family:monospace">{{ cert_details.get('subject', '-') }}</td>
+      </tr>
+      <tr>
+        <td style="padding-left:0;font-size:0.8rem;color:var(--muted)">Issuer</td>
+        <td style="padding-left:0;font-size:0.8rem;font-family:monospace">{{ cert_details.get('issuer', '-') }}</td>
+      </tr>
+      <tr>
+        <td style="padding-left:0;font-size:0.8rem;color:var(--muted)">Expiry</td>
+        <td style="padding-left:0;font-size:0.8rem">
+          {{ cert_details.get('end_date', '-') }}
+          {% set days = cert_details.get('expiry_days', -1) %}
+          {% if days is not none and days >= 0 %}
+            <span style="color:var(--muted)">({{ days }} days)</span>
+          {% endif %}
+        </td>
+      </tr>
+      <tr>
+        <td style="padding-left:0;font-size:0.8rem;color:var(--muted)">Fingerprint</td>
+        <td style="padding-left:0;font-size:0.65rem;font-family:monospace">{{ cert_details.get('fingerprint', '-') }}</td>
+      </tr>
+      {% if cert_details.get('sans') %}
+      <tr>
+        <td style="padding-left:0;font-size:0.8rem;color:var(--muted)">SANs</td>
+        <td style="padding-left:0;font-size:0.75rem;font-family:monospace;white-space:pre-wrap">{{ cert_details.sans }}</td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">Certificate file not found at {{ cert_path }}. Issue a certificate first.</p>
+  {% endif %}
+</div>
+
+{# ── TLS State ── #}
+{% if tls_state %}
+<div class="card">
+  <h2>TLS State</h2>
+  <table>
+    <tbody>
+      <tr>
+        <td style="padding-left:0;font-size:0.8rem;color:var(--muted)">Domains</td>
+        <td style="padding-left:0;font-size:0.8rem">{{ tls_state.get('domains', [])|length }} names</td>
+      </tr>
+      <tr>
+        <td style="padding-left:0;font-size:0.8rem;color:var(--muted)">Primary domain</td>
+        <td style="padding-left:0;font-size:0.8rem">{{ tls_state.get('primary_domain', '-') }}</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% endif %}
+{% endblock %}

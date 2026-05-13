@@ -383,6 +383,9 @@ def render_rspamd_worker_conf(profile: SetupProfile) -> str:
 # Written to local.d/worker-proxy.inc — merges with the default
 # rspamd_proxy worker defined in rspamd.conf.
 
+# Enable milter mode — required for Postfix inline spam filtering
+milter = yes;
+
 # Spawn 4 milter workers instead of the default 1
 count = 4;
 
@@ -529,7 +532,7 @@ server {{
     ssl_prefer_server_ciphers on;
 
     location / {{
-        proxy_pass http://127.0.0.1:5085;
+        proxy_pass http://127.0.0.1:8081;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;

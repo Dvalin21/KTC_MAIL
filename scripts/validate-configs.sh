@@ -164,6 +164,55 @@ if [[ -f "${TMPDIR}/autoconfig_thunderbird.xml" ]]; then
     check_field "${f}" "<port>587</port>"               "Thunderbird: Submission port"
 fi
 
+# ── 2b. Phase 4: Firewall and Fail2ban checks ──────────────────────────────
+echo "--- Firewall checks ---"
+
+# Check nftables ruleset generation
+if ${PYTHON} -c "from ktc_mail_admin import firewall_monitor" 2>/dev/null; then
+    ${PYTHON} -c "
+from ktc_mail_admin.config import SecurityPolicy
+from ktc_mail_admin.firewall_monitor import (
+    generate_nftables_ruleset,
+    expected_rules,
+)
+# Generate nftables rules for default ports
+ports = SecurityPolicy().actual_open_ports
+ruleset = generate_nftables_ruleset(ports)
+assert 'policy drop' in ruleset, 'nftables: policy not drop'
+assert 'ct state established,related accept' in ruleset, 'nftables: no ct state rule'
+assert 'iif lo accept' in ruleset or 'iif \"lo\" accept' in ruleset, 'nftables: no loopback rule'
+for p in ports:
+    assert f'tcp dport {p} accept' in ruleset, f'nftables: missing port {p} rule'
+print('  ✅ nftables ruleset: valid (' + str(len(ruleset)) + ' bytes)')
+# Check iptables rules still generate
+irules = expected_rules(ports)
+assert len(irules) == len(ports) + 5, f'iptables: expected {len(ports)+5} rules, got {len(irules)}'
+print('  ✅ iptables rules: ' + str(len(irules)) + ' rules for ' + str(len(ports)) + ' ports')
+" 2>&1 || HAS_ERRORS=1
+else
+    yellow "  ⚠  firewall_monitor not importable — skipping"
+fi
+
+echo "--- Fail2ban checks ---"
+
+if ${PYTHON} -c "from ktc_mail_admin import fail2ban" 2>/dev/null; then
+    ${PYTHON} -c "
+from ktc_mail_admin.fail2ban import render_fail2ban_jails, render_crowdsec_enrollment
+jails = render_fail2ban_jails('test.example.com', 'admin@test.example.com')
+assert '[postfix]' in jails, 'fail2ban: missing postfix jail'
+assert '[dovecot]' in jails, 'fail2ban: missing dovecot jail'
+assert '[rspamd]' in jails, 'fail2ban: missing rspamd jail'
+assert '[recidive]' in jails, 'fail2ban: missing recidive jail'
+assert 'action = nftables-multiport' in jails, 'fail2ban: default action incorrect'
+print('  ✅ fail2ban jails: valid (' + str(len(jails)) + ' bytes)')
+cs = render_crowdsec_enrollment('test.example.com')
+assert 'crowdsecurity/postfix' in cs, 'crowdsec: missing postfix collection'
+print('  ✅ crowdsec enrollment: valid (' + str(len(cs)) + ' bytes)')
+" 2>&1 || HAS_ERRORS=1
+else
+    yellow "  ⚠  fail2ban not importable — skipping"
+fi
+
 echo ""
 
 # ── 3. Tool-based checks (if available) ─────────────────────────────────

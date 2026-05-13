@@ -1,0 +1,24 @@
+[Unit]
+Description=KTC Mail backup (restic)
+Documentation=https://github.com/Dvalin21/KTC_MAIL
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/ktc-mail backup now
+User=root
+Group=root
+# 2 hour timeout for large maildirs
+TimeoutStartSec=7200
+# Restart on failure (max 3 times, 5 min apart)
+Restart=on-failure
+RestartSec=300
+StartLimitBurst=3
+# Security hardening
+NoNewPrivileges=true
+ProtectHome=false
+ProtectSystem=full
+PrivateTmp=true
+# Standard output goes to journal
+StandardOutput=journal
+StandardError=journal

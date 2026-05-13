@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>KTC Mail · Login</title>
+  <style>
+:root {
+  --brand: #5b67f1;
+  --ink: #1f2a44;
+  --bg: #f1f5f9;
+  --card: #ffffff;
+  --border: #e2e8f0;
+  --muted: #64748b;
+  --red: #ef4444;
+}
+* { box-sizing: border-box; margin: 0; }
+body {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.login-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 1.25rem;
+  padding: 2.5rem;
+  width: 100%;
+  max-width: 400px;
+  box-shadow: 0 4px 6px rgba(0,0,0,0.04);
+}
+.logo {
+  text-align: center;
+  font-size: 1.5rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  margin-bottom: 0.25rem;
+}
+.logo span { color: var(--brand); }
+.subtitle {
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.875rem;
+  margin-bottom: 2rem;
+}
+h1 { font-size: 1.25rem; font-weight: 700; margin-bottom: 1.25rem; text-align: center; }
+label { display: block; font-size: 0.8rem; font-weight: 600; margin-bottom: 0.3rem; margin-top: 1rem; }
+input {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  font: inherit;
+  font-size: 0.9rem;
+  transition: border-color 0.15s;
+}
+input:focus {
+  outline: none;
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px rgba(91,103,241,0.12);
+}
+button {
+  width: 100%;
+  padding: 0.85rem;
+  border: 0;
+  border-radius: 0.75rem;
+  font: inherit;
+  font-size: 1rem;
+  font-weight: 700;
+  color: white;
+  background: linear-gradient(135deg, var(--brand), #8b5cf6);
+  cursor: pointer;
+  margin-top: 1.5rem;
+  transition: opacity 0.15s;
+}
+button:hover { opacity: 0.9; }
+.error {
+  background: #fef2f2;
+  border-left: 4px solid var(--red);
+  color: #991b1b;
+  padding: 0.75rem 1rem;
+  border-radius: 0.5rem;
+  font-size: 0.85rem;
+  margin-bottom: 1rem;
+}
+  </style>
+</head>
+<body>
+  <div class="login-card">
+    <div class="logo">KTC<span>Mail</span></div>
+    <div class="subtitle">Mail server administration</div>
+    <h1>Sign in</h1>
+    {% if error %}
+    <div class="error">{{ error }}</div>
+    {% endif %}
+    <form method="post" action="/login">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label for="email">Admin email</label>
+      <input id="email" name="email" type="email" placeholder="admin@example.com" required autofocus>
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" placeholder="••••••••" required>
+      <button type="submit">Sign in →</button>
+    </form>
+  </div>
+</body>
+</html>

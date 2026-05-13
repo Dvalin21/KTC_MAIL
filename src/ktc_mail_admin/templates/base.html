@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>KTC Mail · {% block title %}Admin{% endblock %}</title>
+  <style>
+:root {
+  color-scheme: light;
+  --ink: #1f2a44;
+  --brand: #5b67f1;
+  --warm: #f59e0b;
+  --ok: #10b981;
+  --red: #ef4444;
+  --bg: #f1f5f9;
+  --card: #ffffff;
+  --border: #e2e8f0;
+  --muted: #64748b;
+  --nav-bg: #1e293b;
+  --nav-text: #94a3b8;
+  --nav-active: #ffffff;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+  min-height: 100vh;
+  display: flex;
+}
+nav {
+  width: 240px;
+  background: var(--nav-bg);
+  color: var(--nav-text);
+  padding: 1.5rem 0;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+.nav-brand {
+  padding: 0 1.25rem 1.5rem;
+  font-size: 1.1rem;
+  font-weight: 800;
+  color: var(--nav-active);
+  letter-spacing: -0.02em;
+  border-bottom: 1px solid #334155;
+}
+.nav-brand span { color: var(--brand); }
+.nav-section { padding: 1rem 0; }
+.nav-link {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.625rem 1.25rem;
+  color: var(--nav-text);
+  text-decoration: none;
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: all 0.1s;
+}
+.nav-link:hover { color: var(--nav-active); background: #334155; }
+.nav-link.active { color: var(--nav-active); background: var(--brand); }
+.nav-footer { margin-top: auto; padding: 1rem 1.25rem 0; border-top: 1px solid #334155; }
+.nav-footer .nav-link { padding: 0.5rem 0; font-size: 0.8rem; }
+main {
+  flex: 1;
+  padding: 2rem;
+  max-width: 1200px;
+  width: 100%;
+}
+h1 { font-size: 1.5rem; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 1.5rem; }
+h2 { font-size: 1.1rem; font-weight: 700; margin-bottom: 0.75rem; }
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  padding: 1.25rem;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+}
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+.stat-value { font-size: 1.75rem; font-weight: 800; }
+.stat-label { font-size: 0.8rem; color: var(--muted); margin-top: 0.25rem; }
+.badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.badge-ok { background: #d1fae5; color: #065f46; }
+.badge-warn { background: #fef3c7; color: #92400e; }
+.badge-err { background: #fee2e2; color: #991b1b; }
+.badge-unknown { background: #f1f5f9; color: #64748b; }
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; padding: 0.625rem 0.75rem; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); border-bottom: 2px solid var(--border); }
+td { padding: 0.625rem 0.75rem; border-bottom: 1px solid var(--border); font-size: 0.875rem; }
+tr:hover td { background: #f8fafc; }
+input, select {
+  width: 100%;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  font: inherit;
+  font-size: 0.875rem;
+  background: var(--card);
+}
+input:focus, select:focus {
+  outline: none;
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px rgba(91,103,241,0.12);
+}
+button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  padding: 0.5rem 1rem;
+  border: 0;
+  border-radius: 0.5rem;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: white;
+  background: var(--brand);
+  cursor: pointer;
+  transition: opacity 0.1s;
+}
+button:hover { opacity: 0.85; }
+button.secondary { background: var(--card); color: var(--ink); border: 1px solid var(--border); }
+button.danger { background: var(--red); }
+button.success { background: var(--ok); }
+button.small { padding: 0.3rem 0.6rem; font-size: 0.75rem; }
+.btn-row { display: flex; gap: 0.5rem; align-items: center; }
+.form-row { margin-bottom: 0.75rem; }
+.form-row label { display: block; font-size: 0.8rem; font-weight: 600; margin-bottom: 0.25rem; }
+.form-inline { display: flex; gap: 0.5rem; align-items: end; }
+.form-inline input { flex: 1; }
+.msg { padding: 0.625rem 0.75rem; border-radius: 0.5rem; font-size: 0.8rem; margin-bottom: 1rem; }
+.msg-ok { background: #d1fae5; color: #065f46; border: 1px solid #a7f3d0; }
+.msg-err { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
+pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.8rem; background: #0f172a; color: #e2e8f0; padding: 1rem; border-radius: 0.5rem; overflow-x: auto; }
+.empty { color: var(--muted); font-style: italic; padding: 1rem 0; }
+@media (max-width: 768px) {
+  body { flex-direction: column; }
+  nav { width: 100%; padding: 0.75rem; flex-direction: row; overflow-x: auto; }
+  .nav-brand { display: none; }
+  .nav-section { display: flex; gap: 0.25rem; }
+  .nav-link { padding: 0.5rem 0.75rem; font-size: 0.8rem; white-space: nowrap; }
+  .nav-footer { display: none; }
+  main { padding: 1rem; }
+  .card-grid { grid-template-columns: 1fr; }
+}
+  </style>
+</head>
+<body>
+<nav>
+  <div class="nav-brand">KTC<span>Mail</span></div>
+  <div class="nav-section">
+    <a class="nav-link{% if request.url.path == '/' %} active{% endif %}" href="/">Dashboard</a>
+    <a class="nav-link{% if request.url.path == '/users' %} active{% endif %}" href="/users">Users</a>
+    <a class="nav-link{% if request.url.path == '/dkim' %} active{% endif %}" href="/dkim">DKIM</a>
+    <a class="nav-link{% if request.url.path == '/logs' %} active{% endif %}" href="/logs">Logs</a>
+    <a class="nav-link{% if request.url.path == '/dns' %} active{% endif %}" href="/dns">DNS</a>
+    <a class="nav-link{% if request.url.path == '/queue' %} active{% endif %}" href="/queue">Queue</a>
+    <a class="nav-link{% if request.url.path == '/certs' %} active{% endif %}" href="/certs">Certs</a>
+    <a class="nav-link{% if request.url.path == '/backup' %} active{% endif %}" href="/backup">Backup</a>
+  </div>
+  <div class="nav-footer">
+    <a class="nav-link{% if request.url.path == '/settings' %} active{% endif %}" href="/settings">Settings</a>
+    <a class="nav-link" href="/logout">Logout</a>
+  </div>
+</nav>
+<main>
+  {% block content %}{% endblock %}
+</main>
+</body>
+</html>

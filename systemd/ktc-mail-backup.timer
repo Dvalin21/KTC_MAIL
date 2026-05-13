@@ -1,0 +1,12 @@
+[Unit]
+Description=KTC Mail daily backup timer
+Documentation=https://github.com/Dvalin21/KTC_MAIL
+
+[Timer]
+# Daily at 03:00 (system local time)
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=1800
+
+[Install]
+WantedBy=timers.target

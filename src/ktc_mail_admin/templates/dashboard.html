@@ -1,0 +1,153 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+
+<h1>Dashboard</h1>
+
+{% if not profile %}
+<div class="msg msg-err">
+  <strong>Setup not complete.</strong>
+  No setup profile found at /etc/ktc-mail/setup.json.
+  Run <code>ktc-mail setup</code> first.
+</div>
+{% else %}
+
+{# ── Status cards ── #}
+<div class="card-grid">
+  <div class="card">
+    <div class="stat-label">Domain</div>
+    <div class="stat-value" style="font-size:1.2rem">{{ profile.domain }}</div>
+  </div>
+  <div class="card">
+    <div class="stat-label">Mail hostname</div>
+    <div class="stat-value" style="font-size:1.2rem">{{ profile.hostname }}</div>
+  </div>
+  <div class="card">
+    <div class="stat-label">Mail users</div>
+    <div class="stat-value">{{ user_count }}</div>
+  </div>
+  <div class="card">
+    <div class="stat-label">Queue depth</div>
+    <div class="stat-value">
+      {% if queue_depth >= 0 %}{{ queue_depth }}{% else %}<span class="badge badge-err">N/A</span>{% endif %}
+    </div>
+  </div>
+</div>
+
+{# ── Service status ── #}
+<div class="card" style="margin-bottom:1.5rem">
+  <h2>Services</h2>
+  <table>
+    <thead>
+      <tr><th>Service</th><th>Status</th><th>Port</th></tr>
+    </thead>
+    <tbody>
+      {% for svc, status in services.items() %}
+      <tr>
+        <td><strong>{{ svc }}</strong></td>
+        <td>
+          {% if status == 'active' %}
+            <span class="badge badge-ok">● active</span>
+          {% elif status == 'inactive' or status == 'dead' %}
+            <span class="badge badge-err">● {{ status }}</span>
+          {% elif status == 'unknown' %}
+            <span class="badge badge-unknown">unknown</span>
+          {% else %}
+            <span class="badge badge-warn">{{ status }}</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if svc == 'postfix' %}25/587/465
+          {% elif svc == 'dovecot' %}993
+          {% elif svc == 'rspamd' %}11332
+          {% elif svc == 'nginx' %}80/443
+          {% elif svc == 'redis-server' %}6379
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card-grid">
+  {# ── Certificate ── #}
+  <div class="card">
+    <h2>Certificate</h2>
+    {% if cert_info %}
+    <table>
+      <tr><td style="padding-left:0;font-size:0.8rem;color:var(--muted)">Mode</td><td style="padding-left:0"><span class="badge badge-ok">{{ profile.certificate_mode }}</span></td></tr>
+      <tr><td style="padding-left:0;font-size:0.8rem;color:var(--muted)">Domains</td><td style="padding-left:0;font-size:0.8rem">{{ cert_info.domains|length }} names</td></tr>
+      <tr><td style="padding-left:0;font-size:0.8rem;color:var(--muted)">Last updated</td><td style="padding-left:0;font-size:0.8rem">
+        {% if cert_info.updated_at %}
+          {{ cert_info.updated_at|int|datetime_from_ts }}
+        {% else %}never{% endif %}
+      </td></tr>
+    </table>
+    {% else %}
+    <p class="empty">No certificate state. Run <code>ktc-mail acme issue</code>.</p>
+    {% endif %}
+  </div>
+
+  {# ── DNS records ── #}
+  <div class="card">
+    <h2>DNS</h2>
+    {% if dns_info %}
+    <table>
+      <tr><td style="padding-left:0;font-size:0.8rem;color:var(--muted)">Records</td><td style="padding-left:0">{{ dns_info.record_count }}</td></tr>
+      <tr><td style="padding-left:0;font-size:0.8rem;color:var(--muted)">Last synced</td><td style="padding-left:0;font-size:0.8rem">
+        {% if dns_info.updated_at %}
+          {{ dns_info.updated_at|int|datetime_from_ts }}
+        {% else %}never{% endif %}
+      </td></tr>
+      <tr><td style="padding-left:0;font-size:0.8rem;color:var(--muted)">State hash</td><td style="padding-left:0;font-size:0.65rem;font-family:monospace">{{ dns_info.hash[:16] }}…</td></tr>
+    </table>
+    {% else %}
+    <p class="empty">No DNS state. Run <code>ktc-mail dns apply</code>.</p>
+    {% endif %}
+  </div>
+
+  {# ── Setup info ── #}
+  <div class="card">
+    <h2>Setup</h2>
+    <table>
+      <tr><td style="padding-left:0;font-size:0.8rem;color:var(--muted)">Admin email</td><td style="padding-left:0">{{ admin_email }}</td></tr>
+      <tr><td style="padding-left:0;font-size:0.8rem;color:var(--muted)">Certificate mode</td><td style="padding-left:0">{{ profile.certificate_mode }}</td></tr>
+      <tr><td style="padding-left:0;font-size:0.8rem;color:var(--muted)">SSH key-only</td><td style="padding-left:0">
+        {% if profile.security.ssh_key_only %}
+          <span class="badge badge-ok">yes</span>
+        {% else %}
+          <span class="badge badge-warn">no</span>
+        {% endif %}
+      </td></tr>
+      <tr><td style="padding-left:0;font-size:0.8rem;color:var(--muted)">Open ports</td><td style="padding-left:0;font-size:0.8rem">{{ profile.security.actual_open_ports|join(', ') }}</td></tr>
+    </table>
+  </div>
+
+  {# ── Backup status ── #}
+  <div class="card">
+    <h2>Backup</h2>
+    <table>
+      <tr><td style="padding-left:0;font-size:0.8rem;color:var(--muted)">Status</td><td style="padding-left:0">
+        {% if backup_configured %}
+          <span class="badge badge-ok">configured</span>
+        {% else %}
+          <span class="badge badge-err">not configured</span>
+        {% endif %}
+      </td></tr>
+      <tr><td style="padding-left:0;font-size:0.8rem;color:var(--muted)">Last backup</td><td style="padding-left:0;font-size:0.8rem">
+        {% if backup_last_success %}
+          {{ backup_last_success|int|datetime_from_ts }}
+        {% else %}never{% endif %}
+      </td></tr>
+      <tr><td style="padding-left:0;font-size:0.8rem;color:var(--muted)">Snapshot</td><td style="padding-left:0;font-size:0.65rem;font-family:monospace">
+        {% if backup_last_snapshot %}
+          {{ backup_last_snapshot[:16] }}…
+        {% else %}—{% endif %}
+      </td></tr>
+    </table>
+  </div>
+</div>
+
+{% endif %}
+{% endblock %}

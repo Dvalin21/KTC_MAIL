@@ -158,6 +158,8 @@ def cmd_firewall(args: argparse.Namespace) -> int:
     sys.argv = ["firewall_monitor.py"]
     if args.enforce:
         sys.argv.append("--enforce")
+    if args.backend:
+        sys.argv.extend(["--backend", args.backend])
     sys.argv.extend(["--config", str(args.config)])
     sys.argv.extend(["--ipv4-bin", args.ipv4_bin])
     sys.argv.extend(["--ipv6-bin", args.ipv6_bin])
@@ -197,6 +199,24 @@ def cmd_user(args: argparse.Namespace) -> int:
     """Mail user account management."""
     from .user_manager import cmd_user as dispatch
     return dispatch(args)
+
+
+def cmd_admin(args: argparse.Namespace) -> int:
+    """Admin web interface management."""
+    from .admin_server import dispatch as admin_dispatch
+    return admin_dispatch(args)
+
+
+def cmd_fail2ban(args: argparse.Namespace) -> int:
+    """Fail2ban jail management."""
+    from .fail2ban import dispatch as f2b_dispatch
+    return f2b_dispatch(args)
+
+
+def cmd_backup(args: argparse.Namespace) -> int:
+    """Backup management (restic)."""
+    from .backup_manager import dispatch as backup_dispatch
+    return backup_dispatch(args)
 
 
 def cmd_config(args: argparse.Namespace) -> int:
@@ -259,6 +279,9 @@ def main() -> int:
     # ── firewall ───────────────────────────────────────────────────────
     p_fw = sub.add_parser("firewall", help="Firewall policy management")
     p_fw.add_argument("--enforce", action="store_true")
+    p_fw.add_argument("--backend", choices=("iptables", "nftables", "auto"),
+                      default="auto",
+                      help="Firewall backend (default: auto-detect)")
     p_fw.add_argument("--ipv4-bin", default="iptables")
     p_fw.add_argument("--ipv6-bin", default="ip6tables")
 
@@ -303,6 +326,18 @@ def main() -> int:
     p_user.add_argument("--quota", default="1G",
                         help="Mailbox quota (default: 1G)")
 
+    # ── admin ──────────────────────────────────────────────────────────
+    from .admin_server import add_subparser as add_admin_subparser
+    add_admin_subparser(sub)
+
+    # ── fail2ban ───────────────────────────────────────────────────────
+    from .fail2ban import add_subparser as add_f2b_subparser
+    add_f2b_subparser(sub)
+
+    # ── backup ─────────────────────────────────────────────────────────
+    from .backup_manager import add_subparser as add_backup_subparser
+    add_backup_subparser(sub)
+
     args = parser.parse_args()
 
     dispatch = {
@@ -314,6 +349,9 @@ def main() -> int:
         "config": cmd_config,
         "dkim": cmd_dkim,
         "user": cmd_user,
+        "admin": cmd_admin,
+        "fail2ban": cmd_fail2ban,
+        "backup": cmd_backup,
     }
 
     handler = dispatch.get(args.command)
