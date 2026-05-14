@@ -939,6 +939,125 @@ max_age: 604800
 """
 
 
+# ── Validation ──────────────────────────────────────────────────────────────
+
+
+def validate(profile: SetupProfile, dest: Path = Path("/etc")) -> int:
+    """Render and verify every config against real tools.
+
+    Writes configs to a temp directory, then runs (where available):
+      - ``postfix check``
+      - ``nginx -t``
+
+    Returns 0 if all available validators pass, 1 if any fail.
+    Prints results to stderr.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="ktc-mail-validate-") as tmpdir:
+        tmp = Path(tmpdir)
+        rendered = render_all(profile)
+
+        # Write configs to temp dir in the same structure they'd have under /etc
+        postfix_dir = tmp / "etc" / "postfix"
+        nginx_dir = tmp / "etc" / "nginx"
+        for relpath, content in rendered.items():
+            parts = relpath.split("/")
+            if len(parts) > 1:
+                # e.g. "postfix_main.cf" → no subdir; "nginx/webmail.conf" → subdir
+                pass
+            # Map rendered keys to temp paths
+            target = None
+            if relpath == "postfix_main.cf":
+                postfix_dir.mkdir(parents=True, exist_ok=True)
+                target = postfix_dir / "main.cf"
+            elif relpath == "postfix_master.cf":
+                postfix_dir.mkdir(parents=True, exist_ok=True)
+                target = postfix_dir / "master.cf"
+            elif relpath.startswith("nginx_"):
+                nginx_dir.mkdir(parents=True, exist_ok=True)
+                base = relpath.removeprefix("nginx_")
+                target = nginx_dir / base
+            elif relpath == "dovecot_dovecot.conf":
+                dovecot_dir = tmp / "etc" / "dovecot"
+                dovecot_dir.mkdir(parents=True, exist_ok=True)
+                target = dovecot_dir / "dovecot.conf"
+
+            if target:
+                target.write_text(content, encoding="utf-8")
+
+        errors = 0
+
+        # ── postfix check ────────────────────────────────────────────────
+        if _tool_available("postfix"):
+            # postfix check reads config from MAIL_CONFIG or the
+            # postfix -c flag.  We need a minimal postfix directory.
+            from subprocess import run as _sprun
+            env = {**os.environ, "MAIL_CONFIG": str(postfix_dir)}
+            result = _sprun(
+                ["postfix", "check"],
+                env=env, capture_output=True, text=True, timeout=15,
+            )
+            if result.returncode == 0:
+                print("  ✅ postfix check: config syntax valid", file=sys.stderr)
+            else:
+                print(f"  ❌ postfix check failed:\n{result.stderr.strip()}",
+                      file=sys.stderr)
+                errors += 1
+        else:
+            print("  ⚠  postfix not installed — skipping binary check", file=sys.stderr)
+
+        # ── nginx -t ─────────────────────────────────────────────────────
+        if _tool_available("nginx"):
+            from subprocess import run as _sprun
+            # nginx -t with -c pointing to our temp config
+            nginx_conf = nginx_dir / "webmail.conf"
+            if nginx_conf.exists():
+                result = _sprun(
+                    ["nginx", "-t", "-c", str(nginx_conf),
+                     "-p", str(tmp / "etc" / "nginx")],
+                    capture_output=True, text=True, timeout=15,
+                )
+                if result.returncode == 0:
+                    print("  ✅ nginx -t: config syntax valid", file=sys.stderr)
+                else:
+                    print(f"  ❌ nginx -t failed:\n{result.stderr.strip()}",
+                          file=sys.stderr)
+                    errors += 1
+            else:
+                print("  ⚠  nginx config not rendered — skipping", file=sys.stderr)
+        else:
+            print("  ⚠  nginx not installed — skipping binary check", file=sys.stderr)
+
+        # ── Dovecot config parse ─────────────────────────────────────────
+        # dovecot -n reads from /etc/dovecot by default.  The -c flag
+        # exists but requires the full directory structure.  Fall back
+        # to static validation of the rendered config content.
+        dovecot_conf = tmp / "etc" / "dovecot" / "dovecot.conf"
+        if dovecot_conf.exists():
+            content = dovecot_conf.read_text(encoding="utf-8")
+            checks = [
+                ("ssl = required", "TLS required"),
+                ("mail_location = maildir", "Maildir storage"),
+                ("service lmtp", "LMTP service"),
+            ]
+            for substr, label in checks:
+                if substr in content:
+                    print(f"  ✅ dovecot: {label}", file=sys.stderr)
+                else:
+                    print(f"  ❌ dovecot: missing '{label}'", file=sys.stderr)
+                    errors += 1
+        else:
+            print("  ⚠  dovecot config not rendered — skipping", file=sys.stderr)
+
+    return 1 if errors else 0
+
+
+def _tool_available(name: str) -> bool:
+    from subprocess import run as _sprun
+    return _sprun(["which", name], capture_output=True).returncode == 0
+
+
 # ── CLI entry point ──────────────────────────────────────────────────────
 
 
@@ -948,8 +1067,8 @@ def main() -> int:
     )
     parser.add_argument(
         "command",
-        choices=("render", "write"),
-        help="render=print to stdout, write=deploy to /etc",
+        choices=("render", "write", "validate"),
+        help="render=print to stdout, write=deploy to /etc, validate=check with real tools",
     )
     parser.add_argument("--config", type=Path, default=SETUP_PATH)
     parser.add_argument("--dest", type=Path, default=Path("/etc"))
@@ -995,6 +1114,9 @@ def main() -> int:
             for relpath, path in sorted(written.items()):
                 print(f"  {path}")
             return 0
+
+        if args.command == "validate":
+            return validate(profile, dest=args.dest)
 
         return 1
 

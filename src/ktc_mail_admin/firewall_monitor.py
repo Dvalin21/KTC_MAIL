@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
-"""KTC Mail firewall policy monitor.
+"""KTC Mail firewall policy monitor — nftables only.
 
-Reads the setup profile's open_ports, verifies the KTC-MAIL-IN
-iptables/ip6tables chain has the expected rules in the right order,
-and reports drift.
+Reads the setup profile's open_ports, verifies the ``inet ktc_mail``
+nftables table has the expected rules, and reports drift.
 
-The enforce command recreates the chain from scratch.
-This is deliberately destructive — it's only safe to run when you
-KNOW nothing else manages iptables on this host.
+One ruleset handles both IPv4 and IPv6 via the ``inet`` address family.
+The chain default policy is ``drop`` — anything not explicitly allowed
+is rejected.
 
-Default policy: DROP all inbound. Only these ports are opened:
+Default allowed ports:
   - 22/tcp  (SSH)
   - 25/tcp  (SMTP)
   - 443/tcp (HTTPS, webmail, admin)
@@ -17,6 +16,10 @@ Default policy: DROP all inbound. Only these ports are opened:
   - 993/tcp (IMAPS)
   - 80/tcp  (only if HTTP-01 cert mode)
   - 4190/tcp (ManageSieve, only if enabled)
+
+nftables has been the default firewall on Debian since 10/Buster (2019)
+and Ubuntu since 20.04 (2020).  The iptables backend was removed in
+Phase 8 — there is no fallback.
 
 See also: ssh_policy.py for SSH-adjacent hardening.
 """
@@ -38,7 +41,9 @@ from .config import (
     read_json,
 )
 
-KTC_CHAIN = "KTC-MAIL-IN"
+NFT_TABLE = "inet ktc_mail"
+NFT_CHAIN = "INPUT"
+NFT_RULESET_PATH = Path("/etc/nftables/ktc-mail.conf")
 DEFAULT_TCP_PORTS = (22, 25, 443, 587, 993)
 
 
@@ -48,8 +53,8 @@ DEFAULT_TCP_PORTS = (22, 25, 443, 587, 993)
 @dataclass(frozen=True)
 class Finding:
     """A single firewall policy violation."""
-    table: str  # "iptables" or "ip6tables"
-    message: str
+    source: str = "nftables"
+    message: str = ""
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -77,236 +82,98 @@ def load_policy(config_path: Path) -> SecurityPolicy:
         return SecurityPolicy()
 
 
-# ── Expected rules (iptables) ───────────────────────────────────────────────
+def _nft_available() -> bool:
+    """Return True if the nft binary is on $PATH."""
+    return _run(["which", "nft"]).returncode == 0
 
 
-def expected_rules(ports: list[int]) -> list[str]:
-    """Generate the list of expected iptables rules.
+def _chain_exists() -> bool:
+    """Check whether our nftables table + chain already exist."""
+    return _run(["nft", "list", "chain", NFT_TABLE, NFT_CHAIN]).returncode == 0
 
-    These must be in the exact ORDER expected (chain create, input
-    jump, conntrack, loopback, port accepts, default DROP).
 
-    Returns them as they would appear in `iptables -S` output.
+def _create_chain() -> None:
+    """Create the nftables table and INPUT chain from scratch.
+
+    Idempotent: safe to call if the table already exists (``nft add
+    table`` is a no-op for existing tables, and ``nft create chain``
+    will fail harmlessly if the chain already exists — but we only
+    call this when ``_chain_exists()`` returned False).
     """
-    rules: list[str] = []
-    rules.append(f"-N {KTC_CHAIN}")
-    rules.append(f"-A INPUT -j {KTC_CHAIN}")
-    rules.append(
-        f"-A {KTC_CHAIN} -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"
-    )
-    rules.append(f"-A {KTC_CHAIN} -i lo -j ACCEPT")
-    for port in sorted(ports):
-        rules.append(
-            f"-A {KTC_CHAIN} -p tcp -m tcp --dport {port} -j ACCEPT"
-        )
-    rules.append(f"-A {KTC_CHAIN} -j DROP")
-    return rules
+    _run(["nft", "add", "table", "inet", NFT_TABLE])
+    _run(["nft", "add", "chain", "inet", NFT_TABLE, NFT_CHAIN,
+          "{", "type", "filter", "hook", "input",
+          "priority", "0;", "policy", "drop;", "}"])
 
 
-# ── Expected rules (nftables) ───────────────────────────────────────────────
-
-NFT_TABLE = "inet ktc_mail"
-NFT_CHAIN = "INPUT"
-NFT_RULESET_PATH = Path("/etc/nftables/ktc-mail.conf")
+# ── Ruleset generation ──────────────────────────────────────────────────────
 
 
-def generate_nftables_ruleset(ports: list[int],
-                               include_flush: bool = True) -> str:
-    """Generate a complete nftables ruleset for the KTC mail server.
+def generate_ruleset(ports: list[int]) -> str:
+    """Generate a complete nftables ruleset.
 
-    Uses the `inet` family so one ruleset handles both IPv4 and IPv6.
-    The chain policy is ``drop`` — anything not explicitly allowed is
-    rejected by default.
+    The output is a self-contained ``nft -f`` script that:
+      1. Ensures the table exists (idempotent ``add table``)
+      2. Ensures the chain exists with drop policy
+      3. Flushes stale rules from the chain
+      4. Adds the current port rules
 
-    If *include_flush* is True (default), the output includes a
-    ``flush chain`` command before the table declaration.  This makes
-    ``nft -f`` atomic: old rules are cleared and new rules installed in
-    one transaction.  Set to False for first-run when the chain doesn't
-    exist yet.
+    ``nft -f`` applies the whole file atomically — there is no window
+    where the chain is empty.
     """
-    port_accepts = [
-        f"        tcp dport {port} accept"
-        for port in sorted(ports)
-    ]
-    port_block = "\n".join(port_accepts)
-
-    flush_line = (
-        f"flush chain {NFT_TABLE} {NFT_CHAIN}\n\n"
-        if include_flush else ""
-    )
+    port_set = ", ".join(str(p) for p in sorted(ports))
 
     return f"""#!/usr/sbin/nft -f
 # KTC Mail — nftables ruleset
 # Generated by ktc-mail firewall. DO NOT EDIT MANUALLY.
+# {NFT_TABLE} / {NFT_CHAIN}
 
-{flush_line}table {NFT_TABLE} {{
-    chain {NFT_CHAIN} {{
-        type filter hook input priority 0; policy drop;
+add table {NFT_TABLE}
+add chain {NFT_TABLE} {NFT_CHAIN} {{ type filter hook input priority 0; policy drop; }}
+flush chain {NFT_TABLE} {NFT_CHAIN}
 
-        # Allow established connections
-        ct state established,related accept
+# Allow established connections
+add rule {NFT_TABLE} {NFT_CHAIN} ct state established,related accept
 
-        # Allow loopback
-        iif lo accept
+# Allow loopback
+add rule {NFT_TABLE} {NFT_CHAIN} iif lo accept
 
-        # Allowed TCP ports
-{port_block}
-    }}
-}}
+# Allowed TCP ports
+add rule {NFT_TABLE} {NFT_CHAIN} tcp dport {{ {port_set} }} accept
 """
-
-
-def inspect_nftables(required_ports: list[int]) -> list[Finding]:
-    """Compare live nftables rules against expected rules.
-
-    Reads the current `inet ktc_mail` table via `nft list chain`
-    and checks every expected rule exists. Returns a list of Findings
-    for missing rules.
-    """
-    findings: list[Finding] = []
-
-    # Check if nft is available at all
-    which = _run(["which", "nft"])
-    if which.returncode != 0:
-        return [Finding("nftables", "nft binary not found")]
-
-    # Try to list our chain
-    result = _run(["nft", "list", "chain", NFT_TABLE, NFT_CHAIN])
-    if result.returncode != 0:
-        # Chain doesn't exist yet — everything is missing
-        return [Finding("nftables", f"chain {NFT_TABLE} {NFT_CHAIN} does not exist")]
-
-    rules_output = result.stdout
-
-    # Check ct state established/related
-    if "ct state established,related accept" not in rules_output:
-        findings.append(Finding("nftables", "missing: ct state established,related accept"))
-    # nft may quote interface names: "lo" vs lo
-    if "iif lo accept" not in rules_output and 'iif "lo" accept' not in rules_output:
-        findings.append(Finding("nftables", "missing: iif lo accept"))
-
-    for port in sorted(required_ports):
-        if f"tcp dport {port} accept" not in rules_output:
-            findings.append(Finding("nftables", f"missing: tcp dport {port} accept"))
-
-    # Check policy is drop
-    if "policy drop" not in rules_output:
-        findings.append(Finding("nftables", "chain policy is not drop"))
-
-    return findings
-
-
-def enforce_nftables(required_ports: list[int]) -> None:
-    """Apply nftables ruleset atomically — no table-delete race window.
-
-    Writes a self-contained ``nft -f`` ruleset that flushes the chain
-    and re-adds all rules in a single atomic transaction.  First-run
-    creates the table and chain explicitly before applying (the flush
-    would otherwise abort the transaction when no chain exists).
-
-    This is safe to run over SSH: there is no window where firewall
-    rules are missing (unlike the old delete-table-then-apply pattern).
-    """
-    ports = sorted(required_ports)
-    ruleset = generate_nftables_ruleset(ports, include_flush=True)
-
-    # Write ruleset atomically to a well-known path
-    NFT_RULESET_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = NFT_RULESET_PATH.with_suffix(".tmp")
-    tmp.write_text(ruleset, encoding="utf-8")
-    tmp.chmod(0o600)
-    tmp.rename(NFT_RULESET_PATH)
-
-    # Try atomic apply: flush chain + redeclare table in one transaction.
-    # On first run the flush will fail (chain doesn't exist) and roll back;
-    # we catch that below and retry without the flush.
-    result = _run(["nft", "-f", str(NFT_RULESET_PATH)])
-
-    if result.returncode != 0:
-        # First-run path: table/chain don't exist yet.
-        _run(["nft", "add", "table", "inet", NFT_TABLE])
-        _run(["nft", "add", "chain", "inet", NFT_TABLE, NFT_CHAIN,
-              "{", "type", "filter", "hook", "input",
-              "priority", "0;", "policy", "drop;", "}"])
-
-        # Retry without the flush command (table+chain exist, rules just need adding)
-        ruleset2 = generate_nftables_ruleset(ports, include_flush=False)
-        tmp2 = NFT_RULESET_PATH.with_suffix(".apply")
-        tmp2.write_text(ruleset2, encoding="utf-8")
-        result = _run(["nft", "-f", str(tmp2)])
-        tmp2.unlink(missing_ok=True)
-
-    if result.returncode != 0:
-        print(f"nftables: error applying ruleset: {result.stderr.strip()}",
-              file=sys.stderr)
-        return
-
-    # Count rules for confirmation
-    result = _run(["nft", "list", "chain", NFT_TABLE, NFT_CHAIN])
-    rule_count = len([l for l in result.stdout.splitlines()
-                      if l.strip() and not l.strip().startswith("#")
-                      and not l.strip().startswith("table")
-                      and not l.strip().startswith("chain")
-                      and not l.strip().startswith("}")])
-    print(f"nftables: {NFT_TABLE} {NFT_CHAIN} has {rule_count} rules")
-
-
-# ── Backend auto-detection ──────────────────────────────────────────────────
-
-
-def detect_backend() -> str:
-    """Detect the best available firewall backend.
-
-    Checks for nft binary first (Debian 11+/Ubuntu 20+ default),
-    falls back to iptables.
-    """
-    result = _run(["which", "nft"])
-    if result.returncode == 0:
-        return "nftables"
-    result = _run(["which", "iptables"])
-    if result.returncode == 0:
-        return "iptables"
-    return "none"
 
 
 # ── Inspection ──────────────────────────────────────────────────────────────
 
 
-def inspect_table(binary: str, required_ports: list[int]) -> list[Finding]:
-    """Compare live iptables rules against expected rules.
+def inspect(required_ports: list[int]) -> list[Finding]:
+    """Compare live nftables rules against the expected set.
 
-    Returns a list of Finding for every missing rule or ordering issue.
+    Returns a list of ``Finding`` for every missing rule or policy
+    violation.  Returns a single Finding if the chain doesn't exist
+    at all.
     """
-    result = _run([binary, "-S"])
-    if result.returncode != 0:
-        return [Finding(
-            binary,
-            f"cannot read rules: {result.stderr.strip()}",
-        )]
+    if not _nft_available():
+        return [Finding(message="nft binary not found on $PATH")]
 
-    rules = result.stdout.splitlines()
-    expected = expected_rules(required_ports)
+    if not _chain_exists():
+        return [Finding(message=f"chain {NFT_TABLE} {NFT_CHAIN} does not exist")]
+
+    result = _run(["nft", "list", "chain", NFT_TABLE, NFT_CHAIN])
+    rules_output = result.stdout
     findings: list[Finding] = []
 
-    for rule in expected:
-        if rule not in rules:
-            findings.append(Finding(binary, f"missing rule: {rule}"))
+    if "ct state established,related accept" not in rules_output:
+        findings.append(Finding(message="missing: ct state established,related accept"))
+    if "iif lo accept" not in rules_output and 'iif "lo" accept' not in rules_output:
+        findings.append(Finding(message="missing: iif lo accept"))
 
-    # Check that our chain jump comes before any INPUT DROP rule
-    input_jump = f"-A INPUT -j {KTC_CHAIN}"
-    drop_rules = [
-        idx for idx, rule in enumerate(rules)
-        if rule.startswith("-A INPUT") and rule.endswith(" -j DROP")
-    ]
-    if input_jump in rules and drop_rules:
-        jump_index = rules.index(input_jump)
-        first_drop = min(drop_rules)
-        if jump_index > first_drop:
-            findings.append(Finding(
-                binary,
-                f"{KTC_CHAIN} jump appears after an INPUT DROP — "
-                f"traffic may be dropped before reaching our chain",
-            ))
+    for port in sorted(required_ports):
+        if f"tcp dport {port} accept" not in rules_output:
+            findings.append(Finding(message=f"missing: tcp dport {port} accept"))
+
+    if "policy drop" not in rules_output:
+        findings.append(Finding(message="chain policy is not drop"))
 
     return findings
 
@@ -314,36 +181,44 @@ def inspect_table(binary: str, required_ports: list[int]) -> list[Finding]:
 # ── Enforcement ─────────────────────────────────────────────────────────────
 
 
-def enforce(binary: str, required_ports: list[int]) -> None:
-    """Recreate the KTC-MAIL-IN chain from scratch.
+def enforce(required_ports: list[int]) -> None:
+    """Apply the nftables ruleset atomically.
 
-    This is DESTRUCTIVE — it flushes the chain and rebuilds it.
-    Only call this during initial setup or when you know no other
-    tool manages iptables rules on this host.
+    Uses ``nft -f`` with the generated ruleset.  The ruleset itself
+    handles first-run vs. update via idempotent ``add table`` /
+    ``add chain`` commands, so there is no special first-run path.
+
+    The ruleset file is written atomically (tempfile + rename) so that
+    a crash mid-write cannot produce a partial file.
     """
     ports = sorted(required_ports)
+    ruleset = generate_ruleset(ports)
 
-    # Create chain (no-op if exists)
-    _run([binary, "-N", KTC_CHAIN])
-    # Remove any existing jump rule
-    _run([binary, "-D", "INPUT", "-j", KTC_CHAIN])
-    # Insert OUR jump at position 1 (before most other rules)
-    _run([binary, "-I", "INPUT", "1", "-j", KTC_CHAIN])
-    # Flush our chain
-    _run([binary, "-F", KTC_CHAIN])
-    # Build rules
-    _run([binary, "-A", KTC_CHAIN, "-m", "conntrack",
-          "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"])
-    _run([binary, "-A", KTC_CHAIN, "-i", "lo", "-j", "ACCEPT"])
-    for port in ports:
-        _run([binary, "-A", KTC_CHAIN, "-p", "tcp", "-m", "tcp",
-              "--dport", str(port), "-j", "ACCEPT"])
-    _run([binary, "-A", KTC_CHAIN, "-j", "DROP"])
+    NFT_RULESET_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = NFT_RULESET_PATH.with_suffix(".tmp")
+    tmp.write_text(ruleset, encoding="utf-8")
+    tmp.chmod(0o600)
+    tmp.rename(NFT_RULESET_PATH)  # atomic on same filesystem
 
-    # Verify the rules were written
-    result = _run([binary, "-S", KTC_CHAIN])
-    count = len(result.stdout.splitlines())
-    print(f"{binary}: {KTC_CHAIN} has {count} rules")
+    result = _run(["nft", "-f", str(NFT_RULESET_PATH)])
+    if result.returncode != 0:
+        print(f"nftables: error applying ruleset: {result.stderr.strip()}",
+              file=sys.stderr)
+        # On first-run on very old nftables, add may fail for table that
+        # already was created implicitly.  Fall through — we still report
+        # the inspection findings below.
+        return
+
+    # Verify and count
+    result = _run(["nft", "list", "chain", NFT_TABLE, NFT_CHAIN])
+    rule_count = sum(
+        1 for l in result.stdout.splitlines()
+        if l.strip() and not l.strip().startswith("#")
+        and not l.strip().startswith("table")
+        and not l.strip().startswith("chain")
+        and not l.strip().startswith("}")
+    )
+    print(f"nftables: {NFT_TABLE}/{NFT_CHAIN} — {rule_count} rules")
 
 
 # ── CLI entry point ─────────────────────────────────────────────────────────
@@ -351,24 +226,11 @@ def enforce(binary: str, required_ports: list[int]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Check or enforce KTC Mail firewall chains",
+        description="Check or enforce KTC Mail nftables firewall policy",
     )
     parser.add_argument(
         "--enforce", action="store_true",
-        help="Recreate KTC Mail chain before checking",
-    )
-    parser.add_argument(
-        "--backend", choices=("iptables", "nftables", "auto"),
-        default="auto",
-        help="Firewall backend (default: auto-detect)",
-    )
-    parser.add_argument(
-        "--ipv4-bin", default="iptables",
-        help="iptables binary (default: iptables, ignored for nftables)",
-    )
-    parser.add_argument(
-        "--ipv6-bin", default="ip6tables",
-        help="ip6tables binary (default: ip6tables, ignored for nftables)",
+        help="Recreate nftables rules before checking",
     )
     parser.add_argument(
         "--config", type=Path, default=SETUP_PATH,
@@ -376,40 +238,24 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    if not _nft_available():
+        print("firewall: nft binary not found (install nftables)", file=sys.stderr)
+        return 2
+
     try:
         policy = load_policy(args.config)
     except Exception as exc:
-        print(f"cannot load firewall config: {exc}", file=sys.stderr)
+        print(f"firewall: cannot load config: {exc}", file=sys.stderr)
         return 2
 
-    required_ports = policy.actual_open_ports
+    ports = policy.actual_open_ports
 
-    # Determine backend
-    backend = args.backend
-    if backend == "auto":
-        backend = detect_backend()
-        print(f"firewall: auto-detected backend: {backend}", file=sys.stderr)
+    if args.enforce:
+        enforce(ports)
 
-    if backend == "none":
-        print("firewall: no firewall backend found (install nftables or iptables)",
-              file=sys.stderr)
-        return 2
-
-    if backend == "nftables":
-        if args.enforce:
-            enforce_nftables(required_ports)
-        findings = inspect_nftables(required_ports)
-    else:
-        if args.enforce:
-            enforce(args.ipv4_bin, required_ports)
-            enforce(args.ipv6_bin, required_ports)
-        findings = (
-            inspect_table(args.ipv4_bin, required_ports)
-            + inspect_table(args.ipv6_bin, required_ports)
-        )
-
-    for finding in findings:
-        print(f"{finding.table}: {finding.message}", file=sys.stderr)
+    findings = inspect(ports)
+    for f in findings:
+        print(f"firewall: {f.message}", file=sys.stderr)
 
     return 1 if findings else 0
 

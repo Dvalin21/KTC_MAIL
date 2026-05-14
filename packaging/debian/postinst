@@ -3,7 +3,7 @@ set -euo pipefail
 
 install -d -m 0750 -o root -g root /etc/ktc-mail /var/lib/ktc-mail /etc/ktc-mail/dkim
 systemctl daemon-reload || true
-systemctl enable ktc-mail-setup.service ktc-mail-firewall-monitor.timer ktc-mail-acme-renew.timer ktc-mail-backup.timer ktc-mail-rate-limit.service || true
+systemctl enable ktc-mail-setup.service ktc-mail-firewall-monitor.timer ktc-mail-acme-renew.timer ktc-mail-backup.timer ktc-mail-exporter.timer ktc-mail-rate-limit.service || true
 systemctl restart ktc-mail-setup.service || true
 
 # Apply default SSH policy (key-only) if no custom config exists

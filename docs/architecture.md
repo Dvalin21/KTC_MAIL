@@ -12,7 +12,7 @@ KTC Mail follows the Mailcow-style separation of responsibilities while using De
 | Abuse response | Fail2ban | Watches Postfix, Dovecot, Nginx, and admin UI logs; feeds temporary blocks into the KTC firewall chain. |
 | Web administration | KTC Mail setup GUI | Starts on the server IP after package installation and guides domain, DNS, TLS, and policy setup. |
 | TLS automation | KTC ACME manager + DNS provider adapters | Cloudflare DNS automation, ACME DNS-01 hooks, HTTP-01 fallback, renewals, service reloads, and TLSA/DANE updates when enabled. |
-| Firewall integrity | KTC firewall monitor | Verifies iptables/ip6tables chain order and required ports so mail rules are not shadowed by accidental drops. |
+| Firewall integrity | KTC firewall monitor | Verifies nftables chain rules and required ports so mail rules are not shadowed by accidental drops. |
 
 ## Installation flow
 

@@ -30,7 +30,7 @@ echo "OK: CLI works"
 echo "--- Checking systemd unit files ---"
 for unit in ktc-mail-setup.service ktc-mail-firewall-monitor.timer \
             ktc-mail-acme-renew.timer ktc-mail-rate-limit.service \
-            ktc-mail-backup.timer; do
+            ktc-mail-backup.timer ktc-mail-exporter.timer; do
     if systemctl list-unit-files "$unit" 2>/dev/null | grep -q "$unit"; then
         echo "  $unit: present"
     else

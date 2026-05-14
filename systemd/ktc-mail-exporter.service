@@ -1,0 +1,12 @@
+[Unit]
+Description=KTC Mail Prometheus metrics collector
+Documentation=https://github.com/Dvalin21/ktc-mail
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/ktc-mail metrics collect
+IOSchedulingClass=idle
+CPUSchedulingPolicy=idle
+# Default syslog level is info; suppress the "result" log line
+StandardOutput=null

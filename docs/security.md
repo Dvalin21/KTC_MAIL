@@ -4,7 +4,7 @@
 
 - The first-run GUI is a small Python standard-library service, reducing bootstrap dependency risk.
 - The systemd unit uses `NoNewPrivileges`, `PrivateTmp`, `ProtectSystem`, `ProtectHome`, and explicit writable paths.
-- The firewall monitor checks both `iptables` and `ip6tables` for the KTC chain, required ports, and chain ordering.
+- The firewall monitor checks the nftables `inet ktc_mail` table for the INPUT chain, required ports, and chain ordering.
 - The default port model keeps port 80 closed for DNS-01 and allows it only for HTTP-01.
 - DNS setup includes SPF, DKIM, DMARC, TLS-RPT, optional DANE TLSA, and client autodiscovery records.
 - Cloudflare DNS automation uses the stored API token only from the root-readable secrets file.
@@ -30,7 +30,7 @@
 ## Decisions still needed from you
 
 - Which DNS providers must be supported first: Cloudflare, Route 53, DigitalOcean, Hetzner, Porkbun, Namecheap, or another hoster.
-- Whether the product should use nftables as the primary firewall backend while keeping iptables compatibility.
+- ✅ nftables adopted as the sole firewall backend (iptables removed in Phase 8). No compatibility layer needed — nftables has been the default on Debian since 10/Buster (2019).
 - Whether mailboxes are local-only, LDAP-backed, OIDC-backed, or integrated with an existing identity provider.
 - Whether the web GUI should manage multiple domains and organizations from day one.
 - Backup target choices, retention rules, and encryption key custody.

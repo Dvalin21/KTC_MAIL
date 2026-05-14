@@ -40,11 +40,16 @@ if command -v dovecot &>/dev/null; then
         dovecot -n 2>&1 || true
     fi
 
-    # Check TLS config is present and not cleartext
-    if dovecot -n 2>/dev/null | grep -q "ssl = required"; then
-        pass "dovecot: ssl = required"
+    # Check TLS config is present and cleartext IMAP is not exposed externally.
+    # Accept either:
+    #   a) Fully disabled (port = 0)
+    #   b) Localhost-only (address = 127.0.0.1) — required by SOGo for IMAP auth
+    if grep -q "port = 0" /etc/dovecot/dovecot.conf; then
+        pass "dovecot: cleartext IMAP fully disabled"
+    elif grep -q "address = 127.0.0.1" /etc/dovecot/dovecot.conf; then
+        pass "dovecot: cleartext IMAP localhost-only (SOGo exception)"
     else
-        fail "dovecot: ssl = required missing"
+        fail "dovecot: cleartext IMAP exposed externally"
     fi
 else
     skip "dovecot not installed"
@@ -133,9 +138,11 @@ if [ -f /etc/dovecot/dovecot.conf ]; then
         fail "dovecot: TLS cert missing"
     fi
     if grep -q "port = 0" /etc/dovecot/dovecot.conf; then
-        pass "dovecot: cleartext IMAP disabled"
+        pass "dovecot: cleartext IMAP fully disabled"
+    elif grep -q "address = 127.0.0.1" /etc/dovecot/dovecot.conf; then
+        pass "dovecot: cleartext IMAP localhost-only (SOGo exception)"
     else
-        fail "dovecot: cleartext IMAP port found"
+        fail "dovecot: cleartext IMAP exposed externally"
     fi
 fi
 

@@ -18,7 +18,7 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
     postfix postfix-pcre \
     dovecot-core dovecot-imapd dovecot-lmtpd dovecot-sieve dovecot-managesieved \
     rspamd redis-server \
-    nginx openssl ca-certificates netcat-openbsd \
+    nginx openssl ca-certificates netcat-openbsd nftables \
     python3 python3-pip python3-setuptools \
     systemd systemd-sysv \
     && rm -rf /var/lib/apt/lists/*
