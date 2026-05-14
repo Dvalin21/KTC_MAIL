@@ -223,7 +223,7 @@ with the new cert's SHA-256 and pushes them via DNS API.
 | Firewall | Drop all, allow needed only | Default deny inbound |
 | Port 80 | Closed unless HTTP-01 | DNS-01 keeps it shut |
 | SMTP | Postfix postscreen + Rspamd milter | Multi-layer filtering |
-| IMAP | Dovecot IMAPS only (993), no IMAP (143) | No cleartext |
+| IMAP | Dovecot IMAPS (993), IMAP localhost-only (143) | No cleartext external; SOGo exception |
 | Rate limits | Postfix anvil + Dovecot limits | Abuse containment |
 | Spam | Rspamd + CrowdSec + GeoIP + DNSBL | Defense in depth |
 
@@ -250,7 +250,7 @@ checkbox with a warning.
 ### Firewall
 
 ```
-Chain KTC-MAIL-IN (policy DROP)
+Chain ktc_mail INPUT (policy drop)
   ACCEPT conntrack ESTABLISHED,RELATED
   ACCEPT lo
   ACCEPT tcp/22    (SSH)
@@ -263,8 +263,9 @@ Chain KTC-MAIL-IN (policy DROP)
   DROP
 ```
 
-Uses iptables for now (keep compatibility). nftables migration is a
-post-1.0 task.
+Uses nftables (inet family — single ruleset for IPv4+IPv6). The iptables backend was
+removed during Phase 8. There is no fallback — nftables has been the default
+firewall on Debian since 10/Buster (2019) and Ubuntu since 20.04 (2020).
 
 ### Rate limiting
 
@@ -384,7 +385,7 @@ with `0600` permissions, readable by Rspamd.
 ├── app.py                   # Caveman setup GUI
 ├── dns_provider.py          # DnsRecordSet, transports (Cloudflare, etc.)
 ├── acme_manager.py          # Wildcard cert, SAN list, TLSA, renew
-├── firewall_monitor.py      # iptables chain monitor + enforcer
+├── firewall_monitor.py      # nftables policy monitor + enforcer
 ├── ssh_policy.py            # SSH configuration manager
 ├── dkim_keys.py             # DKIM key generation
 ├── bootstrap-mail-stack.sh  # Package dependency installer

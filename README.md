@@ -8,10 +8,10 @@ This repository now contains the first implementation slice:
 
 - A standard-library Python first-run web GUI that launches on the server IP and collects domain, hostname, public IPs, DNS provider, administrator email, and certificate mode.
 - DNS plan generation and first-pass automation for A, AAAA, MX, SPF, DKIM, DMARC, TLS-RPT, optional DANE TLSA, split admin/SOGo hostnames, and autodiscovery SRV records.
-- A conservative iptables/ip6tables firewall monitor that reads the setup profile so DNS-01 keeps port 80 closed unless HTTP-01 is selected.
+- An nftables firewall monitor that reads the setup profile so DNS-01 keeps port 80 closed unless HTTP-01 is selected.
 - Debian packaging metadata that installs the GUI, firewall monitor, helper scripts, examples, documentation, and systemd units.
 - ACME issue/renew tooling with DNS-01 hooks, HTTP-01 fallback, TLSA regeneration, and service reload hooks.
-- A bootstrap script that installs the proven open-source stack: Postfix, Dovecot, Rspamd, Redis, Fail2ban, Nginx, certbot, iptables, and supporting tools.
+- A bootstrap script that installs the proven open-source stack: Postfix, Dovecot, Rspamd, Redis, Fail2ban, Nginx, certbot, nftables, and supporting tools.
 
 ## Target production stack
 
@@ -22,7 +22,7 @@ This repository now contains the first implementation slice:
 | Spam/security policy | Rspamd, Redis, Fail2ban, optional CrowdSec |
 | Admin GUI | KTC Mail Python service, later hardened behind HTTPS and MFA |
 | TLS | ACME DNS-01 provider APIs, service reload hooks, optional DANE TLSA updates |
-| Firewall | iptables/ip6tables monitor now; nftables should be evaluated as the future primary backend |
+| Firewall | nftables (inet family, IPv4+IPv6 single ruleset) |
 | Packaging | `.deb` for Debian/Ubuntu bare-metal installation |
 
 ## Quick developer checks
@@ -44,7 +44,7 @@ Then open `http://127.0.0.1:8080` and submit the initial domain setup form.
 ## What you are missing before production
 
 - DNS provider adapter implementation and token scope requirements.
-- A final decision on nftables versus iptables as the primary firewall backend.
+- ✅ nftables adopted as the primary firewall backend (iptables removed in Phase 8).
 - Admin identity design: local accounts, OIDC, LDAP, MFA, RBAC, and break-glass access.
 - Backup design: destination, retention, restore testing, mailbox encryption, and secret custody.
 - Observability design: logs, metrics, alert destinations, queue monitoring, DNS drift, and certificate expiry.

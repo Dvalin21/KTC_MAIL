@@ -158,11 +158,7 @@ def cmd_firewall(args: argparse.Namespace) -> int:
     sys.argv = ["firewall_monitor.py"]
     if args.enforce:
         sys.argv.append("--enforce")
-    if args.backend:
-        sys.argv.extend(["--backend", args.backend])
     sys.argv.extend(["--config", str(args.config)])
-    sys.argv.extend(["--ipv4-bin", args.ipv4_bin])
-    sys.argv.extend(["--ipv6-bin", args.ipv6_bin])
     return fw_main()
 
 
@@ -219,14 +215,22 @@ def cmd_backup(args: argparse.Namespace) -> int:
     return backup_dispatch(args)
 
 
+def cmd_metrics(args: argparse.Namespace) -> int:
+    """Prometheus metrics collection."""
+    from .exporter import main as metric_main
+    sys.argv = ["exporter.py"]
+    return metric_main()
+
+
 def cmd_config(args: argparse.Namespace) -> int:
     """Dispatch to config_renderer module functions."""
     from .config_renderer import main as cr_main
 
     sys.argv = ["config_renderer.py", args.config_cmd]
     sys.argv.extend(["--config", str(args.config)])
-    if args.config_cmd == "write":
+    if args.config_cmd in ("write", "validate"):
         sys.argv.extend(["--dest", str(args.dest)])
+    if args.config_cmd == "write":
         if args.dry_run:
             sys.argv.append("--dry-run")
     return cr_main()
@@ -277,13 +281,9 @@ def main() -> int:
     )
 
     # ── firewall ───────────────────────────────────────────────────────
-    p_fw = sub.add_parser("firewall", help="Firewall policy management")
-    p_fw.add_argument("--enforce", action="store_true")
-    p_fw.add_argument("--backend", choices=("iptables", "nftables", "auto"),
-                      default="auto",
-                      help="Firewall backend (default: auto-detect)")
-    p_fw.add_argument("--ipv4-bin", default="iptables")
-    p_fw.add_argument("--ipv6-bin", default="ip6tables")
+    p_fw = sub.add_parser("firewall", help="Firewall policy management (nftables)")
+    p_fw.add_argument("--enforce", action="store_true",
+                       help="Recreate nftables rules before checking")
 
     # ── ssh ────────────────────────────────────────────────────────────
     p_ssh = sub.add_parser("ssh", help="SSH policy management")
@@ -297,8 +297,8 @@ def main() -> int:
     # ── config ─────────────────────────────────────────────────────────
     p_cfg = sub.add_parser("config", help="Mail stack configuration")
     p_cfg.add_argument(
-        "config_cmd", choices=("render", "write"),
-        help="Config operation",
+        "config_cmd", choices=("render", "write", "validate"),
+        help="Config operation: render=print, write=deploy, validate=check with real tools",
     )
     p_cfg.add_argument("--dest", type=Path, default=Path("/etc"))
 
@@ -334,6 +334,13 @@ def main() -> int:
     from .fail2ban import add_subparser as add_f2b_subparser
     add_f2b_subparser(sub)
 
+    # ── metrics ─────────────────────────────────────────────────────────
+    p_metrics = sub.add_parser("metrics", help="Prometheus metrics collection")
+    p_metrics.add_argument(
+        "metrics_cmd", choices=("collect",),
+        help="collect = run all collectors and write .prom file",
+    )
+
     # ── backup ─────────────────────────────────────────────────────────
     from .backup_manager import add_subparser as add_backup_subparser
     add_backup_subparser(sub)
@@ -352,6 +359,7 @@ def main() -> int:
         "admin": cmd_admin,
         "fail2ban": cmd_fail2ban,
         "backup": cmd_backup,
+        "metrics": cmd_metrics,
     }
 
     handler = dispatch.get(args.command)

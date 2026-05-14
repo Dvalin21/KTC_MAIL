@@ -8,7 +8,7 @@ Rules-Requires-Root: no
 
 Package: ktc-mail
 Architecture: all
-Depends: ${misc:Depends}, ${python3:Depends}, python3, postfix, dovecot-core, dovecot-imapd, dovecot-lmtpd, dovecot-sieve, dovecot-managesieved, rspamd, redis-server, fail2ban, nginx, iptables, iptables-persistent, ca-certificates, curl, jq, certbot, openssl
+Depends: ${misc:Depends}, ${python3:Depends}, python3, postfix, dovecot-core, dovecot-imapd, dovecot-lmtpd, dovecot-sieve, dovecot-managesieved, rspamd, redis-server, fail2ban, nginx, nftables, ca-certificates, curl, jq, certbot, openssl
 Description: Bare-metal mail server suite with guided setup
  KTC Mail provides a non-containerized mail server control plane for
  Debian and Ubuntu. It launches an initial web GUI, prepares DNS and TLS

@@ -1,0 +1,63 @@
+# KTC Mail — CI pipeline
+#
+# Validates every commit with:
+#   1. Python syntax check (py_compile)
+#   2. Shell script syntax check (bash -n)
+#   3. Docker build of the full mail stack
+#   4. Config validation against real Postfix/Dovecot/Rspamd/Nginx
+#   5. Live protocol smoke test (SMTP, IMAPS, HTTP, HTTPS)
+#
+# No secrets needed.  All tests run inside a throwaway container.
+
+name: CI
+
+on:
+  push:
+    branches: [main, clean-scaffold, "release/*"]
+  pull_request:
+    branches: [main, clean-scaffold]
+
+jobs:
+
+  # ── Static analysis ──────────────────────────────────────────────────
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Python syntax check
+        run: |
+          python3 -m py_compile \
+            src/ktc_mail_admin/*.py
+
+      - name: Shell script syntax check
+        run: |
+          bash -n scripts/bootstrap-mail-stack.sh
+          bash -n scripts/ktc-mail-deploy.sh
+          bash -n scripts/ktc-mail-open-ports.sh
+          bash -n scripts/validate-configs.sh
+          bash -n packaging/debian/postinst
+          bash -n packaging/debian/prerm
+
+  # ── Integration test (Docker) ────────────────────────────────────────
+  integration:
+    runs-on: ubuntu-latest
+    needs: [lint]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build test container
+        run: |
+          docker build -t ktc-mail-test -f test/Dockerfile .
+
+      - name: Config validation
+        run: |
+          docker run --rm ktc-mail-test /validate.sh
+
+      - name: Live smoke test
+        run: |
+          docker run --rm ktc-mail-test bash /smoke-test.sh
+
+      - name: Image size report
+        run: |
+          docker images ktc-mail-test --format "{{.Repository}}:{{.Tag}} {{.Size}}"

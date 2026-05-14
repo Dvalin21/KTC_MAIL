@@ -54,7 +54,7 @@ apt-get install -y --no-install-recommends \
     dovecot-core dovecot-imapd dovecot-lmtpd dovecot-sieve dovecot-managesieved \
     rspamd redis-server \
     nginx openssl certbot \
-    python3 iptables iptables-persistent \
+    python3 nftables \
     curl jq ca-certificates \
     unattended-upgrades \
     memcached \
@@ -120,8 +120,22 @@ for svc in postfix dovecot rspamd nginx; do
 done
 
 # ── 7. Deploy rendered configs ─────────────────────────────────────────
-echo "--- Phase 7: Deploying mail configs ---"
+echo "--- Phase 7: Validating and deploying mail configs ---"
 if [[ -f "${CONFIG_DIR}/setup.json" ]]; then
+    # Validate first
+    VALIDATE_OK=0
+    if command -v "${KTC_MAIL_BIN}" &>/dev/null; then
+        "${KTC_MAIL_BIN}" config validate --dest /etc || VALIDATE_OK=$?
+    elif ${PYTHON} -c "from ktc_mail_admin import config_renderer" 2>/dev/null; then
+        ${PYTHON} -m ktc_mail_admin.cli config validate --dest /etc || VALIDATE_OK=$?
+    fi
+
+    if [[ "${VALIDATE_OK}" -ne 0 ]]; then
+        echo "ERROR: config validation failed — refusing to deploy" >&2
+        exit 1
+    fi
+
+    # Write configs
     if command -v "${KTC_MAIL_BIN}" &>/dev/null; then
         "${KTC_MAIL_BIN}" config write --dest /etc
     elif ${PYTHON} -c "from ktc_mail_admin import config_renderer" 2>/dev/null; then

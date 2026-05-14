@@ -129,9 +129,15 @@ if [[ -f "${TMPDIR}/dovecot_dovecot.conf" ]]; then
     check_field "${f}" "service lmtp"               "Dovecot: LMTP service"
     check_field "${f}" "unix_listener.*auth"         "Dovecot: SASL auth socket"
 
-    # No cleartext IMAP
+    # No cleartext IMAP externally: accept either fully disabled
+    # or localhost-only (required by SOGo for IMAP auth)
     if grep -q "port = 0" "${f}" 2>/dev/null; then
         green "  ✅ Dovecot: cleartext IMAP disabled"
+    elif grep -q "address = 127.0.0.1" "${f}" 2>/dev/null; then
+        green "  ✅ Dovecot: cleartext IMAP localhost-only (SOGo exception)"
+    else
+        red "  ❌ Dovecot: cleartext IMAP exposed externally"
+        HAS_ERRORS=1
     fi
 else
     yellow "  ⚠  dovecot.conf not rendered — skipping"
@@ -171,23 +177,17 @@ echo "--- Firewall checks ---"
 if ${PYTHON} -c "from ktc_mail_admin import firewall_monitor" 2>/dev/null; then
     ${PYTHON} -c "
 from ktc_mail_admin.config import SecurityPolicy
-from ktc_mail_admin.firewall_monitor import (
-    generate_nftables_ruleset,
-    expected_rules,
-)
-# Generate nftables rules for default ports
+from ktc_mail_admin.firewall_monitor import generate_ruleset
 ports = SecurityPolicy().actual_open_ports
-ruleset = generate_nftables_ruleset(ports)
+ruleset = generate_ruleset(ports)
 assert 'policy drop' in ruleset, 'nftables: policy not drop'
 assert 'ct state established,related accept' in ruleset, 'nftables: no ct state rule'
 assert 'iif lo accept' in ruleset or 'iif \"lo\" accept' in ruleset, 'nftables: no loopback rule'
-for p in ports:
-    assert f'tcp dport {p} accept' in ruleset, f'nftables: missing port {p} rule'
-print('  ✅ nftables ruleset: valid (' + str(len(ruleset)) + ' bytes)')
-# Check iptables rules still generate
-irules = expected_rules(ports)
-assert len(irules) == len(ports) + 5, f'iptables: expected {len(ports)+5} rules, got {len(irules)}'
-print('  ✅ iptables rules: ' + str(len(irules)) + ' rules for ' + str(len(ports)) + ' ports')
+# Check port set: the ruleset has 'tcp dport { 22, 25, 443 ... }'
+port_block = ruleset.split('tcp dport {')[1].split('}')[0] if 'tcp dport {' in ruleset else ''
+port_nums = [int(p.strip()) for p in port_block.split(',') if p.strip().isdigit()]
+assert set(port_nums) == set(ports), f'nftables: port mismatch: expected {sorted(ports)}, got {sorted(port_nums)}'
+print('  nftables ruleset: ' + str(len(ruleset)) + ' bytes, ' + str(len(ports)) + ' ports')
 " 2>&1 || HAS_ERRORS=1
 else
     yellow "  ⚠  firewall_monitor not importable — skipping"
