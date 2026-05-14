@@ -56,6 +56,10 @@ def cmd_setup(args: argparse.Namespace) -> int:
 
 def cmd_dns(args: argparse.Namespace) -> int:
     """Dispatch to dns_provider module functions."""
+    # providers subcommand doesn't need a profile
+    if args.dns_cmd == "providers":
+        return cmd_dns_providers(args)
+
     from .dns_provider import (
         sync_records,
         verify_records,
@@ -103,6 +107,13 @@ def cmd_dns(args: argparse.Namespace) -> int:
         return 0
 
     return 1
+
+
+def cmd_dns_providers(args: argparse.Namespace) -> int:
+    """List supported DNS providers and token requirements."""
+    from .dns_provider import list_providers
+    print(list_providers())
+    return 0
 
 
 def cmd_acme(args: argparse.Namespace) -> int:
@@ -264,8 +275,8 @@ def main() -> int:
     # ── dns ────────────────────────────────────────────────────────────
     p_dns = sub.add_parser("dns", help="DNS record management")
     p_dns.add_argument(
-        "dns_cmd", choices=("plan", "apply", "verify"),
-        help="DNS operation",
+        "dns_cmd", choices=("plan", "apply", "verify", "providers"),
+        help="DNS operation: plan=preview, apply=push, verify=check drift, providers=list all",
     )
 
     # ── acme ───────────────────────────────────────────────────────────

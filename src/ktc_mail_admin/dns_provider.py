@@ -227,6 +227,272 @@ class CloudflareProvider:
         return str(records[0]["id"]) if records else None
 
 
+# ── Route53 Provider (AWS Route53) ───────────────────────────────────────────
+#
+# Uses boto3 (optional dependency).  Required IAM permissions:
+#   route53:ListHostedZonesByName
+#   route53:ListResourceRecordSets
+#   route53:ChangeResourceRecordSets
+#
+# Token setup (choose ONE):
+#   a) IAM user with above permissions → AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY
+#   b) IAM role (EC2/Lambda)          → instance profile
+#   c) Environment variables           → export AWS_* in the systemd unit
+
+
+class Route53Provider:
+    """AWS Route53 DNS transport via boto3.
+
+    Zone lookup is by domain name (strips trailing dot).  Record
+    operations use the standard Route53 ChangeResourceRecordSets API
+    with UPSERT for create/update and DELETE for delete.
+    """
+
+    def __init__(self, token: str = "", zone_name: str = "") -> None:
+        boto3 = _import_boto3()
+        if boto3 is None:
+            raise DnsError(
+                "Route53 requires boto3: pip install boto3 "
+                "(or apt install python3-boto3 on Debian/Ubuntu)"
+            )
+        if token and token != "__env__":
+            # Credentials passed inline (less secure — prefer env vars)
+            import os as _os
+            _os.environ.setdefault("AWS_ACCESS_KEY_ID", token.split(":")[0])
+            _os.environ.setdefault("AWS_SECRET_ACCESS_KEY", token.split(":")[1] if ":" in token else "")
+        self.zone_name = zone_name.rstrip(".")
+        self._client = boto3.client("route53")
+        self._zone_id: str | None = None
+
+    def _get_zone_id(self) -> str:
+        if self._zone_id:
+            return self._zone_id
+        paginator = self._client.get_paginator("list_hosted_zones_by_name")
+        for page in paginator.paginate():
+            for zone in page.get("HostedZones", []):
+                name = zone["Name"].rstrip(".")
+                if name == self.zone_name or name == self.zone_name + ".":
+                    self._zone_id = zone["Id"].removeprefix("/hostedzone/")
+                    return self._zone_id
+        raise DnsError(f"Route53 zone not found: {self.zone_name}")
+
+    def _to_record(self, rset: dict) -> list[DnsRecord]:
+        """Convert a Route53 resource record set to one or more DnsRecords."""
+        name = rset["Name"]  # already has trailing dot
+        rtype = rset["Type"]
+        ttl = int(rset.get("TTL", 300))
+        records: list[DnsRecord] = []
+        for value in rset.get("ResourceRecords", []):
+            content = value["Value"]
+            if rtype in ("MX", "SRV"):
+                content = content.replace(" ", "\t")  # normalize sep
+            records.append(DnsRecord(type=rtype, name=name, value=content, ttl=ttl))
+        # Alias records (e.g. A/AAAA for ELB/CloudFront) have AliasTarget instead
+        if not records and "AliasTarget" in rset:
+            records.append(DnsRecord(
+                type=rtype, name=name,
+                value=rset["AliasTarget"]["DNSName"],
+                ttl=ttl,
+            ))
+        return records
+
+    # ── DnsTransport protocol ───────────────────────────────────────
+
+    def list_all(self, domain: str) -> list[DnsRecord]:
+        records: list[DnsRecord] = []
+        paginator = self._client.get_paginator("list_resource_record_sets")
+        for page in paginator.paginate(HostedZoneId=self._get_zone_id()):
+            for rset in page.get("ResourceRecordSets", []):
+                records.extend(self._to_record(rset))
+        return records
+
+    def create(self, record: DnsRecord) -> None:
+        self._change("UPSERT", record)
+
+    def update(self, old: DnsRecord, new: DnsRecord) -> None:
+        # Route53 UPSERT is idempotent — same as create
+        self._change("UPSERT", new)
+
+    def delete(self, record: DnsRecord) -> None:
+        self._change("DELETE", record)
+
+    def supports_ptr(self) -> bool:
+        return False  # Route53 manages forward DNS only
+
+    def _change(self, action: str, record: DnsRecord) -> None:
+        value = record.value
+        if record.type in ("MX", "SRV"):
+            value = value.replace("\t", " ")  # Route53 uses space sep
+        self._client.change_resource_record_sets(
+            HostedZoneId=self._get_zone_id(),
+            ChangeBatch={
+                "Changes": [{
+                    "Action": action,
+                    "ResourceRecordSet": {
+                        "Name": record.name,
+                        "Type": record.type,
+                        "TTL": record.ttl,
+                        "ResourceRecords": [{"Value": value}],
+                    },
+                }],
+            },
+        )
+
+
+def _import_boto3():
+    """Lazy boto3 import.  Returns None if not installed."""
+    try:
+        import boto3  # noqa: F401
+        return __import__("boto3")
+    except ImportError:
+        return None
+
+
+# ── Hetzner Provider ─────────────────────────────────────────────────────────
+#
+# REST API: https://dns.hetzner.com/api/v1
+# Auth:     Bearer token from Hetzner DNS Console → API Tokens → Show token
+# Required token permissions: read + write
+
+
+class HetznerProvider:
+    """Hetzner DNS API transport — stdlib only, no extra dependencies.
+
+    Docs: https://dns.hetzner.com/api-docs
+    """
+
+    api_base = "https://dns.hetzner.com/api/v1"
+
+    def __init__(self, token: str, zone_name: str, timeout: int = 30) -> None:
+        if not token:
+            raise DnsError("Hetzner API token is empty")
+        self.token = token
+        self.zone_name = zone_name.rstrip(".")
+        self.timeout = timeout
+        self._zone_id: str | None = None
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Auth-API-Token": self.token,
+            "Content-Type": "application/json",
+        }
+
+    def _request(
+        self, method: str, path: str,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        from urllib.request import Request, urlopen
+        from urllib.error import HTTPError, URLError
+
+        data = None if payload is None else json.dumps(payload).encode("utf-8")
+        req = Request(
+            f"{self.api_base}{path}",
+            data=data, method=method,
+            headers=self._headers(),
+        )
+        try:
+            with urlopen(req, timeout=self.timeout) as resp:
+                body = resp.read().decode("utf-8")
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise DnsError(f"Hetzner HTTP {exc.code}: {detail}") from exc
+        except URLError as exc:
+            raise DnsError(f"Hetzner request failed: {exc.reason}") from exc
+        return json.loads(body) if body else {}
+
+    def _get_zone_id(self) -> str:
+        if self._zone_id:
+            return self._zone_id
+        result = self._request("GET", "/zones")
+        for zone in result.get("zones", []):
+            if zone["name"] == self.zone_name:
+                self._zone_id = str(zone["id"])
+                return self._zone_id
+        raise DnsError(f"Hetzner zone not found: {self.zone_name}")
+
+    def _to_record(self, raw: dict[str, Any]) -> DnsRecord:
+        name = str(raw.get("name", ""))
+        rtype = str(raw["type"]).upper()
+        value = str(raw["value"])
+        # Hetzner returns record name without zone suffix
+        # e.g. "mail" for mail.example.com
+        if name:
+            fqdn = f"{name}.{self.zone_name}."
+        else:
+            fqdn = f"{self.zone_name}."
+        return DnsRecord(
+            type=rtype, name=fqdn, value=value,
+            ttl=int(raw.get("ttl", 300)),
+        )
+
+    # ── DnsTransport protocol ───────────────────────────────────────
+
+    def list_all(self, domain: str) -> list[DnsRecord]:
+        records: list[DnsRecord] = []
+        page = 1
+        while True:
+            result = self._request(
+                "GET",
+                f"/records?zone_id={self._get_zone_id()}&page={page}&per_page=100",
+            )
+            for raw in result.get("records", []):
+                records.append(self._to_record(raw))
+            meta = result.get("meta", {})
+            pagination = meta.get("pagination", {})
+            total = pagination.get("total_pages", 1)
+            if page >= total:
+                break
+            page += 1
+        return records
+
+    def create(self, record: DnsRecord) -> None:
+        payload = self._record_payload(record)
+        self._request("POST", "/records", payload)
+
+    def update(self, old: DnsRecord, new: DnsRecord) -> None:
+        existing = self._find_record_id(new.type, new.name)
+        if existing is None:
+            self.create(new)
+            return
+        payload = self._record_payload(new)
+        self._request("PUT", f"/records/{existing}", payload)
+
+    def delete(self, record: DnsRecord) -> None:
+        rid = self._find_record_id(record.type, record.name)
+        if rid is None:
+            return  # already gone
+        self._request("DELETE", f"/records/{rid}")
+
+    def supports_ptr(self) -> bool:
+        return False
+
+    def _record_payload(self, record: DnsRecord) -> dict[str, Any]:
+        name = record.name.removesuffix(f".{self.zone_name}.")
+        return {
+            "zone_id": self._get_zone_id(),
+            "type": record.type,
+            "name": name,
+            "value": record.value,
+            "ttl": record.ttl,
+        }
+
+    def _find_record_id(self, rtype: str, name: str) -> str | None:
+        needle = name.rstrip(".")
+        result = self._request(
+            "GET",
+            f"/records?zone_id={self._get_zone_id()}&type={rtype}",
+        )
+        for rec in result.get("records", []):
+            rec_name = str(rec.get("name", ""))
+            if rec_name:
+                fqdn = f"{rec_name}.{self.zone_name}."
+            else:
+                fqdn = f"{self.zone_name}."
+            if fqdn.rstrip(".") == needle:
+                return str(rec["id"])
+        return None
+
+
 # ── Dry-run provider (for preview / testing) ────────────────────────────────
 
 
@@ -272,7 +538,7 @@ def provider_from_config(
     setup: dict[str, Any] | SetupProfile,
     secrets: dict[str, Any] | None = None,
     dry_run: bool = False,
-) -> CloudflareProvider | DryRunProvider:
+) -> CloudflareProvider | Route53Provider | HetznerProvider | DryRunProvider:
     """Build a provider instance from setup profile + secrets.
 
     Raises DnsError if the provider is not yet supported or if the
@@ -297,6 +563,10 @@ def provider_from_config(
 
     if provider_name == PROVIDER_CLOUDFLARE:
         return CloudflareProvider(token=token, zone_name=domain)
+    if provider_name == PROVIDER_ROUTE53:
+        return Route53Provider(token=token, zone_name=domain)
+    if provider_name == PROVIDER_HETZNER:
+        return HetznerProvider(token=token, zone_name=domain)
 
     raise DnsError(f"provider not yet supported: {provider_name}")
 
@@ -450,6 +720,54 @@ def ptr_report(profile: SetupProfile) -> str:
     )
 
 
+# ── Provider documentation ──────────────────────────────────────────────────
+
+
+SUPPORTED_PROVIDERS: dict[str, dict[str, str]] = {
+    PROVIDER_CLOUDFLARE: {
+        "name": "Cloudflare",
+        "token_type": "API Token (not Global API Key)",
+        "token_scope": "Zone:Read, DNS:Edit",
+        "token_docs": "https://developers.cloudflare.com/fundamentals/api/get-started/create-token/",
+        "dep": "none (stdlib urllib)",
+    },
+    PROVIDER_ROUTE53: {
+        "name": "AWS Route53",
+        "token_type": "IAM access key (or IAM role for EC2)",
+        "token_scope": "route53:ListHostedZonesByName, route53:ListResourceRecordSets, route53:ChangeResourceRecordSets",
+        "token_docs": "https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/access-control-overview.html",
+        "dep": "boto3 (pip install boto3)",
+    },
+    PROVIDER_HETZNER: {
+        "name": "Hetzner DNS",
+        "token_type": "API Token",
+        "token_scope": "Read + Write",
+        "token_docs": "https://docs.hetzner.com/dns-console/dns/general/api-access-token/",
+        "dep": "none (stdlib urllib)",
+    },
+}
+
+
+def list_providers() -> str:
+    """Return a formatted table of supported DNS providers and token docs."""
+    lines = ["Supported DNS providers:", ""]
+    lines.append(f"{'ID':<16} {'Name':<20} {'Token Scope':<40} {'Dependency':<24}")
+    lines.append(f"{'─'*16} {'─'*20} {'─'*40} {'─'*24}")
+    for pid, info in sorted(SUPPORTED_PROVIDERS.items()):
+        lines.append(
+            f"{pid:<16} {info['name']:<20} "
+            f"{info['token_scope']:<40} {info['dep']:<24}"
+        )
+    lines.append("")
+    lines.append("Token documentation:")
+    for pid, info in sorted(SUPPORTED_PROVIDERS.items()):
+        lines.append(f"  {pid:<14} {info['token_docs']}")
+    lines.append("")
+    lines.append("To add a provider: set dns_provider in setup.json and")
+    lines.append("store the API token in secrets.json → dns_api_token.")
+    return "\n".join(lines)
+
+
 # ── CLI entry point ────────────────────────────────────────────────────────
 
 
@@ -459,7 +777,7 @@ def main() -> int:
     )
     parser.add_argument(
         "command",
-        choices=("apply", "verify", "acme-auth", "acme-cleanup", "plan"),
+        choices=("apply", "verify", "acme-auth", "acme-cleanup", "plan", "providers"),
         help="Operation to perform",
     )
     parser.add_argument("--config", type=Path, default=SETUP_PATH)
@@ -473,6 +791,10 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
+        if args.command == "providers":
+            print(list_providers())
+            return 0
+
         if args.command == "acme-auth":
             return acme_hook(
                 args.config, args.secrets, cleanup=False,
