@@ -46,6 +46,7 @@ from jinja2 import Environment, FileSystemLoader
 from starlette.middleware.sessions import SessionMiddleware
 
 from . import user_manager as um
+from . import mfa as mfa_mod
 from .config import (
     CONFIG_DIR,
     SETUP_PATH,
@@ -99,7 +100,25 @@ def audit_log(
         logger.exception("writing audit log to %s", AUDIT_LOG_PATH)
 
 
-# ── Admin password management ─────────────────────────────────────────────────
+# ── Admin account management ─────────────────────────────────────────────────
+#
+# The admin account is stored as a JSON dict in admin-hash.json:
+#   {
+#     "password_hash": "scrypt$...",
+#     "role": "admin",         # admin | operator | readonly
+#     "mfa_secret": "B32...",  # base32 TOTP secret (or null)
+#     "mfa_enabled": false,
+#     "updated_at": 1234567890
+#   }
+# ─────────────────────────────────────────────────────────────────
+
+# Role hierarchy (higher number = more privileges)
+ROLE_HIERARCHY: dict[str, int] = {
+    "admin": 100,
+    "operator": 50,
+    "readonly": 10,
+}
+DEFAULT_ROLE = "admin"
 
 
 def admin_password_path() -> Path:
@@ -146,35 +165,74 @@ def verify_password(password: str, stored: str) -> bool:
         return False
 
 
-def load_admin_hash() -> str | None:
-    """Load the stored admin password hash. Returns None if not configured."""
+def load_admin_account() -> dict[str, Any]:
+    """Load the admin account from disk.
+
+    Returns a dict with keys: password_hash, email, role, mfa_secret,
+    mfa_enabled, updated_at.  Missing keys get sensible defaults.
+
+    Backward-compatible: existing files with only ``password_hash``
+    will get default role=admin and MFA disabled.
+    """
+    default: dict[str, Any] = {
+        "password_hash": "",
+        "email": "",
+        "role": DEFAULT_ROLE,
+        "mfa_secret": None,
+        "mfa_enabled": False,
+        "updated_at": 0,
+    }
     if not ADMIN_HASH_PATH.exists():
-        return None
+        return default
     try:
         data = read_json(ADMIN_HASH_PATH)
-        return str(data.get("password_hash", ""))
+        default.update(data)
+        return default
     except Exception:
-        return None
+        return default
 
 
-def save_admin_hash(password_hash: str) -> None:
-    """Store the admin password hash to disk."""
+def save_admin_account(account: dict[str, Any]) -> None:
+    """Save the admin account to disk."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     payload = {
-        "password_hash": password_hash,
+        "password_hash": account.get("password_hash", ""),
+        "email": account.get("email", ""),
+        "role": account.get("role", DEFAULT_ROLE),
+        "mfa_secret": account.get("mfa_secret"),
+        "mfa_enabled": bool(account.get("mfa_enabled", False)),
         "updated_at": int(time.time()),
     }
     save_json_private(ADMIN_HASH_PATH, payload)
 
 
+def load_admin_hash() -> str | None:
+    """Load the stored admin password hash. Returns None if not configured."""
+    return load_admin_account().get("password_hash") or None
+
+
+def save_admin_hash(password_hash: str) -> None:
+    """Store the admin password hash to disk (preserves other fields)."""
+    account = load_admin_account()
+    account["password_hash"] = password_hash
+    save_admin_account(account)
+
+
 def bootstrap_admin_password() -> str:
-    """Generate an initial admin password and store its hash.
+    """Generate an initial admin password and store the account.
 
     Returns the plaintext password (caller MUST print it for the admin).
+    Sets role=admin, MFA disabled.
     """
     plaintext = secrets.token_urlsafe(24)
     hashed = hash_password(plaintext)
-    save_admin_hash(hashed)
+    save_admin_account({
+        "password_hash": hashed,
+        "email": "",
+        "role": "admin",
+        "mfa_secret": None,
+        "mfa_enabled": False,
+    })
     return plaintext
 
 
@@ -579,13 +637,38 @@ def create_app() -> FastAPI:
             return "unknown"
     templates.env.filters["datetime_from_ts"] = datetime_from_ts
 
-    # ── Auth helper ────────────────────────────────────────────────────
+    # ── Auth / RBAC helpers ────────────────────────────────────────────
 
     def login_redirect() -> RedirectResponse:
         return RedirectResponse(url="/login", status_code=302)
 
+    def forbidden_response() -> HTMLResponse:
+        return HTMLResponse(
+            "<html><body><h1>403 Forbidden</h1>"
+            "<p>Your account does not have permission for this action.</p>"
+            "</body></html>",
+            status_code=403,
+        )
+
     def is_authenticated(request: Request) -> bool:
         return request.session.get("authenticated", False)
+
+    def require_role(request: Request, min_role: str = "readonly") -> bool:
+        """Check auth + minimum role level.
+
+        Returns True if the user is authenticated and their role meets
+        or exceeds *min_role*.  Returns False otherwise (caller should
+        then return login_redirect() or forbidden_response()).
+        """
+        if not request.session.get("authenticated"):
+            return False
+        if not request.session.get("mfa_verified", True):
+            # MFA is required but not yet verified — redirect to login
+            return False
+        user_role = request.session.get("role", "readonly")
+        min_level = ROLE_HIERARCHY.get(min_role, 0)
+        user_level = ROLE_HIERARCHY.get(user_role, 0)
+        return user_level >= min_level
 
     def client_ip(request: Request) -> str:
         """Extract client IP from request, respecting X-Forwarded-For."""
@@ -600,17 +683,44 @@ def create_app() -> FastAPI:
         """Get the authenticated admin email from session."""
         return request.session.get("email", "unknown")
 
+    def account_mfa_status() -> dict[str, Any]:
+        """Get MFA + role status for the current admin account.
+
+        Returns dict with keys: enabled, secret_present, otpauth_uri, role.
+        The URI is only returned when MFA is being enrolled (not yet
+        enabled but a secret exists).
+        """
+        acct = load_admin_account()
+        enabled = bool(acct.get("mfa_enabled", False))
+        secret = acct.get("mfa_secret")
+        return {
+            "enabled": enabled,
+            "secret_present": bool(secret),
+            "role": acct.get("role", DEFAULT_ROLE),
+            "otpauth_uri": (
+                mfa_mod.otpauth_uri(secret, acct.get("email", "admin"))
+                if secret and not enabled else ""
+            ),
+        }
+
     # ── Routes ─────────────────────────────────────────────────────────
 
     @app.get("/login", response_class=HTMLResponse)
     async def login_page(request: Request):
         if is_authenticated(request):
             return RedirectResponse(url="/", status_code=302)
+
+        is_mfa_step = request.session.get("mfa_pending", False)
         error = request.query_params.get("error", "")
+
         return templates.TemplateResponse(
             request, "login.html",
-            {"request": request, "error": error,
-             "csrf_token": get_csrf_token(request)},
+            {
+                "request": request,
+                "error": error,
+                "csrf_token": get_csrf_token(request),
+                "mfa_step": is_mfa_step,
+            },
         )
 
     @app.post("/login")
@@ -626,7 +736,8 @@ def create_app() -> FastAPI:
                 status_code=302,
             )
 
-        stored_hash = load_admin_hash()
+        acct = load_admin_account()
+        stored_hash = acct.get("password_hash", "")
         if not stored_hash:
             return RedirectResponse(
                 url="/login?error=Admin+not+configured.+Run+ktc-mail+admin+init",
@@ -639,9 +750,78 @@ def create_app() -> FastAPI:
                 status_code=302,
             )
 
+        # Password OK — check if MFA is required
+        mfa_enabled = bool(acct.get("mfa_enabled", False))
+        if mfa_enabled:
+            # Set pending state, redirect to MFA step
+            request.session["mfa_pending"] = True
+            request.session["mfa_pending_email"] = email
+            request.session["mfa_pending_time"] = int(time.time())
+            return RedirectResponse(url="/login?step=mfa", status_code=302)
+
+        # No MFA — complete login immediately
         request.session["authenticated"] = True
         request.session["email"] = email
+        request.session["role"] = acct.get("role", DEFAULT_ROLE)
+        request.session["mfa_verified"] = True
         request.session["login_time"] = int(time.time())
+
+        audit_log("login", email, "login (no MFA)", client_ip(request))
+        return RedirectResponse(url="/", status_code=302)
+
+    @app.post("/login/mfa")
+    async def login_mfa(request: Request):
+        """Verify TOTP code after password authentication."""
+        if not request.session.get("mfa_pending", False):
+            return RedirectResponse(url="/login", status_code=302)
+
+        form = await request.form()
+        code = str(form.get("totp_code", "")).strip()
+        csrf_token = form.get("csrf_token", "")
+
+        if not validate_csrf(request, csrf_token):
+            return RedirectResponse(
+                url="/login?error=Invalid+session+token",
+                status_code=302,
+            )
+
+        # Check MFA timeout (5 minutes to enter code)
+        pending_time = request.session.get("mfa_pending_time", 0)
+        if int(time.time()) - pending_time > 300:
+            request.session.pop("mfa_pending", None)
+            request.session.pop("mfa_pending_email", None)
+            request.session.pop("mfa_pending_time", None)
+            return RedirectResponse(
+                url="/login?error=MFA+code+expired.+Sign+in+again",
+                status_code=302,
+            )
+
+        acct = load_admin_account()
+        secret = acct.get("mfa_secret", "")
+        if not secret:
+            return RedirectResponse(
+                url="/login?error=MFA+not+configured",
+                status_code=302,
+            )
+
+        if not code or not mfa_mod.verify_totp(secret, code):
+            return RedirectResponse(
+                url="/login?error=Invalid+verification+code",
+                status_code=302,
+            )
+
+        email = request.session.get("mfa_pending_email", "unknown")
+        request.session["authenticated"] = True
+        request.session["email"] = email
+        request.session["role"] = acct.get("role", DEFAULT_ROLE)
+        request.session["mfa_verified"] = True
+        request.session["login_time"] = int(time.time())
+        # Clear pending state
+        request.session.pop("mfa_pending", None)
+        request.session.pop("mfa_pending_email", None)
+        request.session.pop("mfa_pending_time", None)
+
+        audit_log("login", email, "login (MFA)", client_ip(request))
         return RedirectResponse(url="/", status_code=302)
 
     @app.get("/logout")
@@ -651,7 +831,7 @@ def create_app() -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     async def dashboard(request: Request):
-        if not is_authenticated(request):
+        if not require_role(request, "readonly"):
             return login_redirect()
 
         profile = _load_profile()
@@ -708,7 +888,7 @@ def create_app() -> FastAPI:
 
     @app.get("/users", response_class=HTMLResponse)
     async def users_page(request: Request):
-        if not is_authenticated(request):
+        if not require_role(request, "admin"):
             return login_redirect()
 
         # Load users from passwd file
@@ -738,7 +918,7 @@ def create_app() -> FastAPI:
 
     @app.post("/users/add")
     async def users_add(request: Request):
-        if not is_authenticated(request):
+        if not require_role(request, "admin"):
             return login_redirect()
 
         form = await request.form()
@@ -774,7 +954,7 @@ def create_app() -> FastAPI:
 
     @app.post("/users/del")
     async def users_del(request: Request):
-        if not is_authenticated(request):
+        if not require_role(request, "admin"):
             return login_redirect()
 
         form = await request.form()
@@ -808,7 +988,7 @@ def create_app() -> FastAPI:
 
     @app.post("/users/passwd")
     async def users_passwd(request: Request):
-        if not is_authenticated(request):
+        if not require_role(request, "admin"):
             return login_redirect()
 
         form = await request.form()
@@ -841,11 +1021,12 @@ def create_app() -> FastAPI:
 
     @app.get("/settings", response_class=HTMLResponse)
     async def settings_page(request: Request):
-        if not is_authenticated(request):
+        if not require_role(request, "admin"):
             return login_redirect()
 
         profile = _load_profile()
         admin_email = profile.admin_email if profile else ""
+        mfa = account_mfa_status()
 
         error = request.query_params.get("error", "")
         msg = request.query_params.get("msg", "")
@@ -859,6 +1040,7 @@ def create_app() -> FastAPI:
                 "admin_email": admin_email,
                 "config_dir": str(CONFIG_DIR),
                 "state_dir": str(STATE_DIR),
+                "mfa": mfa,
                 "error": error,
                 "msg": msg,
             },
@@ -866,7 +1048,7 @@ def create_app() -> FastAPI:
 
     @app.post("/settings/password")
     async def settings_password(request: Request):
-        if not is_authenticated(request):
+        if not require_role(request, "admin"):
             return login_redirect()
 
         form = await request.form()
@@ -919,11 +1101,111 @@ def create_app() -> FastAPI:
             status_code=302,
         )
 
+    # ── MFA management ────────────────────────────────────────────────
+
+    @app.post("/settings/mfa/enable")
+    async def settings_mfa_enable(request: Request):
+        if not require_role(request, "admin"):
+            return login_redirect()
+
+        form = await request.form()
+        csrf_token = form.get("csrf_token", "")
+        if not validate_csrf(request, csrf_token):
+            return RedirectResponse(
+                url="/settings?error=Invalid+session+token",
+                status_code=302,
+            )
+
+        code = str(form.get("totp_code", "")).strip()
+        acct = load_admin_account()
+        secret = acct.get("mfa_secret", "")
+
+        if not secret:
+            return RedirectResponse(
+                url="/settings?error=MFA+secret+not+initialized",
+                status_code=302,
+            )
+
+        if not code or not mfa_mod.verify_totp(secret, code):
+            return RedirectResponse(
+                url="/settings?error=Invalid+verification+code.+Try+again",
+                status_code=302,
+            )
+
+        acct["mfa_enabled"] = True
+        save_admin_account(acct)
+
+        audit_log(
+            "mfa_enable", actor_email(request),
+            "MFA enabled", client_ip(request),
+        )
+        return RedirectResponse(
+            url="/settings?msg=Two-factor+authentication+enabled",
+            status_code=302,
+        )
+
+    @app.post("/settings/mfa/disable")
+    async def settings_mfa_disable(request: Request):
+        if not require_role(request, "admin"):
+            return login_redirect()
+
+        form = await request.form()
+        csrf_token = form.get("csrf_token", "")
+        if not validate_csrf(request, csrf_token):
+            return RedirectResponse(
+                url="/settings?error=Invalid+session+token",
+                status_code=302,
+            )
+
+        acct = load_admin_account()
+        acct["mfa_enabled"] = False
+        acct["mfa_secret"] = None
+        save_admin_account(acct)
+
+        audit_log(
+            "mfa_disable", actor_email(request),
+            "MFA disabled", client_ip(request),
+        )
+        return RedirectResponse(
+            url="/settings?msg=Two-factor+authentication+disabled",
+            status_code=302,
+        )
+
+    @app.post("/settings/mfa/init")
+    async def settings_mfa_init(request: Request):
+        """Generate a new TOTP secret (replaces any existing one)."""
+        if not require_role(request, "admin"):
+            return login_redirect()
+
+        form = await request.form()
+        csrf_token = form.get("csrf_token", "")
+        if not validate_csrf(request, csrf_token):
+            return RedirectResponse(
+                url="/settings?error=Invalid+session+token",
+                status_code=302,
+            )
+
+        acct = load_admin_account()
+        secret = mfa_mod.generate_secret()
+        acct["mfa_secret"] = secret
+        # Don't enable yet — must verify first code
+        acct["mfa_enabled"] = False
+        save_admin_account(acct)
+
+        audit_log(
+            "mfa_init", actor_email(request),
+            "MFA secret generated", client_ip(request),
+        )
+        return RedirectResponse(
+            url="/settings?msg=MFA+secret+generated.+Scan+the+QR+code+and+verify",
+            status_code=302,
+        )
+
     # ── DKIM management ────────────────────────────────────────────────
 
     @app.get("/dkim", response_class=HTMLResponse)
     async def dkim_page(request: Request):
-        if not is_authenticated(request):
+        if not require_role(request, "operator"):
             return login_redirect()
         profile = _load_profile()
         domain = profile.domain if profile else ""
@@ -945,7 +1227,7 @@ def create_app() -> FastAPI:
 
     @app.post("/dkim/generate")
     async def dkim_generate(request: Request):
-        if not is_authenticated(request):
+        if not require_role(request, "admin"):
             return login_redirect()
 
         form = await request.form()
@@ -993,7 +1275,7 @@ def create_app() -> FastAPI:
 
     @app.get("/logs", response_class=HTMLResponse)
     async def logs_page(request: Request):
-        if not is_authenticated(request):
+        if not require_role(request, "operator"):
             return login_redirect()
 
         source = request.query_params.get("source", "mail")
@@ -1034,7 +1316,7 @@ def create_app() -> FastAPI:
 
     @app.get("/dns", response_class=HTMLResponse)
     async def dns_page(request: Request):
-        if not is_authenticated(request):
+        if not require_role(request, "operator"):
             return login_redirect()
 
         profile = _load_profile()
@@ -1059,7 +1341,7 @@ def create_app() -> FastAPI:
 
     @app.post("/dns/verify")
     async def dns_verify(request: Request):
-        if not is_authenticated(request):
+        if not require_role(request, "operator"):
             return login_redirect()
 
         form = await request.form()
@@ -1107,7 +1389,7 @@ def create_app() -> FastAPI:
 
     @app.post("/dns/apply")
     async def dns_apply(request: Request):
-        if not is_authenticated(request):
+        if not require_role(request, "admin"):
             return login_redirect()
 
         form = await request.form()
@@ -1165,7 +1447,7 @@ def create_app() -> FastAPI:
 
     @app.get("/queue", response_class=HTMLResponse)
     async def queue_page(request: Request):
-        if not is_authenticated(request):
+        if not require_role(request, "operator"):
             return login_redirect()
 
         entries = _parse_queue()
@@ -1185,7 +1467,7 @@ def create_app() -> FastAPI:
 
     @app.post("/queue/flush")
     async def queue_flush(request: Request):
-        if not is_authenticated(request):
+        if not require_role(request, "admin"):
             return login_redirect()
 
         form = await request.form()
@@ -1223,7 +1505,7 @@ def create_app() -> FastAPI:
 
     @app.post("/queue/del")
     async def queue_del(request: Request):
-        if not is_authenticated(request):
+        if not require_role(request, "admin"):
             return login_redirect()
 
         form = await request.form()
@@ -1270,7 +1552,7 @@ def create_app() -> FastAPI:
 
     @app.get("/certs", response_class=HTMLResponse)
     async def certs_page(request: Request):
-        if not is_authenticated(request):
+        if not require_role(request, "admin"):
             return login_redirect()
 
         profile = _load_profile()
@@ -1304,7 +1586,7 @@ def create_app() -> FastAPI:
 
     @app.post("/certs/renew")
     async def certs_renew(request: Request):
-        if not is_authenticated(request):
+        if not require_role(request, "admin"):
             return login_redirect()
 
         form = await request.form()
@@ -1344,7 +1626,7 @@ def create_app() -> FastAPI:
 
     @app.get("/backup", response_class=HTMLResponse)
     async def backup_page(request: Request):
-        if not is_authenticated(request):
+        if not require_role(request, "operator"):
             return login_redirect()
 
         from .backup_manager import (
@@ -1398,7 +1680,7 @@ def create_app() -> FastAPI:
 
     @app.post("/backup/run")
     async def backup_run(request: Request):
-        if not is_authenticated(request):
+        if not require_role(request, "admin"):
             return login_redirect()
 
         form = await request.form()
@@ -1429,7 +1711,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/status")
     async def api_status(request: Request):
-        if not is_authenticated(request):
+        if not require_role(request, "readonly"):
             return login_redirect()
 
         services = _all_service_status()

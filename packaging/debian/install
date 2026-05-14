@@ -11,8 +11,9 @@ src/ktc_mail_admin/acme_manager.py usr/lib/ktc-mail/
 src/ktc_mail_admin/dns_provider.py usr/lib/ktc-mail/
 src/ktc_mail_admin/ssh_policy.py usr/lib/ktc-mail/
 src/ktc_mail_admin/fail2ban.py usr/lib/ktc-mail/
-src/ktc_mail_admin/backup_manager.py
+src/ktc_mail_admin/backup_manager.py usr/lib/ktc-mail/
 src/ktc_mail_admin/rate_limiter.py usr/lib/ktc-mail/
+src/ktc_mail_admin/mfa.py usr/lib/ktc-mail/
 
 # ── Jinja2 templates ──────────────────────────────────────────────
 src/ktc_mail_admin/templates/base.html usr/lib/ktc-mail/templates/

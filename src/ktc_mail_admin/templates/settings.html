@@ -20,6 +20,8 @@
           <td style="padding-left:0">{{ admin_email or '(not set)' }}</td></tr>
       <tr><td style="padding-left:0;font-size:0.8rem;color:var(--muted)">Password</td>
           <td style="padding-left:0"><span class="badge badge-ok">configured</span></td></tr>
+      <tr><td style="padding-left:0;font-size:0.8rem;color:var(--muted)">Role</td>
+          <td style="padding-left:0"><span class="badge badge-ok">{{ mfa.role or 'admin' }}</span></td></tr>
     </table>
   </div>
 
@@ -42,6 +44,55 @@
       </div>
       <button type="submit">Update password</button>
     </form>
+  </div>
+
+  {# ── Two-factor authentication ── #}
+  <div class="card">
+    <h2>Two-Factor Auth</h2>
+    {% if mfa.enabled %}
+      <p style="margin:0.75rem 0 0.5rem;font-size:0.9rem">
+        <span class="badge badge-ok">Enabled</span>
+      </p>
+      <form method="post" action="/settings/mfa/disable" style="margin-top:0.75rem"
+            onsubmit="return confirm('Disable two-factor authentication?')">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" style="background:var(--red)">Disable MFA</button>
+      </form>
+    {% elif mfa.secret_present %}
+      <p style="margin:0.75rem 0 0.5rem;font-size:0.9rem;color:var(--muted)">
+        Scan this QR code in your authenticator app, then enter the code below to verify.
+      </p>
+      {% if mfa.otpauth_uri %}
+      <div style="text-align:center;margin:0.75rem 0">
+        <img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data={{ mfa.otpauth_uri | urlencode }}"
+             alt="QR Code" style="width:180px;height:180px;border-radius:0.5rem">
+      </div>
+      {% endif %}
+      <form method="post" action="/settings/mfa/enable">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="form-row">
+          <label>Verification code</label>
+          <input name="totp_code" type="text" inputmode="numeric"
+                 pattern="[0-9]{6}" placeholder="000000" required>
+        </div>
+        <button type="submit">Enable MFA</button>
+      </form>
+      <form method="post" action="/settings/mfa/init" style="margin-top:0.5rem"
+            onsubmit="return confirm('Generate a new secret? This invalidates the current one.')">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" style="background:var(--muted)">Generate new secret</button>
+      </form>
+    {% else %}
+      <p style="margin:0.75rem 0 0.5rem;font-size:0.9rem;color:var(--muted)">
+        Add an extra layer of security by requiring a time-based one-time
+        password from your authenticator app (Google Authenticator, Authy,
+        1Password, etc.).
+      </p>
+      <form method="post" action="/settings/mfa/init" style="margin-top:0.75rem">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit">Set up two-factor auth</button>
+      </form>
+    {% endif %}
   </div>
 
   {# ── System info ── #}
