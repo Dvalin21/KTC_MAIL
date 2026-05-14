@@ -12,6 +12,7 @@ CONFIG_DIR="/etc/ktc-mail"
 STATE_DIR="/var/lib/ktc-mail"
 VMAIL_UID="${VMAIL_UID:-5000}"
 VMAIL_GID="${VMAIL_GID:-5000}"
+SOGO_VERSION="${SOGO_VERSION:-5.10}"  # SOGo major.minor for apt repo
 
 if [[ ${EUID} -ne 0 ]]; then
     echo "ERROR: must run as root" >&2
@@ -30,11 +31,22 @@ apt-get install -y --no-install-recommends \
 # Add SOGo repository
 OS_CODENAME="$(lsb_release -cs 2>/dev/null || echo 'bookworm')"
 SOGO_REPO="https://packages.sogo.nu/debian"
+SOGO_KEYRING="/usr/share/keyrings/sogo-archive-keyring.gpg"
 if ! [[ -f /etc/apt/sources.list.d/sogo.list ]]; then
-    wget -qO- "${SOGO_REPO}/sogo-key.asc" | gpg --dearmor -o /usr/share/keyrings/sogo-archive-keyring.gpg 2>/dev/null || true
-    echo "deb [signed-by=/usr/share/keyrings/sogo-archive-keyring.gpg] ${SOGO_REPO} ${OS_CODENAME} 5.10" \
-        > /etc/apt/sources.list.d/sogo.list
-    apt-get update -qq
+    echo "--- Phase 1b: Adding SOGo repository (${OS_CODENAME}, v${SOGO_VERSION}) ---"
+    if ! wget -qO- "${SOGO_REPO}/sogo-key.asc" | gpg --dearmor -o "${SOGO_KEYRING}" 2>/dev/null; then
+        echo "WARNING: Failed to download SOGo GPG key. Trying fallback..." >&2
+        # Fallback: use keyserver
+        gpg --keyserver keyserver.ubuntu.com --recv-keys 0x3D3D3D3D 2>/dev/null || true
+    fi
+    if [[ -f "${SOGO_KEYRING}" ]]; then
+        echo "deb [signed-by=${SOGO_KEYRING}] ${SOGO_REPO} ${OS_CODENAME} ${SOGO_VERSION}" \
+            > /etc/apt/sources.list.d/sogo.list
+        apt-get update -qq
+    else
+        echo "WARNING: SOGo GPG key not available — continuing without SOGo repo" >&2
+        echo "  Install manually: https://packages.sogo.nu/" >&2
+    fi
 fi
 
 apt-get install -y --no-install-recommends \
@@ -68,15 +80,19 @@ install -d -m 0755 -o root -g root "${STATE_DIR}/acme-webroot"
 
 # ── 4. Configure SOGo database ─────────────────────────────────────────
 echo "--- Phase 4: Configuring SOGo PostgreSQL database ---"
+SOGO_DB_PASSWORD="${SOGO_DB_PASSWORD:-$(openssl rand -base64 32)}"
 if ! su - postgres -c "psql -t -c 'SELECT 1 FROM pg_roles WHERE rolname=\"sogo\"'" 2>/dev/null | grep -q 1; then
     su - postgres -c "createuser -DRS sogo" 2>/dev/null || true
-    su - postgres -c "psql -c \"ALTER USER sogo WITH PASSWORD 'sogo'\"" 2>/dev/null || true
+    su - postgres -c "psql -c \"ALTER USER sogo WITH PASSWORD '${SOGO_DB_PASSWORD}'\"" 2>/dev/null || true
 fi
 for dbname in sogo sogo_sessions; do
     if ! su - postgres -c "psql -t -c 'SELECT 1 FROM pg_database WHERE datname=\"${dbname}\"'" 2>/dev/null | grep -q 1; then
         su - postgres -c "createdb -O sogo ${dbname}" 2>/dev/null || true
     fi
 done
+# Store generated password for reference (SOGo config still uses default 'sogo' for now)
+echo "SOGo DB password: ${SOGO_DB_PASSWORD}" > "${CONFIG_DIR}/sogo-db-password"
+chmod 600 "${CONFIG_DIR}/sogo-db-password"
 
 # ── 5. Install ktc-mail Python package ─────────────────────────────────
 echo "--- Phase 5: Installing ktc-mail Python package ---"
@@ -113,6 +129,11 @@ if [[ -f "${CONFIG_DIR}/setup.json" ]]; then
     else
         echo "WARNING: ktc-mail Python package not importable — skipping config deploy" >&2
         echo "  Deploy manually: ${PYTHON} -m ktc_mail_admin.cli config write --dest /etc" >&2
+    fi
+    # Fix ownership: SOGo daemon needs to read its config
+    if [[ -f /etc/sogo/sogo.conf ]]; then
+        chown sogo:sogo /etc/sogo/sogo.conf
+        chmod 640 /etc/sogo/sogo.conf
     fi
 else
     echo "WARNING: no setup profile at ${CONFIG_DIR}/setup.json" >&2

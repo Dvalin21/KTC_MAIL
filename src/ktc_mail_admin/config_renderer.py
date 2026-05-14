@@ -299,6 +299,13 @@ service auth {{
 
 # ── TLS ────────────────────────────────────────────────────
 ssl = required
+
+# Allow plain IMAP on localhost (SOGo connects via imap://localhost:143)
+# External connections still require TLS on port 993.
+local 127.0.0.1 {{
+  ssl = no
+}}
+
 ssl_cert = </etc/letsencrypt/live/ktc-mail/fullchain.pem
 ssl_key = </etc/letsencrypt/live/ktc-mail/privkey.pem
 ssl_min_protocol = TLSv1.2
