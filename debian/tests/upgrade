@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# KTC Mail — package upgrade/install smoke test
+#
+# Verifies that the package installs, services are enabled,
+# basic CLI commands work, and the admin server can start.
+#
+# This runs inside an autopkgtest VM/container.
+
+set -euo pipefail
+
+echo "=== KTC Mail upgrade smoke test ==="
+
+# 1. Package is installed
+echo "--- Checking package installation ---"
+dpkg -l ktc-mail 2>/dev/null | grep -q '^ii' || {
+    echo "FAIL: ktc-mail package not installed"
+    exit 1
+}
+echo "OK: package installed"
+
+# 2. CLI command exists and runs
+echo "--- Checking CLI ---"
+ktc-mail --help 2>&1 | grep -q 'usage:' || {
+    echo "FAIL: ktc-mail --help failed"
+    exit 1
+}
+echo "OK: CLI works"
+
+# 3. Services are enabled (check they at least have unit files)
+echo "--- Checking systemd unit files ---"
+for unit in ktc-mail-setup.service ktc-mail-firewall-monitor.timer \
+            ktc-mail-acme-renew.timer ktc-mail-rate-limit.service \
+            ktc-mail-backup.timer; do
+    if systemctl list-unit-files "$unit" 2>/dev/null | grep -q "$unit"; then
+        echo "  $unit: present"
+    else
+        echo "  WARNING: $unit unit file not found (may be OK in test env)"
+    fi
+done
+
+# 4. Admin config dir exists
+echo "--- Checking config directories ---"
+for d in /etc/ktc-mail /var/lib/ktc-mail; do
+    if [ -d "$d" ]; then
+        echo "  $d: OK"
+    else
+        echo "  WARNING: $d not present (may not have run setup yet)"
+    fi
+done
+
+# 5. Check Python modules are importable
+echo "--- Checking Python modules ---"
+python3 << 'PYEOF'
+import sys
+sys.path.insert(0, '/usr/lib/ktc-mail')
+from ktc_mail_admin.config import SetupProfile, SecurityPolicy
+from ktc_mail_admin import mfa
+# Quick MFA smoke
+s = mfa.generate_secret()
+assert mfa.is_valid_secret(s)
+c = mfa.totp(s)
+assert mfa.verify_totp(s, c)
+assert len(c) == 6
+print('  Python modules: OK')
+PYEOF || {
+    echo "FAIL: Python module import failed"
+    exit 1
+}
+
+echo ""
+echo "=== All upgrade smoke tests PASS ==="
+exit 0

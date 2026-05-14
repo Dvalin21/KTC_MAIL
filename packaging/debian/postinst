@@ -11,6 +11,32 @@ if [[ ! -f /etc/ssh/sshd_config.d/ktc-mail.conf ]]; then
   /usr/lib/ktc-mail/ssh_policy.py apply 2>/dev/null || true
 fi
 
+# Load AppArmor profiles (conditional — AppArmor may not be present)
+if command -v aa-enforce &>/dev/null; then
+    for prof in /etc/apparmor.d/usr.lib.ktc-mail.*; do
+        if [[ -f "$prof" ]]; then
+            apparmor_parser -r "$prof" 2>/dev/null || true
+            aa-enforce "$(basename "$prof")" 2>/dev/null || true
+        fi
+    done
+elif command -v aa-complain &>/dev/null; then
+    # If only complain mode tools are available, load in complain mode
+    for prof in /etc/apparmor.d/usr.lib.ktc-mail.*; do
+        if [[ -f "$prof" ]]; then
+            apparmor_parser -r "$prof" 2>/dev/null || true
+        fi
+    done
+fi
+
+# Recommend unattended-upgrades package
+if ! dpkg -l unattended-upgrades &>/dev/null 2>&1; then
+    echo ""
+    echo "  Recommendation: Install unattended-upgrades for automatic security updates."
+    echo "    apt-get install unattended-upgrades"
+    echo "  KTC Mail provides a config at /etc/apt/apt.conf.d/50ktc-mail-unattended-upgrades"
+    echo ""
+fi
+
 cat <<'MSG'
 
 ╔═════════════════════════════════════════════════════════╗
