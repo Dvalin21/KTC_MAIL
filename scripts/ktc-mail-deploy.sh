@@ -25,13 +25,29 @@ echo "--- Phase 1: Installing packages ---"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y --no-install-recommends \
+    gnupg2 lsb-release wget
+
+# Add SOGo repository
+OS_CODENAME="$(lsb_release -cs 2>/dev/null || echo 'bookworm')"
+SOGO_REPO="https://packages.sogo.nu/debian"
+if ! [[ -f /etc/apt/sources.list.d/sogo.list ]]; then
+    wget -qO- "${SOGO_REPO}/sogo-key.asc" | gpg --dearmor -o /usr/share/keyrings/sogo-archive-keyring.gpg 2>/dev/null || true
+    echo "deb [signed-by=/usr/share/keyrings/sogo-archive-keyring.gpg] ${SOGO_REPO} ${OS_CODENAME} 5.10" \
+        > /etc/apt/sources.list.d/sogo.list
+    apt-get update -qq
+fi
+
+apt-get install -y --no-install-recommends \
     postfix postfix-pcre \
     dovecot-core dovecot-imapd dovecot-lmtpd dovecot-sieve dovecot-managesieved \
     rspamd redis-server \
     nginx openssl certbot \
     python3 iptables iptables-persistent \
     curl jq ca-certificates \
-    unattended-upgrades
+    unattended-upgrades \
+    memcached \
+    postgresql postgresql-client \
+    sogo sogo-common
 
 # ── 2. Create vmail user ────────────────────────────────────────────────
 echo "--- Phase 2: Creating vmail user ---"
@@ -50,8 +66,20 @@ install -d -m 0750 -o root -g root "${CONFIG_DIR}/dkim"
 install -d -m 0750 -o root -g root "${STATE_DIR}"
 install -d -m 0755 -o root -g root "${STATE_DIR}/acme-webroot"
 
-# ── 4. Install ktc-mail Python package ─────────────────────────────────
-echo "--- Phase 4: Installing ktc-mail Python package ---"
+# ── 4. Configure SOGo database ─────────────────────────────────────────
+echo "--- Phase 4: Configuring SOGo PostgreSQL database ---"
+if ! su - postgres -c "psql -t -c 'SELECT 1 FROM pg_roles WHERE rolname=\"sogo\"'" 2>/dev/null | grep -q 1; then
+    su - postgres -c "createuser -DRS sogo" 2>/dev/null || true
+    su - postgres -c "psql -c \"ALTER USER sogo WITH PASSWORD 'sogo'\"" 2>/dev/null || true
+fi
+for dbname in sogo sogo_sessions; do
+    if ! su - postgres -c "psql -t -c 'SELECT 1 FROM pg_database WHERE datname=\"${dbname}\"'" 2>/dev/null | grep -q 1; then
+        su - postgres -c "createdb -O sogo ${dbname}" 2>/dev/null || true
+    fi
+done
+
+# ── 5. Install ktc-mail Python package ─────────────────────────────────
+echo "--- Phase 5: Installing ktc-mail Python package ---"
 if [[ -f "${SELF}/../setup.py" ]] || [[ -f "${SELF}/../pyproject.toml" ]]; then
     # Install from source
     (cd "${SELF}/.." && ${PYTHON} -m pip install .)
@@ -69,14 +97,14 @@ else
     fi
 fi
 
-# ── 5. Stop services before writing config ─────────────────────────────
-echo "--- Phase 5: Stopping mail services ---"
+# ── 6. Stop services before writing config ─────────────────────────────
+echo "--- Phase 6: Stopping mail services ---"
 for svc in postfix dovecot rspamd nginx; do
     systemctl stop "${svc}" 2>/dev/null || true
 done
 
-# ── 6. Deploy rendered configs ─────────────────────────────────────────
-echo "--- Phase 6: Deploying mail configs ---"
+# ── 7. Deploy rendered configs ─────────────────────────────────────────
+echo "--- Phase 7: Deploying mail configs ---"
 if [[ -f "${CONFIG_DIR}/setup.json" ]]; then
     if command -v "${KTC_MAIL_BIN}" &>/dev/null; then
         "${KTC_MAIL_BIN}" config write --dest /etc
@@ -91,8 +119,8 @@ else
     echo "  Run the setup wizard first: ktc-mail setup" >&2
 fi
 
-# ── 7. Create Postfix lookup files ─────────────────────────────────────
-echo "--- Phase 7: Creating Postfix lookup tables ---"
+# ── 8. Create Postfix lookup files ─────────────────────────────────────
+echo "--- Phase 8: Creating Postfix lookup tables ---"
 for f in /etc/postfix/virtual_alias /etc/postfix/virtual_mbx; do
     if [[ ! -f "${f}" ]]; then
         touch "${f}"
@@ -100,16 +128,16 @@ for f in /etc/postfix/virtual_alias /etc/postfix/virtual_mbx; do
     fi
 done
 
-# ── 8. Start services ──────────────────────────────────────────────────
-echo "--- Phase 8: Starting services ---"
-for svc in redis-server rspamd postfix dovecot nginx; do
+# ── 9. Start services ──────────────────────────────────────────────────
+echo "--- Phase 9: Starting services ---"
+for svc in redis-server memcached postgresql rspamd postfix dovecot nginx sogod; do
     systemctl enable --now "${svc}" || echo "WARNING: ${svc} failed to start" >&2
 done
 
-# ── 9. Verify services ─────────────────────────────────────────────────
-echo "--- Phase 9: Verification ---"
+# ── 10. Verify services ─────────────────────────────────────────────────
+echo "--- Phase 10: Verification ---"
 ALL_OK=0
-for svc in postfix dovecot nginx rspamd redis-server; do
+for svc in postfix dovecot nginx rspamd redis-server memcached postgresql sogod; do
     if systemctl is-active --quiet "${svc}" 2>/dev/null; then
         echo "  ✅ ${svc} is running"
     else
@@ -137,6 +165,7 @@ if [[ "${ALL_OK}" -eq 0 ]]; then
     echo "  3. Check firewall:           ktc-mail firewall check"
     echo ""
     echo "Mail services running. Ports 25, 587, 465, 993 are open."
+    echo "SOGo webmail at https://email.YOURDOMAIN/SOGo (after setup + certs)"
     echo "Verify with: ss -tlnp | grep -E ':(25|587|465|993) '"
 else
     echo ""
