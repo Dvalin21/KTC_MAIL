@@ -938,6 +938,8 @@ def detect_registrar(domain: str) -> str:
             return PROVIDER_GODADDY
         if "cloudflare" in output:
             return PROVIDER_CLOUDFLARE
+        if "hetzner" in output:
+            return PROVIDER_HETZNER
         if "porkbun" in output:
             return PROVIDER_PORKBUN
         if "route53" in output or "amazon" in output:

@@ -383,7 +383,7 @@ with `0600` permissions, readable by Rspamd.
 ├── __init__.py              # Package marker, version
 ├── config.py                # Data structures, shared paths
 ├── app.py                   # Caveman setup GUI
-├── dns_provider.py          # DnsRecordSet, transports (Cloudflare, etc.)
+├── dns_provider.py          # DnsRecordSet, transports (Cloudflare, Route53, Hetzner, DryRun)
 ├── acme_manager.py          # Wildcard cert, SAN list, TLSA, renew
 ├── firewall_monitor.py      # nftables policy monitor + enforcer
 ├── ssh_policy.py            # SSH configuration manager

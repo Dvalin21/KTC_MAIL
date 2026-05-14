@@ -43,7 +43,7 @@ Then open `http://127.0.0.1:8080` and submit the initial domain setup form.
 
 ## What you are missing before production
 
-- DNS provider adapter implementation and token scope requirements.
+- DNS provider adapters: Cloudflare, Route53 (AWS), and Hetzner are implemented. Others (Namecheap, GoDaddy, Porkbun, DigitalOcean) are stubs — add them in `dns_provider.py`. Run `ktc-mail dns providers` for token requirements.
 - ✅ nftables adopted as the primary firewall backend (iptables removed in Phase 8).
 - Admin identity design: local accounts, OIDC, LDAP, MFA, RBAC, and break-glass access.
 - Backup design: destination, retention, restore testing, mailbox encryption, and secret custody.
