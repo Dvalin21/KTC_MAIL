@@ -1,0 +1,9 @@
+# KTC Mail — autopkgtest integration tests
+#
+# These tests are run by Debian/Ubuntu CI (autopkgtest) after package
+# installation to verify basic functionality.
+#
+# See: https://wiki.debian.org/ContinuousIntegration/autopkgtest
+
+Tests: upgrade
+Restrictions: allow-stderr, needs-root, breaks-testbed

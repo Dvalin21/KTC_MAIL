@@ -42,10 +42,19 @@ systemd/ktc-mail-backup.service lib/systemd/system/
 systemd/ktc-mail-backup.timer lib/systemd/system/
 systemd/ktc-mail-rate-limit.service lib/systemd/system/
 
+# ── AppArmor profiles ─────────────────────────────────────────
+apparmor/usr.lib.ktc-mail.rate_limiter etc/apparmor.d/
+apparmor/usr.lib.ktc-mail.admin_server etc/apparmor.d/
+apparmor/usr.lib.ktc-mail.firewall_monitor etc/apparmor.d/
+
+# ── APT configuration ──────────────────────────────────────────
+etc/apt/apt.conf.d/50ktc-mail-unattended-upgrades etc/apt/apt.conf.d/
+
 # ── Documentation ─────────────────────────────────────────────────
 etc/ktc-mail/config.example.json usr/share/doc/ktc-mail/examples/
 README.md usr/share/doc/ktc-mail/
 docs/architecture.md usr/share/doc/ktc-mail/
 docs/revised-architecture.md usr/share/doc/ktc-mail/
 docs/security.md usr/share/doc/ktc-mail/
+docs/security-review-checklist.md usr/share/doc/ktc-mail/
 docs/implementation-plan.md usr/share/doc/ktc-mail/

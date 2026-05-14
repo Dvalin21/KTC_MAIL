@@ -1,0 +1,38 @@
+# KTC Mail — per-user outbound rate limiter daemon.
+#
+# Profile for /usr/lib/ktc-mail/rate_limiter.py (Python script).
+# This daemon listens on 127.0.0.1:12345, accepts Postfix policy
+# requests, and returns rate-limit decisions.  It is stateless across
+# restarts (in-memory counters).
+#
+# The systemd unit already restricts this to loopback networking and
+# read-only filesystem.  This profile adds defense-in-depth at the
+# LSM layer.
+
+#include <tunables/global>
+
+/usr/lib/ktc-mail/rate_limiter.py {
+  #include <abstractions/base>
+  #include <abstractions/python>
+
+  # Network — loopback only (systemd also enforces this)
+  network inet stream,
+  network inet6 stream,
+  network loopback,
+
+  # Read-only access to Python stdlib
+  /usr/lib/python3*/ r,
+  /usr/lib/python3*/**.py r,
+
+  # Read and execute the script itself
+  /usr/lib/ktc-mail/rate_limiter.py r,
+  /usr/lib/ktc-mail/ r,
+
+  # No write access to anything
+  deny / rw,
+  deny /** rw,
+
+  # Logging to stderr/journal (already handled by systemd)
+  # No file logging needed — rate_limiter uses print() which goes
+  # to stderr, captured by journald.
+}
