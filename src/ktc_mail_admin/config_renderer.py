@@ -523,24 +523,13 @@ server {{
 
     client_max_body_size 50M;
 
-    root /var/lib/snappymail/snappymail;
-    index index.php;
-
-    location / {
-        try_files $uri $uri/ /index.php?$query_string;
-    }
-
-    location ~ \.php$ {
-        fastcgi_pass unix:/run/php/snappymail.sock;
-        fastcgi_index index.php;
-        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
-        include fastcgi_params;
-        fastcgi_param HTTP_PROXY "";
-    }
-
-    location ~ /\.ht {
-        deny all;
-    }
+    location / {{
+        proxy_pass http://127.0.0.1:5085;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }}
 }}
 
 server {{
