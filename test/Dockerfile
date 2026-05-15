@@ -37,8 +37,11 @@ COPY test/ test/
 COPY setup.py .
 
 # Install ktc-mail Python package
+# --break-system-packages for Debian bookworm (PEP 668); fallback for older distros.
+# DO NOT suppress errors — a failed install must fail the build.
 RUN pip install --no-cache-dir -e . --break-system-packages 2>/dev/null || \
-    pip install --no-cache-dir -e . 2>/dev/null || true
+    pip install --no-cache-dir -e . 2>/dev/null || \
+    (echo "FATAL: pip install failed" >&2 && exit 1)
 
 # Create test setup profile
 RUN mkdir -p /etc/ktc-mail && python3 /opt/ktc-mail/test/create_profile.py
