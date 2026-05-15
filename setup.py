@@ -15,6 +15,7 @@ setup(
         "fastapi>=0.100.0",
         "uvicorn>=0.20.0",
         "jinja2>=3.0.0",
+        "itsdangerous>=2.0.0",
     ],
     extras_require={
         "dev": [],

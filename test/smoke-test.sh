@@ -220,6 +220,54 @@ else
     fail "nginx — port 443 not reachable"
 fi
 
+# ── 12. Admin server health check ─────────────────────────────────────
+echo "--- Admin server ---"
+if python3 -c "import fastapi, uvicorn" 2>/dev/null; then
+    # Bootstrap admin password first
+    ktc_mail_admin_init() {
+        PYTHONPATH=/opt/ktc-mail/src python3 -c "
+from ktc_mail_admin.admin_server import cmd_admin_init
+import argparse
+args = argparse.Namespace(force=True, quiet=False)
+cmd_admin_init(args)
+" 2>&1
+    }
+    ADMIN_OUT=$(ktc_mail_admin_init 2>&1 || true)
+    # The init prints "Admin password initialized: <token>"
+    ADMIN_PASS=$(echo "$ADMIN_OUT" | grep -oP 'initialized: \K.*' | head -1) || ADMIN_PASS=""
+
+    # Start admin server on a random port
+    PORT=8082
+    KTC_SESSION_HTTPS=0 PYTHONPATH=/opt/ktc-mail/src python3 -c "
+import uvicorn
+from ktc_mail_admin.admin_server import create_app
+app = create_app()
+uvicorn.run(app, host='127.0.0.1', port=$PORT, log_level='error')
+" >/dev/null 2>&1 &
+    ADMIN_PID=$!
+    CLEANUP="$CLEANUP $ADMIN_PID"
+    sleep 2
+
+    if timeout 5 bash -c "echo >/dev/tcp/127.0.0.1/$PORT" 2>/dev/null; then
+        pass "admin server — listening on $PORT"
+
+        # Hit unauthenticated health endpoint
+        HEALTH=$(timeout 3 bash -c 'exec 3<>/dev/tcp/127.0.0.1/'"$PORT"'
+            echo -e "GET /api/health HTTP/1.0\r\nHost: localhost\r\n\r\n" >&3
+            IFS= read -r line <&3; echo "$line"
+            exec 3>&-') || true
+        if echo "$HEALTH" | grep -qi "200"; then
+            pass "admin server — /api/health returns 200"
+        else
+            fail "admin server — /api/health unexpected: $HEALTH"
+        fi
+    else
+        fail "admin server — not listening after 2s"
+    fi
+else
+    skip "admin server — fastapi/uvicorn not installed"
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────
 echo ""
 echo "=== Smoke test results: ${PASS} passed, ${FAIL} failed, ${SKIP} skipped ==="

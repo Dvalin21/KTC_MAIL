@@ -590,13 +590,17 @@ def create_app() -> FastAPI:
     # Allow env override for testing
     session_key = os.environ.get("KTC_ADMIN_SECRET", session_key)
 
+    # Allow env override for dev/testing over plain HTTP.
+    # Production defaults to True (Secure flag on session cookie).
+    https_only = os.environ.get("KTC_SESSION_HTTPS", "1") == "1"
+
     app.add_middleware(
         SessionMiddleware,
         secret_key=session_key,
         session_cookie="ktc_admin_session",
         max_age=86400,  # 24 hours
         same_site="lax",
-        https_only=True,  # cookies only sent over HTTPS
+        https_only=https_only,
     )
 
     # ── CSRF helper ────────────────────────────────────────────────────
