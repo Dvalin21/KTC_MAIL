@@ -13,15 +13,17 @@ just the transport layer that syncs local state to the remote API.
 Registrar auto-detection lives here. PTR handling is provider-specific
 (the provider adapter.supports_ptr() tells you if it can do it).
 
-Current production adapters:
+Production adapters:
   - CloudflareProvider
+  - Route53Provider (AWS)
+  - HetznerProvider
+  - PorkbunProvider
   - DryRunProvider (for testing and preview)
 
-Future adapters (stubbed, need API credentials/docs):
-  - NamecheapProvider
-  - GoDaddyProvider
-  - PorkbunProvider
-  - Route53Provider (AWS)
+Not yet implemented (stubs need class, factory wiring, and token docs):
+  - NamecheapProvider  (XML API, IP whitelist)
+  - GoDaddyProvider    (REST API)
+  - DigitalOceanProvider (REST API)
 """
 
 from __future__ import annotations
@@ -493,6 +495,154 @@ class HetznerProvider:
         return None
 
 
+# ── Porkbun Provider ─────────────────────────────────────────────────────────
+#
+# REST API: https://api.porkbun.com/api/json/v3
+# Auth:     API Key + Secret Key (colon-separated in the token field)
+#           Store as "apikey:secretapikey" in secrets.json → dns_api_token
+# All API calls are POST.  Credentials go in the request body, not headers.
+
+
+class PorkbunProvider:
+    """Porkbun DNS API transport — stdlib only, no extra dependencies.
+
+    Docs: https://porkbun.com/api/json/v3/documentation
+    Porkbun uses two keys (API Key + Secret Key) passed as POST body.
+    Store as "apikey:secretapikey" in the dns_api_token field.
+    """
+
+    api_base = "https://api.porkbun.com/api/json/v3"
+
+    def __init__(self, token: str, zone_name: str, timeout: int = 30) -> None:
+        if not token:
+            raise DnsError("Porkbun API token is empty")
+        parts = token.split(":", 1)
+        if len(parts) != 2 or not parts[0] or not parts[1]:
+            raise DnsError(
+                "Porkbun requires 'apikey:secretapikey' in dns_api_token "
+                "(colon-separated, both non-empty)"
+            )
+        self.apikey = parts[0]
+        self.secretapikey = parts[1]
+        self.zone_name = zone_name.rstrip(".")
+        self.timeout = timeout
+
+    def _auth_body(self) -> dict[str, str]:
+        return {"apikey": self.apikey, "secretapikey": self.secretapikey}
+
+    def _request(
+        self, path: str, payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        from urllib.request import Request, urlopen
+        from urllib.error import HTTPError, URLError
+
+        body = self._auth_body()
+        if payload:
+            body.update(payload)
+        data = json.dumps(body).encode("utf-8")
+        req = Request(
+            f"{self.api_base}{path}",
+            data=data, method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urlopen(req, timeout=self.timeout) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise DnsError(f"Porkbun HTTP {exc.code}: {detail}") from exc
+        except URLError as exc:
+            raise DnsError(f"Porkbun request failed: {exc.reason}") from exc
+
+        if result.get("status") != "SUCCESS":
+            raise DnsError(
+                f"Porkbun API error: {result.get('message', result)}"
+            )
+        return result
+
+    def _to_record(self, raw: dict[str, Any]) -> DnsRecord:
+        """Convert a Porkbun API record to our DnsRecord."""
+        name = str(raw["name"])
+        rtype = str(raw["type"]).upper()
+        content = str(raw["content"])
+        ttl = int(raw.get("ttl", 300))
+
+        # Porkbun returns FQDNs with trailing dot for some types
+        if rtype in ("CNAME", "MX", "SRV", "NS", "ALIAS"):
+            if content.endswith("."):
+                pass
+            elif rtype == "MX":
+                parts = content.split(None, 1)
+                if len(parts) == 2:
+                    content = f"{parts[0]} {parts[1]}."
+
+        if not name.endswith("."):
+            name = name + "."
+
+        return DnsRecord(type=rtype, name=name, value=content, ttl=ttl)
+
+    # ── DnsTransport protocol ───────────────────────────────────────
+
+    def list_all(self, domain: str) -> list[DnsRecord]:
+        result = self._request(f"/dns/retrieve/{domain}")
+        records: list[DnsRecord] = []
+        for raw in result.get("response", []):
+            if raw.get("type") and raw.get("name"):
+                records.append(self._to_record(raw))
+        return records
+
+    def create(self, record: DnsRecord) -> None:
+        payload = self._record_payload(record)
+        domain = record.name.rstrip(".")
+        # Extract just the domain from the FQDN
+        parts = record.name.rstrip(".").split(".")
+        if len(parts) >= 2:
+            domain = ".".join(parts[-2:])
+        self._request(f"/dns/create/{domain}", payload)
+
+    def update(self, old: DnsRecord, new: DnsRecord) -> None:
+        rid = self._find_record_id(new.type, new.name)
+        if rid is None:
+            self.create(new)
+            return
+        domain = new.name.rstrip(".").split(".")
+        domain = ".".join(domain[-2:]) if len(domain) >= 2 else new.name
+        payload = self._record_payload(new)
+        self._request(f"/dns/edit/{domain}/{rid}", payload)
+
+    def delete(self, record: DnsRecord) -> None:
+        rid = self._find_record_id(record.type, record.name)
+        if rid is None:
+            return
+        domain = record.name.rstrip(".").split(".")
+        domain = ".".join(domain[-2:]) if len(domain) >= 2 else record.name
+        self._request(f"/dns/delete/{domain}/{rid}")
+
+    def supports_ptr(self) -> bool:
+        return False
+
+    def _record_payload(self, record: DnsRecord) -> dict[str, Any]:
+        content = record.value
+        if record.type in ("MX", "SRV"):
+            content = content.replace("\t", " ")
+        return {
+            "type": record.type,
+            "name": record.name.rstrip("."),
+            "content": content,
+            "ttl": record.ttl,
+        }
+
+    def _find_record_id(self, rtype: str, name: str) -> str | None:
+        domain = name.rstrip(".").split(".")
+        domain = ".".join(domain[-2:]) if len(domain) >= 2 else name
+        needle = name.rstrip(".")
+        result = self._request(f"/dns/retrieve/{domain}")
+        for raw in result.get("response", []):
+            if raw.get("type") == rtype and str(raw.get("name", "")).rstrip(".") == needle:
+                return str(raw.get("id"))
+        return None
+
+
 # ── Dry-run provider (for preview / testing) ────────────────────────────────
 
 
@@ -538,7 +688,7 @@ def provider_from_config(
     setup: dict[str, Any] | SetupProfile,
     secrets: dict[str, Any] | None = None,
     dry_run: bool = False,
-) -> CloudflareProvider | Route53Provider | HetznerProvider | DryRunProvider:
+) -> CloudflareProvider | Route53Provider | HetznerProvider | PorkbunProvider | DryRunProvider:
     """Build a provider instance from setup profile + secrets.
 
     Raises DnsError if the provider is not yet supported or if the
@@ -567,6 +717,8 @@ def provider_from_config(
         return Route53Provider(token=token, zone_name=domain)
     if provider_name == PROVIDER_HETZNER:
         return HetznerProvider(token=token, zone_name=domain)
+    if provider_name == PROVIDER_PORKBUN:
+        return PorkbunProvider(token=token, zone_name=domain)
 
     raise DnsError(f"provider not yet supported: {provider_name}")
 
@@ -743,6 +895,13 @@ SUPPORTED_PROVIDERS: dict[str, dict[str, str]] = {
         "token_type": "API Token",
         "token_scope": "Read + Write",
         "token_docs": "https://docs.hetzner.com/dns-console/dns/general/api-access-token/",
+        "dep": "none (stdlib urllib)",
+    },
+    PROVIDER_PORKBUN: {
+        "name": "Porkbun",
+        "token_type": "API Key + Secret Key (colon-separated)",
+        "token_scope": "Read, Write DNS records",
+        "token_docs": "https://porkbun.com/api/json/v3/documentation",
         "dep": "none (stdlib urllib)",
     },
 }

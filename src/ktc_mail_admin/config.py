@@ -940,7 +940,7 @@ def detect_registrar(domain: str) -> str:
             return PROVIDER_CLOUDFLARE
         if "hetzner" in output:
             return PROVIDER_HETZNER
-        if "porkbun" in output:
+        if "porkbun" in output or "pork bun" in output:
             return PROVIDER_PORKBUN
         if "route53" in output or "amazon" in output:
             return PROVIDER_ROUTE53
