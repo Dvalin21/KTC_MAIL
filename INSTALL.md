@@ -1,453 +1,280 @@
 INSTALL
 =======
 
-KTC Mail installs on a plain Debian 12 or Ubuntu 24.04 server. It requires
-root access and a domain where you can edit DNS records. Everything runs
-on bare metal -- no Docker, no Kubernetes, no containers.
+KTC Mail installs on a plain Debian 12 or Ubuntu 24.04 server. You need
+root access and a domain where you can edit DNS records.
 
-There is no automated install script that hides what it does. This document
-tells you exactly what each command does so if something breaks you know
-where to look.
+It is a two-script install plus a web form with three fields. No JSON
+editing required.
 
 ========================================================================
 1. REQUIREMENTS
 ========================================================================
 
-What you need before you start:
-
-- A server running Debian 12 or Ubuntu 24.04. Fresh install.
-  Minimum: 2 GB RAM, 20 GB disk, public IP with ports 25 and 443 reachable.
-- Root access (ssh root@your-server or sudo).
-- A domain. If you do not have one, get one first -- mail without a domain
-  is not a thing.
-- DNS provider API key (for automatic DNS records). Supported providers:
-  Cloudflare, AWS Route53, Hetzner, Porkbun, GoDaddy, DigitalOcean.
-  If your provider is not listed you can still use manual DNS (see section 6b).
+- A fresh Debian 12 or Ubuntu 24.04 server with root SSH access.
+  Minimum: 2 GB RAM, 20 GB disk.
+- A domain name that you own (like example.com).
+- If your DNS provider is Cloudflare, Route53, Hetzner, Porkbun, GoDaddy,
+  or DigitalOcean, have your API token ready.
+- Port 25 must be reachable from the internet. Most residential ISPs
+  block it. You need a VPS or business connection.
 
 ========================================================================
-2. LOG IN AND UPDATE
+2. SSH IN AND UPDATE
 
 ========================================================================
-
-Open a terminal and ssh to your server:
 
   ssh root@<SERVER_IP>
-
-Bring the system up to date:
-
   apt update && apt upgrade -y
-
-This will take a minute. When it finishes, reboot to make sure you are
-running the latest kernel:
-
   reboot
 
-Wait for the server to come back, then ssh in again.
+Wait for the reboot, then ssh back in.
 
 ========================================================================
 3. INSTALL THE MAIL PACKAGES
 
 ========================================================================
 
-KTC Mail uses standard Debian packages for the actual mail software.
-Postfix, Dovecot, Rspamd, Nginx -- all installed from apt, not from
-some random PPA or tarball.
-
-Clone the repository:
+The bootstrap script installs Postfix, Dovecot, Rspamd, Redis, Nginx,
+certbot, nftables, and fail2ban -- all from standard Debian packages.
 
   cd /opt
   git clone https://github.com/Dvalin21/KTC_MAIL.git ktc-mail
   cd ktc-mail
-
-Run the bootstrap script. It installs everything with a single apt command
-and enables the services:
-
   bash scripts/bootstrap-mail-stack.sh
 
-What this does:
-  1. Runs apt-get update
-  2. Installs postfix, dovecot, rspamd, redis, nginx, certbot, nftables,
-     fail2ban, unattended-upgrades, python3, openssl, curl, jq
-  3. Enables redis-server, rspamd, fail2ban, postfix, dovecot, nginx
-  4. Creates /etc/ktc-mail and /var/lib/ktc-mail directories
-
-When it finishes you should see:
-
-  "KTC Mail package dependencies are installed. Open http://SERVER_IP:8080
-   to continue setup."
-
-Ignore the part about opening port 8080 for now. We will use the CLI
-instead of the web GUI for the initial setup.
-
-Verify the services are running:
+When it finishes, verify the services are running:
 
   systemctl status postfix dovecot nginx rspamd redis-server
 
-Each should show "active (running)". If any say "failed" or "not found",
-stop and check what went wrong before continuing.
+All five should say "active (running)". If any say "failed" or "not found",
+stop and fix that before continuing.
 
 ========================================================================
-4. INSTALL THE KTC MAIL PYTHON PACKAGE
+4. INSTALL THE KTC MAIL PACKAGE
 
 ========================================================================
 
-The Python package provides the CLI and config generation.
-
-  cd /opt/ktc-mail
   pip install .
 
-Wait for "Successfully installed ktc-mail". If you see errors about
-"externally-managed-environment" (this happens on modern Debian/Ubuntu),
-use:
+If you get an error about an externally managed environment, run:
 
   pip install . --break-system-packages
 
-After install, verify the CLI works:
+Verify the CLI works:
 
   ktc-mail --help
 
-You should see the available subcommands: setup, dns, acme, config,
-firewall, ssh, user, dkim, backup.
-
-If "ktc-mail" is not found, the install path is not in your PATH. Use
-python3 -m ktc_mail_admin.cli instead:
+If "ktc-mail" is not found, your PATH does not include the pip install
+location. Use this instead for all commands:
 
   python3 -m ktc_mail_admin.cli --help
 
 ========================================================================
-5. CREATE A SETUP PROFILE
+5. RUN THE SETUP WIZARD
 
 ========================================================================
 
-KTC Mail needs to know your domain, hostname, DNS provider, and other
-settings before it can generate configs. Create these as a JSON file.
+  ktc-mail setup
 
-  nano /opt/ktc-mail/setup.json
+This starts a web server on port 8080. Open this URL in your browser:
 
-Paste the following, replacing the values with your own:
+  http://<SERVER_IP>:8080
 
-  {
-    "domain": "example.com",
-    "hostname": "mail.example.com",
-    "admin_host": "admin.example.com",
-    "webmail_host": "webmail.example.com",
-    "admin_email": "admin@example.com",
-    "public_ipv4": "203.0.113.10",
-    "public_ipv6": "",
-    "dns_provider": "cloudflare",
-    "certificate_mode": "dns-01-api"
-  }
+You will see a three-field form asking for:
 
-Fill in these values:
+  Domain           -- your domain (e.g. example.com)
+  DNS API token    -- your DNS provider API key
+  Admin email      -- your email address on this server
 
-  domain         -- the domain you own (e.g. example.com)
-  hostname       -- the server hostname (e.g. mail.example.com)
-  admin_host     -- hostname for the admin web GUI
-  webmail_host   -- hostname for the webmail
-  admin_email    -- your email address on this server
-  public_ipv4    -- your server's public IPv4 address
-  public_ipv6    -- your server's public IPv6 address, or "" if none
-  dns_provider   -- one of: cloudflare, route53, hetzner, porkbun,
-                     godaddy, digitalocean, manual
-  certificate_mode -- dns-01-api (automatic) or manual
+Fill it in and click "Check everything". The system will auto-detect
+your public IP, IPv6 address, DNS registrar, and whether port 25 is
+blocked. It will also generate DKIM keys and build a DNS record plan.
 
-Save the file.
+Review the plan. If it looks right, click "Build my mail server".
 
-Load the profile into KTC Mail:
+This saves the setup profile and pushes your DNS records (A, AAAA, MX,
+SPF, DKIM, DMARC, CAA). If you selected "manual" as your DNS provider,
+no records are pushed -- the wizard shows you what to create by hand.
 
-  mkdir -p /etc/ktc-mail
-  cp /opt/ktc-mail/setup.json /etc/ktc-mail/setup.json
-
-If you use a DNS provider that supports API automation, also create
-the secrets file:
-
-  nano /etc/ktc-mail/secrets.json
-
-For Cloudflare:
-
-  {
-    "cloudflare_api_token": "your-cloudflare-api-token"
-  }
-
-For Route53:
-
-  {
-    "aws_access_key_id": "your-aws-key",
-    "aws_secret_access_key": "your-aws-secret"
-  }
-
-For other providers, see: ktc-mail dns providers
-
-Set strict permissions on the secrets file:
-
-  chmod 600 /etc/ktc-mail/secrets.json
-
-If you use "manual" as your DNS provider, skip the secrets file.
-You will be given DNS records to create by hand.
+After the wizard finishes, close the browser and stop the setup server
+(Ctrl+C in the terminal).
 
 ========================================================================
-6. DEPLOY THE CONFIGS
+6. DEPLOY THE MAIL CONFIGS
 
 ========================================================================
 
-Generate and write all mail config files (Postfix, Dovecot, Rspamd,
-Nginx, MTA-STS, autoconfig):
+Now that the setup profile exists, generate and write all mail configs:
 
   ktc-mail config write --dest /etc
 
-This renders 11 config files to the correct locations:
+This renders 11 config files for Postfix, Dovecot, Rspamd, Nginx,
+MTA-STS, and autoconfig.
 
-  /etc/postfix/main.cf
-  /etc/postfix/master.cf
-  /etc/dovecot/dovecot.conf
-  /etc/rspamd/local.d/options.conf
-  /etc/rspamd/local.d/worker-controller.inc
-  /etc/rspamd/local.d/worker-proxy.inc
-  /etc/rspamd/local.d/dkim_signing.conf
-  /etc/nginx/webmail.conf
-  /etc/nginx/mta-sts.txt
-  /etc/autoconfig/thunderbird.xml
-  /etc/autoconfig/outlook.xml
-
-Validate every config file with the actual tools:
+Validate every config with the actual tools:
 
   postfix check
   dovecot -n
   rspamd --check
   nginx -t
 
-All four should print no errors. If any fails, the configs have a problem.
-Fix the setup profile and try again.
+All four must print no errors. If any fails, something is wrong with
+your profile. Re-run the setup wizard or check /etc/ktc-mail/setup.json.
 
-========================================================================
-7. (OPTIONAL) DEPLOY THE FULL STACK WITH SOGo
-
-========================================================================
-
-If you want SOGo groupware (webmail, calendars, contacts), run the full
-deploy script instead of steps 3-6:
+If you also want SOGo groupware (webmail, calendars, contacts), there
+is a combined deploy script that does steps 3-6 and more:
 
   bash /opt/ktc-mail/scripts/ktc-mail-deploy.sh
 
-This does everything from steps 3-6 plus:
-
-  - Adds the SOGo apt repository
-  - Installs SOGo, PostgreSQL, Memcached
-  - Creates the vmail user and mail directory
-  - Creates the SOGo database and user in PostgreSQL
-  - Installs the ktc-mail Python package
-  - Deploys all configs from the setup profile
-  - Creates Postfix lookup tables
-  - Starts all services (redis, postgresql, rspamd, postfix, dovecot,
-    nginx, sogod)
-  - Verifies each service is running
-
-Run it as root:
-
-  bash /opt/ktc-mail/scripts/ktc-mail-deploy.sh
-
-When it finishes you should see:
-
-  "KTC Mail deployed successfully"
-  "Next steps: 1. Create a setup profile..."
-  "Mail services running. Ports 25, 587, 465, 993 are open."
+It installs SOGo, PostgreSQL, and Memcached on top of the base stack,
+creates databases, deploys configs, and starts everything. Run it instead
+of steps 3-6 if you want the full groupware stack.
 
 ========================================================================
-8. ISSUE TLS CERTIFICATES
+7. ISSUE TLS CERTIFICATES
 
 ========================================================================
-
-Generate TLS certificates with Let's Encrypt:
 
   ktc-mail acme issue
 
-This uses DNS-01 challenge (no port 80 needed). It will:
+This uses Let's Encrypt DNS-01 challenge through your DNS provider API.
+No port 80 needed.
 
-  1. Use your DNS provider API to create a _acme-challenge TXT record
+It will:
+  1. Create a _acme-challenge TXT record via your provider API
   2. Tell Let's Encrypt to verify it
   3. Save the certificate to /etc/letsencrypt/live/
-  4. Remove the challenge record
-  5. Restart Postfix and Dovecot to pick up the new cert
+  4. Delete the challenge record
+  5. Restart Postfix and Dovecot
+
+If you use manual DNS, the command prints a TXT record value. Create it
+in your DNS control panel, then run:
+
+  ktc-mail acme issue --manual-continue
 
 Verify the certificate exists:
 
   ls /etc/letsencrypt/live/MAIL.YOURDOMAIN/
 
-You should see fullchain.pem, privkey.pem, cert.pem, chain.pem.
-
-If you use manual DNS, the command will print a TXT record value.
-Create that record in your DNS provider's control panel, then run:
-
-  ktc-mail acme issue --manual-continue
-
 ========================================================================
-9. PUSH DNS RECORDS
+8. CHECK THE FIREWALL
 
 ========================================================================
 
-Create the required DNS records automatically:
+  ktc-mail firewall enforce
 
-  ktc-mail dns apply
+This ensures only ports 22, 25, 443, 587, 993, and 4190 are open.
+Everything else is dropped by default.
 
-This creates records for:
-
-  A         mail.example.com       -> your server IPv4
-  AAAA      mail.example.com       -> your server IPv6 (if set)
-  MX        example.com            -> mail.example.com
-  TXT       example.com            -> "v=spf1 mx ~all"
-  TXT       _dmarc.example.com     -> DMARC policy
-  TXT       mail._domainkey...     -> DKIM public key
-  CAA       example.com            -> "letsencrypt.org"
-  SRV       _autodiscover._tcp     -> mail.example.com
-
-If you use manual DNS, the command prints each record. Create them in
-your DNS control panel. KTC Mail cannot create them for you.
-
-========================================================================
-10. VERIFY EVERYTHING
-
-========================================================================
-
-Check that ports are listening:
-
-  ss -tlnp | grep -E ':(25|587|465|993|443) '
-
-You should see at least:
-
-  LISTEN  :25    (postfix SMTP)
-  LISTEN  :587   (postfix submission)
-  LISTEN  :465   (postfix smtps)
-  LISTEN  :993   (dovecot IMAPS)
-  LISTEN  :443   (nginx HTTPS)
-
-Check the firewall:
+Verify:
 
   ktc-mail firewall check
 
-It should show "nftables: OK" or "iptables: OK" with the expected rules.
+It should report "nftables: OK" (or iptables).
 
-Test SMTP with openssl:
+========================================================================
+9. VERIFY EVERYTHING
+
+========================================================================
+
+Ports are listening:
+
+  ss -tlnp | grep -E ':(25|587|465|993|443) '
+
+You should see: 25 (SMTP), 587 (submission), 465 (smtps), 993 (IMAPS),
+443 (HTTPS).
+
+SMTP works:
 
   openssl s_client -connect localhost:25 -starttls smtp -quiet
 
-You should see a 220 banner and the server certificate.
+You should see a 220 banner.
 
-Test IMAPS:
+IMAPS works:
 
   openssl s_client -connect localhost:993 -quiet
 
-You should see a Dovecot banner and the server certificate.
+You should see a Dovecot banner.
 
-Check your DNS records from outside:
+DNS from the outside (run on your desktop, not the server):
 
   dig MX example.com +short
   dig TXT _dmarc.example.com +short
-  dig CAA example.com +short
-
-If everything works, your mail server is live.
 
 ========================================================================
-11. CREATE MAIL USERS
+10. CREATE YOUR FIRST MAILBOX
 
 ========================================================================
-
-Add your first mailbox:
 
   ktc-mail user add user@example.com
 
-It will prompt for a password. The user is added to Dovecot's passwd-file
-at /etc/dovecot/users.
+It prompts for a password. Done. You can now log into this mailbox
+with any IMAP client.
 
 List users:
 
   ktc-mail user list
 
-Change a password:
-
-  ktc-mail user passwd user@example.com
-
-Remove a user:
-
-  ktc-mail user del user@example.com
-
 ========================================================================
-12. WHAT RUNS AUTOMATICALLY
+11. WHAT RUNS AUTOMATICALLY
 
 ========================================================================
 
-After install, these systemd timers keep things running:
+Installed systemd timers:
 
-  ktc-mail-acme-renew.timer    -- Renews TLS certs daily at 3 AM
-  ktc-mail-backup.timer        -- Backup nightly at 2 AM
-  ktc-mail-exporter.timer      -- Prometheus metrics every 60s
-  ktc-mail-firewall-monitor.timer -- Firewall drift check every 5 min
-  ktc-mail-rate-limit.timer    -- Rate limit cleanup hourly
+  ktc-mail-acme-renew.timer        Daily at 3 AM
+  ktc-mail-backup.timer            Daily at 2 AM
+  ktc-mail-exporter.timer          Every 60 seconds
+  ktc-mail-firewall-monitor.timer  Every 5 minutes
+  ktc-mail-rate-limit.timer        Every hour
 
-You can check each with:
+Logs:
 
-  systemctl status ktc-mail-acme-renew.timer
-
-Logs go to journalctl:
-
-  journalctl -u postfix -f     (watch mail logs)
+  journalctl -u postfix -f
   journalctl -u dovecot -f
   journalctl -u rspamd -f
 
 ========================================================================
-13. TROUBLESHOOTING
+12. TROUBLESHOOTING
 
 ========================================================================
 
-Port 25 is blocked by my ISP.
-
-Many residential ISPs block port 25. You need a VPS or business internet.
-If you cannot get port 25 open, KTC Mail will not work as an MX server.
-Consider a relay service.
-
-Certificates failed to issue.
-
-Run manually to see the error:
-
-  certbot certonly --manual --preferred-challenges dns -d mail.example.com
-
-The error message will tell you exactly what is wrong (DNS not propagated,
-API token invalid, rate limited, etc.).
-
-Postfix will not start.
-
-  postfix check
-
-Prints the exact config error with line number. Usually a missing file
-or typo in main.cf.
-
-Dovecot will not start.
-
-  dovecot -n
-
-Prints the parsed config. If there is an error, it says where.
-
-I broke something and want to start over.
-
-  rm -f /etc/ktc-mail/setup.json /etc/ktc-mail/secrets.json
-  dpkg-reconfigure postfix dovecot-core
-
-This wipes the KTC Mail configs and restores the default package configs.
-Your mail data in /var/mail is not affected.
+Postfix won't start -> postfix check
+Dovecot won't start  -> dovecot -n
+Cert failed          -> run certbot manually to see the exact error
+Port 25 blocked      -> nothing KTC Mail can do, your ISP blocks it
 
 ========================================================================
-14. WHAT YOU DO NOT GET WITH THE BETA
+13. HEADLESS INSTALL (NO WEB BROWSER)
 
 ========================================================================
 
-KTC Mail v0.4.0-beta is a working mail server. It is also incomplete.
-These features are not ready yet:
+If you are setting up a server that has no web browser, skip step 5.
+Create the setup profile manually:
 
-  - Webmail UI (use SOGo at https://webmail.YOURDOMAIN/SOGo)
-  - Admin web GUI (use the CLI for now)
-  - Per-domain DKIM keys (one key for the whole server)
-  - Automatic spam training
-  - Quota management
-  - Migration tools from other mail servers
+  nano /etc/ktc-mail/setup.json
 
-If you need any of these, wait for a later release or add them yourself.
-The code is open. The configs are plain text. Nothing is hidden.
+Paste this and fill in your values:
+
+  {
+    "domain": "example.com",
+    "hostname": "mail.example.com",
+    "admin_email": "admin@example.com",
+    "public_ipv4": "203.0.113.10",
+    "dns_provider": "cloudflare",
+    "dns_api_token": "your-api-token",
+    "certificate_mode": "dns-01-api"
+  }
+
+Save it. Then create the secrets file:
+
+  nano /etc/ktc-mail/secrets.json
+
+  {
+    "dns_api_token": "your-api-token"
+  }
+
+  chmod 600 /etc/ktc-mail/secrets.json
+
+Then continue from step 6.
