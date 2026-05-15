@@ -934,8 +934,10 @@ def detect_registrar(domain: str) -> str:
         output = (result.stdout + result.stderr).lower()
         if "namecheap" in output:
             return PROVIDER_NAMEECHEAP
-        if "godaddy" in output:
+        if "godaddy" in output or "go daddy" in output:
             return PROVIDER_GODADDY
+        if "digitalocean" in output or "digital ocean" in output:
+            return PROVIDER_DIGITALOCEAN
         if "cloudflare" in output:
             return PROVIDER_CLOUDFLARE
         if "hetzner" in output:

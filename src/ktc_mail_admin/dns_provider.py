@@ -18,12 +18,12 @@ Production adapters:
   - Route53Provider (AWS)
   - HetznerProvider
   - PorkbunProvider
+  - GoDaddyProvider
+  - DigitalOceanProvider
   - DryRunProvider (for testing and preview)
 
-Not yet implemented (stubs need class, factory wiring, and token docs):
-  - NamecheapProvider  (XML API, IP whitelist)
-  - GoDaddyProvider    (REST API)
-  - DigitalOceanProvider (REST API)
+Not yet implemented (stub needs XML API reverse-engineering, IP whitelist):
+  - NamecheapProvider
 """
 
 from __future__ import annotations
@@ -643,6 +643,300 @@ class PorkbunProvider:
         return None
 
 
+# ── GoDaddy Provider ─────────────────────────────────────────────────────────
+#
+# REST API: https://api.godaddy.com/api/v1
+# Auth:     SSO Key + SSO Secret (colon-separated in token field)
+#           Store as "key:secret" in secrets.json → dns_api_token
+# NOTE: GoDaddy PATCH replaces ALL records — this adapter uses PUT
+# for individual record upserts to avoid bulk-data races.
+
+
+class GoDaddyProvider:
+    """GoDaddy DNS API transport — stdlib only, no extra dependencies.
+
+    Docs: https://developer.godaddy.com/doc/endpoint/domains
+    Token format is "key:secret" — the SSO keypair from GoDaddy's
+    API Key Management page (not your account password).
+    """
+
+    api_base = "https://api.godaddy.com/api/v1"
+
+    def __init__(self, token: str, zone_name: str, timeout: int = 30) -> None:
+        if not token:
+            raise DnsError("GoDaddy API token is empty")
+        parts = token.split(":", 1)
+        if len(parts) != 2 or not parts[0] or not parts[1]:
+            raise DnsError(
+                "GoDaddy requires 'key:secret' in dns_api_token "
+                "(colon-separated SSO key and secret, both non-empty)"
+            )
+        self._key = parts[0]
+        self._secret = parts[1]
+        self.zone_name = zone_name.rstrip(".")
+        self.timeout = timeout
+
+    def _headers(self) -> dict[str, str]:
+        import base64
+        return {
+            "Authorization": f"sso-key {self._key}:{self._secret}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+
+    def _request(
+        self, method: str, path: str,
+        payload: list[dict] | dict | None = None,
+    ) -> Any:
+        from urllib.request import Request, urlopen
+        from urllib.error import HTTPError, URLError
+
+        data = None if payload is None else json.dumps(payload).encode("utf-8")
+        req = Request(
+            f"{self.api_base}{path}",
+            data=data, method=method,
+            headers=self._headers(),
+        )
+        try:
+            with urlopen(req, timeout=self.timeout) as resp:
+                body = resp.read().decode("utf-8")
+                return json.loads(body) if body else {}
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise DnsError(f"GoDaddy HTTP {exc.code}: {detail}") from exc
+        except URLError as exc:
+            raise DnsError(f"GoDaddy request failed: {exc.reason}") from exc
+
+    def _to_record(self, raw: dict[str, Any]) -> DnsRecord:
+        name = str(raw.get("name", ""))
+        rtype = str(raw["type"]).upper()
+        data = str(raw.get("data", ""))
+        ttl = int(raw.get("ttl", 300))
+
+        # GoDaddy returns names without trailing dot and without domain suffix
+        if name:
+            fqdn = f"{name}.{self.zone_name}."
+        else:
+            fqdn = f"{self.zone_name}."
+
+        if rtype in ("MX", "SRV"):
+            parts_raw = data.split(None, 1)
+            if len(parts_raw) == 2:
+                data = f"{parts_raw[0]} {parts_raw[1]}."
+
+        return DnsRecord(type=rtype, name=fqdn, value=data, ttl=ttl)
+
+    # ── DnsTransport protocol ───────────────────────────────────────
+
+    def list_all(self, domain: str) -> list[DnsRecord]:
+        result = self._request("GET", f"/domains/{domain}/records")
+        records: list[DnsRecord] = []
+        for raw in result if isinstance(result, list) else []:
+            if raw.get("type") and "name" in raw:
+                records.append(self._to_record(raw))
+        return records
+
+    def create(self, record: DnsRecord) -> None:
+        self._upsert(record)
+
+    def update(self, old: DnsRecord, new: DnsRecord) -> None:
+        self._upsert(new)
+
+    def delete(self, record: DnsRecord) -> None:
+        name = record.name.removesuffix(f".{self.zone_name}.") or "@"
+        if name == self.zone_name:
+            name = "@"
+        self._request(
+            "DELETE",
+            f"/domains/{self.zone_name}/records/{record.type}/{name}",
+        )
+
+    def supports_ptr(self) -> bool:
+        return False
+
+    def _upsert(self, record: DnsRecord) -> None:
+        name = record.name.removesuffix(f".{self.zone_name}.") or "@"
+        if name == self.zone_name:
+            name = "@"
+        data = record.value
+        if record.type in ("MX", "SRV"):
+            data = data.replace("\t", " ")
+        payload: list[dict[str, Any]] = [
+            {"data": data, "ttl": record.ttl},
+        ]
+        if record.type in ("MX", "SRV") and record.priority is not None:
+            payload[0]["priority"] = record.priority
+        # Use PUT (upsert). Takes an array body.
+        self._request(
+            "PUT",
+            f"/domains/{self.zone_name}/records/{record.type}/{name}",
+            payload,
+        )
+
+
+# ── DigitalOcean Provider ────────────────────────────────────────────────────
+#
+# REST API: https://api.digitalocean.com/v2
+# Auth:     Bearer token (personal access token with read + write scope)
+
+
+class DigitalOceanProvider:
+    """DigitalOcean DNS API transport — stdlib only.
+
+    Docs: https://docs.digitalocean.com/reference/api/api-reference/#tag/Domains
+    Token is a personal access token with `read` + `write` scope
+    for the Domains API.
+    """
+
+    api_base = "https://api.digitalocean.com/v2"
+
+    def __init__(self, token: str, zone_name: str, timeout: int = 30) -> None:
+        if not token:
+            raise DnsError("DigitalOcean API token is empty")
+        self.token = token
+        self.zone_name = zone_name.rstrip(".")
+        self.timeout = timeout
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.token}",
+            "Content-Type": "application/json",
+        }
+
+    def _request(
+        self, method: str, path: str,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        from urllib.request import Request, urlopen
+        from urllib.error import HTTPError, URLError
+
+        data = None if payload is None else json.dumps(payload).encode("utf-8")
+        req = Request(
+            f"{self.api_base}{path}",
+            data=data, method=method,
+            headers=self._headers(),
+        )
+        try:
+            with urlopen(req, timeout=self.timeout) as resp:
+                body = resp.read().decode("utf-8")
+                return json.loads(body) if body else {}
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise DnsError(f"DigitalOcean HTTP {exc.code}: {detail}") from exc
+        except URLError as exc:
+            raise DnsError(f"DigitalOcean request failed: {exc.reason}") from exc
+
+    def _to_record(self, raw: dict[str, Any]) -> DnsRecord:
+        rtype = str(raw["type"]).upper()
+        name = str(raw.get("name", ""))
+        data = str(raw.get("data", ""))
+        ttl = int(raw.get("ttl", 1800))
+
+        # DigitalOcean returns bare names (no domain suffix, no trailing dot)
+        if name:
+            fqdn = f"{name}.{self.zone_name}."
+        else:
+            fqdn = f"{self.zone_name}."
+
+        if rtype in ("MX", "SRV"):
+            parts = data.split(None, 1)
+            if len(parts) == 2:
+                data = f"{parts[0]} {parts[1]}."
+
+        return DnsRecord(
+            type=rtype, name=fqdn, value=data, ttl=ttl,
+        )
+
+    def _domain_arg(self, record: DnsRecord) -> str:
+        """Extract the DO record name from a FQDN."""
+        name = record.name.removesuffix(f".{self.zone_name}.")
+        return name if name else "@"
+
+    # ── DnsTransport protocol ───────────────────────────────────────
+
+    def list_all(self, domain: str) -> list[DnsRecord]:
+        records: list[DnsRecord] = []
+        page = 1
+        while True:
+            result = self._request(
+                "GET",
+                f"/domains/{domain}/records?page={page}&per_page=100",
+            )
+            for raw in result.get("domain_records", []):
+                records.append(self._to_record(raw))
+            meta = result.get("meta", {})
+            total = meta.get("total", len(records))
+            if len(records) >= total:
+                break
+            page += 1
+        return records
+
+    def create(self, record: DnsRecord) -> None:
+        payload = self._record_payload(record)
+        self._request(
+            "POST",
+            f"/domains/{self.zone_name}/records",
+            payload,
+        )
+
+    def update(self, old: DnsRecord, new: DnsRecord) -> None:
+        rid = self._find_record_id(new.type, new.name)
+        if rid is None:
+            self.create(new)
+            return
+        payload = self._record_payload(new)
+        self._request(
+            "PUT",
+            f"/domains/{self.zone_name}/records/{rid}",
+            payload,
+        )
+
+    def delete(self, record: DnsRecord) -> None:
+        rid = self._find_record_id(record.type, record.name)
+        if rid is None:
+            return
+        self._request(
+            "DELETE",
+            f"/domains/{self.zone_name}/records/{rid}",
+        )
+
+    def supports_ptr(self) -> bool:
+        return False
+
+    def _record_payload(self, record: DnsRecord) -> dict[str, Any]:
+        data = record.value
+        if record.type in ("MX", "SRV"):
+            data = data.replace("\t", " ")
+        return {
+            "type": record.type,
+            "name": self._domain_arg(record),
+            "data": data,
+            "ttl": record.ttl,
+        }
+
+    def _find_record_id(self, rtype: str, name: str) -> str | None:
+        domain = self.zone_name
+        needle = name.rstrip(".")
+        page = 1
+        while True:
+            result = self._request(
+                "GET",
+                f"/domains/{domain}/records?page={page}&per_page=100",
+            )
+            for raw in result.get("domain_records", []):
+                raw_type = str(raw.get("type", "")).upper()
+                raw_name = str(raw.get("name", ""))
+                fqdn = f"{raw_name}.{domain}." if raw_name else f"{domain}."
+                if raw_type == rtype and fqdn.rstrip(".") == needle:
+                    return str(raw["id"])
+            meta = result.get("meta", {})
+            total = meta.get("total", 0)
+            if len(result.get("domain_records", [])) == 0:
+                break
+            page += 1
+        return None
+
+
 # ── Dry-run provider (for preview / testing) ────────────────────────────────
 
 
@@ -688,7 +982,7 @@ def provider_from_config(
     setup: dict[str, Any] | SetupProfile,
     secrets: dict[str, Any] | None = None,
     dry_run: bool = False,
-) -> CloudflareProvider | Route53Provider | HetznerProvider | PorkbunProvider | DryRunProvider:
+) -> CloudflareProvider | Route53Provider | HetznerProvider | PorkbunProvider | GoDaddyProvider | DigitalOceanProvider | DryRunProvider:
     """Build a provider instance from setup profile + secrets.
 
     Raises DnsError if the provider is not yet supported or if the
@@ -719,6 +1013,10 @@ def provider_from_config(
         return HetznerProvider(token=token, zone_name=domain)
     if provider_name == PROVIDER_PORKBUN:
         return PorkbunProvider(token=token, zone_name=domain)
+    if provider_name == PROVIDER_GODADDY:
+        return GoDaddyProvider(token=token, zone_name=domain)
+    if provider_name == PROVIDER_DIGITALOCEAN:
+        return DigitalOceanProvider(token=token, zone_name=domain)
 
     raise DnsError(f"provider not yet supported: {provider_name}")
 
@@ -902,6 +1200,20 @@ SUPPORTED_PROVIDERS: dict[str, dict[str, str]] = {
         "token_type": "API Key + Secret Key (colon-separated)",
         "token_scope": "Read, Write DNS records",
         "token_docs": "https://porkbun.com/api/json/v3/documentation",
+        "dep": "none (stdlib urllib)",
+    },
+    PROVIDER_GODADDY: {
+        "name": "GoDaddy",
+        "token_type": "SSO Key + SSO Secret (colon-separated)",
+        "token_scope": "DNS Management",
+        "token_docs": "https://developer.godaddy.com/keys/",
+        "dep": "none (stdlib urllib)",
+    },
+    PROVIDER_DIGITALOCEAN: {
+        "name": "DigitalOcean",
+        "token_type": "Personal Access Token",
+        "token_scope": "read + write",
+        "token_docs": "https://docs.digitalocean.com/reference/api/create-personal-access-token/",
         "dep": "none (stdlib urllib)",
     },
 }
