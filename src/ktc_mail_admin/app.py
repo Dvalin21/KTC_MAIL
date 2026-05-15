@@ -460,26 +460,36 @@ class KtcMailHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 return
 
-            # Save setup profile
+            results: list[dict[str, str]] = []
+
+            # ── 1. Save setup profile ─────────────────────────────────
             CONFIG_DIR.mkdir(parents=True, exist_ok=True)
             STATE_DIR.mkdir(parents=True, exist_ok=True)
             save_json_private(SETUP_PATH, profile.to_dict())
-
-            # Save secrets separately
             save_json_private(SECRETS_PATH, {
                 "dns_provider": profile.dns_provider,
                 "dns_api_token": profile.dns_api_token,
             })
-
-            # Save DKIM private key
             if profile.dkim:
                 dkim_dir = CONFIG_DIR / "dkim"
                 dkim_dir.mkdir(parents=True, exist_ok=True)
                 dkim_path = dkim_dir / f"{profile.dkim.selector}.private"
                 dkim_path.write_text(profile.dkim.private_key_pem, encoding="utf-8")
                 dkim_path.chmod(0o600)
+            results.append({"step": "Setup profile", "status": "done",
+                            "detail": f"saved to {SETUP_PATH}"})
 
-            # Push DNS records
+            # ── 2. Write mail configs ─────────────────────────────────
+            try:
+                from ktc_mail_admin.config_renderer import write_all
+                written = write_all(profile, dest=Path("/etc"))
+                results.append({"step": "Mail configs", "status": "done",
+                                "detail": f"{len(written)} files written"})
+            except Exception as exc:
+                results.append({"step": "Mail configs", "status": "error",
+                                "detail": str(exc)})
+
+            # ── 3. Push DNS records ───────────────────────────────────
             if not profile.dns_provider_manual:
                 try:
                     secrets = {"dns_api_token": profile.dns_api_token}
@@ -492,10 +502,47 @@ class KtcMailHandler(BaseHTTPRequestHandler):
                             dns_set, transport, profile.domain,
                         )
                         SESSION["dns_actions"] = actions
+                        results.append({"step": "DNS records", "status": "done",
+                                        "detail": f"{len(actions)} records pushed"})
                 except Exception as exc:
-                    SESSION["dns_actions"] = [f"DNS push failed: {exc}"]
+                    results.append({"step": "DNS records", "status": "warn",
+                                    "detail": str(exc)})
+            else:
+                results.append({"step": "DNS records", "status": "info",
+                                "detail": "manual mode -- see DNS plan below"})
+
+            # ── 4. Start mail services ────────────────────────────────
+            try:
+                from ktc_mail_admin.acme_manager import reload_services
+                reload_services(profile)
+                results.append({"step": "Mail services", "status": "done",
+                                "detail": "postfix, dovecot, nginx started"})
+            except Exception as exc:
+                results.append({"step": "Mail services", "status": "error",
+                                "detail": str(exc)})
+
+            # ── 5. Issue TLS certificate ──────────────────────────────
+            try:
+                from ktc_mail_admin.acme_manager import issue as acme_issue
+                acme_issue(SETUP_PATH, dry_run=False)
+                results.append({"step": "TLS certificate", "status": "done",
+                                "detail": "Let's Encrypt cert issued"})
+            except Exception as exc:
+                results.append({"step": "TLS certificate", "status": "warn",
+                                "detail": f"{exc} -- the renew timer will retry"})
+
+            # ── 6. Apply firewall rules ───────────────────────────────
+            try:
+                from ktc_mail_admin.firewall_monitor import enforce as fw_enforce
+                fw_enforce(profile.security.actual_open_ports())
+                results.append({"step": "Firewall", "status": "done",
+                                "detail": "nftables rules applied"})
+            except Exception as exc:
+                results.append({"step": "Firewall", "status": "warn",
+                                "detail": str(exc)})
 
             SESSION["executed"] = True
+            SESSION["results"] = results
 
             # Redirect to /plan (shows what was done)
             self.send_response(HTTPStatus.SEE_OTHER)
@@ -697,13 +744,13 @@ document.addEventListener('DOMContentLoaded', function() {{
 {_card("Reverse DNS (PTR)", f'<pre style="font-family:monospace;white-space:pre-wrap">{html.escape(ptr_advice)}</pre>')}
 
 {_card("Ready to build?", f"""
-<p>Review the plan above. If everything looks right, click "Build my
-mail server" to push DNS records, generate DKIM keys, and write
-configuration.</p>
+<p>Review the plan. Click "Build my mail server" to write all configs,
+push DNS records, start services, issue a TLS certificate, and lock
+down the firewall.</p>
 <form method="post" action="/execute">
-  <button class="success" type="submit">✓ Build my mail server</button>
+  <button class="success" type="submit">Build my mail server</button>
   <button class="secondary" type="button" onclick="window.location='/'"
-          style="margin-top:0.5rem">← Back and change</button>
+          style="margin-top:0.5rem">Back and change</button>
 </form>
 """)}
 """
@@ -714,63 +761,86 @@ configuration.</p>
         profile: SetupProfile | None = SESSION.get("profile")
         dns_set = SESSION.get("dns_set")
         executed = SESSION.get("executed", False)
-        dns_actions = SESSION.get("dns_actions", [])
+        results: list[dict[str, str]] = SESSION.get("results", [])
 
         if profile is None:
             return self._redirect_home()
 
-        # Show what was executed
-        status_icon = "✅" if executed else "⏳"
-        status_text = "Setup profile saved and DNS records pushed" if executed else "Not yet executed"
-
         dns_plan = self._render_dns_plan(dns_set, profile) if dns_set else ""
-        ptr_advice = dns.ptr_report(profile)
 
-        actions_html = ""
-        if dns_actions:
-            actions_html = '<ul>' + ''.join(
-                f'<li>{html.escape(a)}</li>' for a in dns_actions
-            ) + '</ul>'
+        # ── Results table ─────────────────────────────────────────────
+        status_map = {
+            "done": ("#10b981", "OK"),
+            "warn": ("#f59e0b", "WARN"),
+            "error": ("#ef4444", "FAIL"),
+            "info": ("#64748b", "INFO"),
+        }
+        rows = ""
+        for r in results:
+            color, label = status_map.get(r["status"], ("#64748b", "?"))
+            detail = html.escape(r["detail"])
+            rows += (
+                f'<tr>'
+                f'<td style="padding:0.5rem 0.75rem;border-bottom:1px solid #e2e8f0">'
+                f'{html.escape(r["step"])}</td>'
+                f'<td style="padding:0.5rem 0.75rem;border-bottom:1px solid #e2e8f0">'
+                f'<span style="background:{color};color:white;padding:0.1rem 0.5rem;'
+                f'border-radius:4px;font-size:0.75rem;font-weight:700">{label}</span></td>'
+                f'<td style="padding:0.5rem 0.75rem;border-bottom:1px solid #e2e8f0;'
+                f'font-size:0.85rem;font-family:monospace;color:#64748b">{detail}</td>'
+                f'</tr>'
+            )
+        if not rows:
+            rows = '<tr><td colspan="3" style="padding:1rem;color:#64748b">Nothing executed yet.</td></tr>'
 
-        next_steps = ""
+        # ── Post-install notes ────────────────────────────────────────
+        notes = ""
         if executed:
+            for r in results:
+                if r["status"] == "warn":
+                    notes += (
+                        f'<div class="warning-box">'
+                        f'<strong>{html.escape(r["step"])}</strong>'
+                        f'<p>{html.escape(r["detail"])}</p></div>'
+                    )
+                elif r["status"] == "error":
+                    notes += (
+                        f'<div class="error-box">'
+                        f'<strong>{html.escape(r["step"])}</strong>'
+                        f'<p>{html.escape(r["detail"])}</p></div>'
+                    )
+
             if profile.port_25_blocked and profile.smtp_relay.mode == "direct":
-                next_steps = (
+                notes += (
                     '<div class="warning-box">'
-                    '<strong>⚠ Port 25 is blocked</strong>'
-                    '<p>Your ISP blocks outbound port 25. You need a VPS relay '
-                    'before mail can flow. Run the bootstrap script to install '
-                    'the mail stack, then configure the relay.</p>'
+                    '<strong>Port 25 is blocked</strong>'
+                    '<p>Your ISP blocks outbound port 25. Mail cannot reach '
+                    'external servers until you configure an SMTP relay.</p>'
                     '</div>'
                 )
 
-            next_steps += f"""
-<div class="card">
-  <h2>Next steps</h2>
-  <ol style="margin-left:1.25rem;line-height:2">
-    <li><strong>Install the mail stack:</strong>
-      <code>/usr/lib/ktc-mail/bootstrap-mail-stack.sh</code></li>
-    <li><strong>Verify DNS propagation:</strong>
-      Wait 5-10 minutes, then check with <code>dig +short MX {html.escape(profile.domain)}</code></li>
-    <li><strong>Set reverse DNS (PTR):</strong>
-      {html.escape(ptr_advice.split(chr(10))[-1] if chr(10) in ptr_advice else ptr_advice)}</li>
-    <li><strong>Check your email:</strong>
-      Send a test to <code>check-auth@verifier.port25.com</code></li>
-  </ol>
-</div>
-"""
-
         return f"""
 <div class="card" style="border-left: 4px solid var(--ok)">
-  <h1>{status_icon} {status_text}</h1>
-  <p>Setup profile saved to <code>{html.escape(str(SETUP_PATH))}</code></p>
+  <h1>KTC Mail setup complete</h1>
+  <p>Your mail server is being configured. Results for each step are below.</p>
 </div>
 
-{_card("DNS records", dns_plan)}
+{_card("Build results", f"""
+<table style="width:100%;border-collapse:collapse;font-size:0.9rem">
+<thead>
+<tr style="border-bottom:2px solid #e2e8f0">
+  <th style="padding:0.5rem 0.75rem;text-align:left">Step</th>
+  <th style="padding:0.5rem 0.75rem;text-align:left">Status</th>
+  <th style="padding:0.5rem 0.75rem;text-align:left">Detail</th>
+</tr>
+</thead>
+<tbody>{rows}</tbody>
+</table>
+""")}
 
-{_card("Execution log", actions_html or "<p>No actions recorded.</p>")}
+{notes}
 
-{next_steps}
+{_card("DNS records", dns_plan) if dns_plan else ""}
 
 {_card("What was configured", f"""
 <ul style="margin-left:1.25rem;line-height:1.8">
@@ -784,12 +854,13 @@ configuration.</p>
 </ul>
 """)}
 
-{_card("Documentation", """
+{_card("Where to go from here", f"""
 <ul style="margin-left:1.25rem;line-height:1.8">
-  <li><a href="/usr/share/doc/ktc-mail/revised-architecture.md">Revised architecture</a></li>
-  <li><a href="/usr/share/doc/ktc-mail/architecture.md">Original architecture</a></li>
-  <li><a href="/usr/share/doc/ktc-mail/implementation-plan.md">Implementation plan</a></li>
-  <li><a href="/usr/share/doc/ktc-mail/security.md">Security</a></li>
+  <li>Check your DNS: <code>dig +short MX {html.escape(profile.domain)}</code></li>
+  <li>Connect your IMAP client to <strong>{html.escape(profile.hostname)}</strong> on port 993 with TLS</li>
+  <li>Send mail through <strong>{html.escape(profile.hostname)}</strong> on port 587 with STARTTLS</li>
+  <li>View logs: <code>journalctl -u postfix -f</code></li>
+  <li>Manage users: <code>ktc-mail user add</code></li>
 </ul>
 """)}
 """
