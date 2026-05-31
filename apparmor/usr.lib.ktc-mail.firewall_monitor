@@ -1,39 +1,36 @@
-# KTC Mail — firewall policy monitor (nftables).
-#
-# Profile for /usr/lib/ktc-mail/firewall_monitor.py (Python script).
-# Reads the setup profile and enforces nftables rules.  Runs
-# periodically via systemd timer.
-
+# KTC Mail — firewall monitor (nftables rule manager)
+# Profile: /usr/lib/ktc-mail/firewall_monitor.py
 #include <tunables/global>
 
-/usr/lib/ktc-mail/firewall_monitor.py {
-  #include <abstractions/base>
+profile usr.lib.ktc-mail.firewall_monitor /usr/lib/ktc-mail/firewall_monitor.py {
   #include <abstractions/python>
+  #include <abstractions/base>
 
-  # Script and library access
+  # Python stdlib and site-packages
+  /usr/lib/python3/**  r,
+  /usr/lib/python3/**/*.so mr,
+
+  # KTC Mail modules
   /usr/lib/ktc-mail/ r,
   /usr/lib/ktc-mail/** r,
-  /usr/lib/python3*/ r,
-  /usr/lib/python3*/**.py r,
 
-  # Configuration read
+  # Config and state
   /etc/ktc-mail/ r,
   /etc/ktc-mail/** r,
+  /var/lib/ktc-mail/ r,
+  /var/lib/ktc-mail/** rw,
 
   # nftables binary
-  /usr/sbin/nft ix,
+  /usr/sbin/nft ixr,
 
-  # nftables ruleset file
-  /etc/nftables/ r,
-  /etc/nftables/ktc-mail.conf rw,
-
-  # Network — needs to inspect current rules
+  # Network: raw sockets for nftables, outbound checks
+  network inet tcp,
+  network inet6 tcp,
   network netlink raw,
-  network inet dgram,
 
-  # Logging to journal
+  # Systemd notify
+  /run/systemd/notify  w,
+
+  # Logging
   /dev/log w,
-
-  # Deny everything else
-  deny /** w,
 }

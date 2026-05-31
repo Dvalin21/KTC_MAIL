@@ -13,6 +13,22 @@ PASS=0
 FAIL=0
 SKIP=0
 
+# ── Python path detection ──────────────────────────────────────────
+# If ktc_mail_admin is not importable directly, add the source tree
+# to PYTHONPATH.  Works from build tree (test/smoke-test.sh → src/)
+# and from installed package (import finds it via site-packages).
+if ! python3 -c "import ktc_mail_admin" 2>/dev/null; then
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+    KTC_SRC="$SCRIPT_DIR/../src"
+    if [ -d "$KTC_SRC/ktc_mail_admin" ]; then
+        export PYTHONPATH="${PYTHONPATH:+$PYTHONPATH:}$KTC_SRC"
+    else
+        echo "ERROR: ktc_mail_admin not importable and source not found at $KTC_SRC"
+        echo "Install the package or run from the source tree."
+        exit 1
+    fi
+fi
+
 pass() { PASS=$((PASS + 1)); echo -e "  \e[32mPASS\e[0m $1"; }
 fail() { FAIL=$((FAIL + 1)); echo -e "  \e[31mFAIL\e[0m $1"; }
 skip() { SKIP=$((SKIP + 1)); echo -e "  \e[33mSKIP\e[0m $1"; }
@@ -150,11 +166,29 @@ if timeout 5 bash -c "echo >/dev/tcp/127.0.0.1/25" 2>/dev/null; then
     else
         fail "SMTP EHLO — STARTTLS not advertised"
     fi
-    # AUTH is only advertised after STARTTLS (smtpd_tls_auth_only = yes).
-    # Before STARTTLS, AUTH is intentionally hidden to prevent credential
-    # sniffing on plaintext connections. This is correct security behavior.
-    # The AUTH mechanisms are verified via the STARTTLS+EHLO test below.
-    skip "SMTP AUTH before STARTTLS (intentionally hidden — smtpd_tls_auth_only=yes)"
+    # M-012: AUTH must NOT be advertised BEFORE STARTTLS, but MUST be
+    # advertised AFTER. This is critical for credential safety.
+    # Uses openssl s_client -starttls smtp for the TLS-leg of the test.
+    if command -v openssl &>/dev/null; then
+        # Test 1: EHLO without STARTTLS — AUTH must NOT appear
+        EHLO_BEFORE=$(echo -e "EHLO test.local\nQUIT" | timeout 10 nc 127.0.0.1 25 2>/dev/null) || true
+        if echo "$EHLO_BEFORE" | grep -qi "AUTH "; then
+            fail "SMTP — AUTH advertised before STARTTLS (safety violation)"
+        else
+            pass "SMTP — AUTH hidden before STARTTLS"
+        fi
+
+        # Test 2: STARTTLS then EHLO — AUTH must appear
+        EHLO_AFTER=$(printf 'EHLO test.local\nSTARTTLS\nEHLO test.local\nQUIT\n' | \
+            timeout 10 openssl s_client -starttls smtp -connect 127.0.0.1:25 2>/dev/null) || true
+        if echo "$EHLO_AFTER" | grep -qi "AUTH "; then
+            pass "SMTP — AUTH advertised after STARTTLS"
+        else
+            fail "SMTP — AUTH not advertised after STARTTLS"
+        fi
+    else
+        skip "SMTP AUTH before/after STARTTLS (openssl not available)"
+    fi
 else
     fail "SMTP — port 25 not reachable"
 fi
@@ -225,7 +259,7 @@ echo "--- Admin server ---"
 if python3 -c "import fastapi, uvicorn" 2>/dev/null; then
     # Bootstrap admin password first
     ktc_mail_admin_init() {
-        PYTHONPATH=/opt/ktc-mail/src python3 -c "
+        python3 -c "
 from ktc_mail_admin.admin_server import cmd_admin_init
 import argparse
 args = argparse.Namespace(force=True, quiet=False)
@@ -238,7 +272,7 @@ cmd_admin_init(args)
 
     # Start admin server on a random port
     PORT=8082
-    KTC_SESSION_HTTPS=0 PYTHONPATH=/opt/ktc-mail/src python3 -c "
+    KTC_SESSION_HTTPS=0 python3 -c "
 import uvicorn
 from ktc_mail_admin.admin_server import create_app
 app = create_app()

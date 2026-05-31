@@ -32,6 +32,7 @@ Systemd: ktc-mail-rate-limit.service
 from __future__ import annotations
 
 import os
+import signal
 import socket
 import sys
 import time
@@ -47,88 +48,140 @@ BACKLOG = 32
 PRUNE_INTERVAL = 300  # purge stale entries every 5 minutes
 
 
+# ── Logging (lazy-imported to avoid circular deps) ────────────────
+# setup_logging is called from main() — not at module level.
+_log_setup_done = False
+
+
+def _ensure_logging() -> None:
+    global _log_setup_done
+    if not _log_setup_done:
+        from .config import setup_logging
+        setup_logging()
+        _log_setup_done = True
+
+
 # ── Rate tracker — in-memory, periodic pruning ─────────────────────────────
-# Data: {sasl_username: [timestamp, timestamp, ...]}
-# Timestamps are added on each accepted send and pruned when they fall
-# outside the sliding window.  The dict is never explicitly deleted —
-# unused entries are removed lazily during the periodic prune sweep.
+# Design (H-009 fix): counter-based O(1) per user instead of unbounded lists.
+#   {sasl_username: (count, window_start)}
+# Memory: O(1) per user, not O(n_events).
+#
+# H-008 fix: after 3 consecutive rate-limit hits the action escalates
+# from DEFER_IF_PERMIT (which fills Postfix's queue) to REJECT (which
+# bounces immediately, preventing queue growth).
+
+_ESCALATE_AFTER = 3  # consecutive rate-limit hits → REJECT
 
 
 class RateTracker:
     """Per-user send rate tracker with sliding windows.
 
-    Thread-safe for CPython due to the GIL (single-threaded use in the
-    daemon).  All operations are O(n) in the number of tracked events
-    for the user, which is bounded by the rate limit itself.
+    Counter-based: O(1) memory per user, O(1) time per check.
     """
 
     def __init__(self) -> None:
-        self._hourly: dict[str, list[float]] = defaultdict(list)
-        self._daily: dict[str, list[float]] = defaultdict(list)
+        # (count, window_start) per user per window
+        self._hourly: dict[str, tuple[int, float]] = {}
+        self._daily: dict[str, tuple[int, float]] = {}
+        # Consecutive rate-limit denials per user (H-008 escalation)
+        self._consecutive: dict[str, int] = {}
         self._last_prune: float = 0.0
+
+    @staticmethod
+    def _check_counter(
+        entry: tuple[int, float] | None,
+        limit: int,
+        window: float,
+        now: float,
+    ) -> tuple[bool, tuple[int, float]]:
+        """Check if *entry* is within *limit/*window*.
+
+        Returns (over_limit, updated_entry).
+        """
+        if entry is None or now - entry[1] > window:
+            # Window expired — reset
+            return False, (0, now)
+        count, _ = entry
+        if count >= limit:
+            return True, entry
+        return False, entry
 
     def check_and_track(self, username: str) -> str:
         """Check rates for *username*, record this attempt, return a
         Postfix policy action string.
 
         Returns ``action=OK`` if within limits, or
-        ``action=DEFER_IF_PERMIT ...`` with a reason string if over.
+        ``action=DEFER_IF_PERMIT`` / ``action=REJECT`` with a reason
+        string if over (escalates to REJECT after 3 consecutive hits).
         """
         now = time.monotonic()
-        hour_ago = now - 3600.0
-        day_ago = now - 86400.0
 
         # ── Hourly check ───────────────────────────────────────────────
-        hq = self._hourly[username]
-        while hq and hq[0] < hour_ago:
-            hq.pop(0)
-        if len(hq) >= MAX_PER_HOUR:
-            return (
-                f"action=DEFER_IF_PERMIT "
-                f"rate limit exceeded ({MAX_PER_HOUR}/hour)"
-            )
+        over_h, h_entry = self._check_counter(
+            self._hourly.get(username), MAX_PER_HOUR, 3600.0, now)
+        if over_h:
+            return self._deny(username, f"{MAX_PER_HOUR}/hour")
 
         # ── Daily check ────────────────────────────────────────────────
-        dq = self._daily[username]
-        while dq and dq[0] < day_ago:
-            dq.pop(0)
-        if len(dq) >= MAX_PER_DAY:
-            return (
-                f"action=DEFER_IF_PERMIT "
-                f"daily rate limit exceeded ({MAX_PER_DAY}/day)"
-            )
+        over_d, d_entry = self._check_counter(
+            self._daily.get(username), MAX_PER_DAY, 86400.0, now)
+        if over_d:
+            return self._deny(username, f"{MAX_PER_DAY}/day")
 
-        # ── Record ─────────────────────────────────────────────────────
-        hq.append(now)
-        dq.append(now)
+        # ── Record (increment counters) ─────────────────────────────────
+        self._hourly[username] = (h_entry[0] + 1, h_entry[1])
+        self._daily[username] = (d_entry[0] + 1, d_entry[1])
+        # Clear consecutive denials on success
+        self._consecutive.pop(username, None)
 
         return "action=OK"
+
+    def _deny(self, username: str, limit_label: str) -> str:
+        """Return a deny action, escalating to REJECT after repeated hits.
+
+        H-008: DEFER_IF_PERMIT fills Postfix's queue. After 3 consecutive
+        rate-limit hits, return REJECT to bounce immediately.
+        """
+        count = self._consecutive.get(username, 0) + 1
+        self._consecutive[username] = count
+
+        if count >= _ESCALATE_AFTER:
+            return (
+                f"action=REJECT "
+                f"rate limit exceeded ({limit_label}) — repeated violation"
+            )
+        return (
+            f"action=DEFER_IF_PERMIT "
+            f"rate limit exceeded ({limit_label})"
+        )
 
     def prune(self) -> None:
         """Remove stale entries for ALL users.  Called periodically."""
         now = time.monotonic()
-        hour_ago = now - 3600.0
-        day_ago = now - 86400.0
 
         # Prune hourly tracker
-        empty_h = []
-        for user, q in self._hourly.items():
-            while q and q[0] < hour_ago:
-                q.pop(0)
-            if not q:
-                empty_h.append(user)
-        for user in empty_h:
-            del self._hourly[user]
+        stale_h = [
+            u for u, (_, ws) in self._hourly.items()
+            if now - ws > 3600.0
+        ]
+        for u in stale_h:
+            del self._hourly[u]
 
         # Prune daily tracker
-        empty_d = []
-        for user, q in self._daily.items():
-            while q and q[0] < day_ago:
-                q.pop(0)
-            if not q:
-                empty_d.append(user)
-        for user in empty_d:
-            del self._daily[user]
+        stale_d = [
+            u for u, (_, ws) in self._daily.items()
+            if now - ws > 86400.0
+        ]
+        for u in stale_d:
+            del self._daily[u]
+
+        # Prune consecutive-denial tracker (clear entries older than 1h)
+        stale_c = [
+            u for u, c in self._consecutive.items()
+            if c == 0
+        ]
+        for u in stale_c:
+            del self._consecutive[u]
 
         self._last_prune = now
 
@@ -191,10 +244,21 @@ def handle_client(tracker: RateTracker, conn: socket.socket) -> None:
 
 
 def main() -> int:
+    _ensure_logging()
     listen_addr = LISTEN_ADDR
     listen_port = LISTEN_PORT
     tracker = RateTracker()
     last_prune_check: float = 0.0
+
+    # M-06: Subscribe to SIGTERM so `systemctl stop ktc-mail-rate-limit`
+    # actually terminates the process instead of silently continuing.
+    _shutdown = False
+
+    def _on_sigterm(sig: int, frame: object) -> None:  # noqa: ANN401
+        nonlocal _shutdown
+        _shutdown = True
+
+    signal.signal(signal.SIGTERM, _on_sigterm)
 
     # Create socket
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -210,9 +274,13 @@ def main() -> int:
     print(f"rate-limiter: listening on {listen_addr}:{listen_port}",
           file=sys.stderr)
 
-    while True:
+    sock.settimeout(1.0)  # periodic wake-up to check _shutdown
+
+    while not _shutdown:
         try:
             conn, addr = sock.accept()
+        except TimeoutError:
+            continue
         except KeyboardInterrupt:
             print("rate-limiter: shutting down", file=sys.stderr)
             break

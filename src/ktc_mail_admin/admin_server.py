@@ -23,7 +23,9 @@ Auth:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import base64
+import collections
 import hashlib
 import hmac
 import json
@@ -34,6 +36,7 @@ import secrets
 import subprocess
 import sys
 import time
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -47,6 +50,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from . import user_manager as um
 from . import mfa as mfa_mod
+from .qr import qr_svg_b64
 from .config import (
     CONFIG_DIR,
     SETUP_PATH,
@@ -58,6 +62,7 @@ from .config import (
     BACKUP_STATE_PATH,
     read_json,
     save_json_private,
+    setup_logging,
     SetupProfile,
 )
 
@@ -180,6 +185,7 @@ def load_admin_account() -> dict[str, Any]:
         "role": DEFAULT_ROLE,
         "mfa_secret": None,
         "mfa_enabled": False,
+        "session_version": 0,
         "updated_at": 0,
     }
     if not ADMIN_HASH_PATH.exists():
@@ -201,6 +207,7 @@ def save_admin_account(account: dict[str, Any]) -> None:
         "role": account.get("role", DEFAULT_ROLE),
         "mfa_secret": account.get("mfa_secret"),
         "mfa_enabled": bool(account.get("mfa_enabled", False)),
+        "session_version": account.get("session_version", 0),
         "updated_at": int(time.time()),
     }
     save_json_private(ADMIN_HASH_PATH, payload)
@@ -560,6 +567,36 @@ def _cert_expiry_days(end_date_str: str) -> int | None:
         return None
 
 
+# ── Login rate limiter ───────────────────────────────────────────────────────
+# Per-IP sliding window: max 5 failed attempts in 60 seconds.
+_login_attempts: dict[str, list[float]] = {}  # IP -> [timestamps]
+_LOGIN_RATE_LIMIT = 5
+_LOGIN_RATE_WINDOW = 60  # seconds
+
+
+def _login_rate_check(ip: str) -> bool:
+    """Return True if this IP is currently rate-limited (blocked)."""
+    now = time.time()
+    # Get existing attempts, purge anything outside the window
+    window_start = now - _LOGIN_RATE_WINDOW
+    attempts = _login_attempts.get(ip)
+    if not attempts:
+        return False
+    # Prune stale entries in-place (O(n) but n ≤ rate limit)
+    _login_attempts[ip] = [t for t in attempts if t > window_start]
+    return len(_login_attempts[ip]) >= _LOGIN_RATE_LIMIT
+
+
+def _login_rate_record(ip: str) -> None:
+    """Record a failed login attempt from *ip*."""
+    _login_attempts.setdefault(ip, []).append(time.time())
+
+
+def _login_rate_clear(ip: str) -> None:
+    """Clear failed attempt history for *ip* (on successful login)."""
+    _login_attempts.pop(ip, None)
+
+
 # ── FastAPI app setup ─────────────────────────────────────────────────────────
 
 
@@ -590,9 +627,12 @@ def create_app() -> FastAPI:
     # Allow env override for testing
     session_key = os.environ.get("KTC_ADMIN_SECRET", session_key)
 
-    # Allow env override for dev/testing over plain HTTP.
-    # Production defaults to True (Secure flag on session cookie).
-    https_only = os.environ.get("KTC_SESSION_HTTPS", "1") == "1"
+    # Session cookie flags:
+    #   - HttpOnly: always on (prevents JS access)
+    #   - Secure:   on by default; disable via KTC_DEV=1 for local HTTP testing
+    #   - SameSite: lax (prevents CSRF from external sites)
+    # Starlette's SessionMiddleware hardcodes HttpOnly; we control Secure here.
+    use_https = os.environ.get("KTC_DEV", "0") != "1"
 
     app.add_middleware(
         SessionMiddleware,
@@ -600,8 +640,31 @@ def create_app() -> FastAPI:
         session_cookie="ktc_admin_session",
         max_age=86400,  # 24 hours
         same_site="lax",
-        https_only=https_only,
+        https_only=use_https,
     )
+
+    # ── Security headers (CSP) ──────────────────────────────────────────
+    # Defense-in-depth: limits what resources can load even if an XSS
+    # vulnerability exists.  The 'unsafe-inline' relaxations are required
+    # because templates use onsubmit= handlers and inline styles; these
+    # should be removed when the frontend is migrated to a JS bundle.
+
+    @app.middleware("http")
+    async def add_security_headers(request: Request, call_next):
+        response = await call_next(request)
+        if response.media_type and "text/html" in response.media_type:
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; "
+                "script-src 'self' 'unsafe-inline'; "
+                "style-src 'self' 'unsafe-inline'; "
+                "img-src 'self' data:; "
+                "frame-ancestors 'none'; "
+                "form-action 'self'"
+            )
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["X-Frame-Options"] = "DENY"
+        return response
 
     # ── CSRF helper ────────────────────────────────────────────────────
     # Per-session CSRF token. Generated once per session, validated
@@ -643,6 +706,20 @@ def create_app() -> FastAPI:
 
     # ── Auth / RBAC helpers ────────────────────────────────────────────
 
+    def _safe_redirect(path: str, *,
+                       query: dict[str, str] | None = None,
+                       status_code: int = 302) -> RedirectResponse:
+        """Build a RedirectResponse with URL-encoded query parameters.
+
+        Every user-controlled value passed in *query* is percent-encoded
+        to prevent redirect parameter injection / response splitting.
+        """
+        url = path
+        if query:
+            encoded = urllib.parse.urlencode(query)
+            url = f"{path}?{encoded}"
+        return RedirectResponse(url=url, status_code=status_code)
+
     def login_redirect() -> RedirectResponse:
         return RedirectResponse(url="/login", status_code=302)
 
@@ -655,7 +732,16 @@ def create_app() -> FastAPI:
         )
 
     def is_authenticated(request: Request) -> bool:
-        return request.session.get("authenticated", False)
+        if not request.session.get("authenticated"):
+            return False
+        # Session version check: invalidate sessions after MFA state change
+        acct = load_admin_account()
+        stored_version = acct.get("session_version", 0)
+        session_version = request.session.get("session_version", -1)
+        if session_version != stored_version:
+            request.session.clear()
+            return False
+        return True
 
     def require_role(request: Request, min_role: str = "readonly") -> bool:
         """Check auth + minimum role level.
@@ -673,6 +759,19 @@ def create_app() -> FastAPI:
         min_level = ROLE_HIERARCHY.get(min_role, 0)
         user_level = ROLE_HIERARCHY.get(user_role, 0)
         return user_level >= min_level
+
+    # RFC 5321 email pattern (local@domain) with passwd-file safety.
+    # Rejects characters unsafe for Dovecot passwd-file format:
+    # colon, newline, carriage return, null byte.
+    _EMAIL_RE = re.compile(
+        r'^[a-zA-Z0-9.!#$%&\'*+/=?^_`{|}~-]+@[a-zA-Z0-9]'
+        r'(?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?'
+        r'(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$'
+    )
+
+    def _valid_email(email: str) -> bool:
+        """Return True if *email* is a valid RFC 5321 address safe for passwd-file."""
+        return bool(self._EMAIL_RE.match(email))
 
     def client_ip(request: Request) -> str:
         """Extract client IP from request, respecting X-Forwarded-For."""
@@ -733,6 +832,15 @@ def create_app() -> FastAPI:
         email = form.get("email", "")
         password = form.get("password", "")
         csrf_token = form.get("csrf_token", "")
+        ip = client_ip(request)
+
+        # Rate limit: per-IP, 5 failures in 60 seconds
+        if _login_rate_check(ip):
+            logger.warning("Login rate limit hit: ip=%s email=%s", ip, email)
+            return RedirectResponse(
+                url="/login?error=Too+many+failed+logins.+Try+again+in+60+seconds",
+                status_code=429,
+            )
 
         if not validate_csrf(request, csrf_token):
             return RedirectResponse(
@@ -743,16 +851,20 @@ def create_app() -> FastAPI:
         acct = load_admin_account()
         stored_hash = acct.get("password_hash", "")
         if not stored_hash:
-            return RedirectResponse(
-                url="/login?error=Admin+not+configured.+Run+ktc-mail+admin+init",
-                status_code=302,
-            )
-
-        if not verify_password(password, stored_hash):
+            logger.warning("Login attempted but admin not configured: ip=%s email=%s", ip, email)
             return RedirectResponse(
                 url="/login?error=Invalid+credentials",
                 status_code=302,
             )
+
+        if not verify_password(password, stored_hash):
+            _login_rate_record(ip)
+            logger.warning("Failed login: ip=%s email=%s", ip, email)
+            return _safe_redirect(
+                "/login", query={"error": "Invalid credentials"})
+
+        # Successful login — clear rate limit for this IP
+        _login_rate_clear(ip)
 
         # Password OK — check if MFA is required
         mfa_enabled = bool(acct.get("mfa_enabled", False))
@@ -769,6 +881,7 @@ def create_app() -> FastAPI:
         request.session["role"] = acct.get("role", DEFAULT_ROLE)
         request.session["mfa_verified"] = True
         request.session["login_time"] = int(time.time())
+        request.session["session_version"] = acct.get("session_version", 0)
 
         audit_log("login", email, "login (no MFA)", client_ip(request))
         return RedirectResponse(url="/", status_code=302)
@@ -778,6 +891,16 @@ def create_app() -> FastAPI:
         """Verify TOTP code after password authentication."""
         if not request.session.get("mfa_pending", False):
             return RedirectResponse(url="/login", status_code=302)
+
+        ip = client_ip(request)
+
+        # Rate limit MFA attempts too (same pool as password login)
+        if _login_rate_check(ip):
+            logger.warning("MFA rate limit hit: ip=%s", ip)
+            return RedirectResponse(
+                url="/login?error=Too+many+failed+logins.+Try+again+in+60+seconds",
+                status_code=429,
+            )
 
         form = await request.form()
         code = str(form.get("totp_code", "")).strip()
@@ -809,10 +932,16 @@ def create_app() -> FastAPI:
             )
 
         if not code or not mfa_mod.verify_totp(secret, code):
+            _login_rate_record(ip)
+            email = request.session.get("mfa_pending_email", "unknown")
+            logger.warning("Failed MFA: ip=%s email=%s", ip, email)
             return RedirectResponse(
                 url="/login?error=Invalid+verification+code",
                 status_code=302,
             )
+
+        # Successful MFA — clear rate limit for this IP
+        _login_rate_clear(ip)
 
         email = request.session.get("mfa_pending_email", "unknown")
         request.session["authenticated"] = True
@@ -820,6 +949,7 @@ def create_app() -> FastAPI:
         request.session["role"] = acct.get("role", DEFAULT_ROLE)
         request.session["mfa_verified"] = True
         request.session["login_time"] = int(time.time())
+        request.session["session_version"] = acct.get("session_version", 0)
         # Clear pending state
         request.session.pop("mfa_pending", None)
         request.session.pop("mfa_pending_email", None)
@@ -937,58 +1067,34 @@ def create_app() -> FastAPI:
         password = str(form.get("password", ""))
         quota = str(form.get("quota", "1G"))
 
-        if not email or not password:
-            return RedirectResponse(
-                url="/users?error=Email+and+password+required",
-                status_code=302,
-            )
+        if not _valid_email(email):
+            return _safe_redirect(
+                "/users", query={"error": "Invalid email address"})
+        if not password:
+            return _safe_redirect(
+                "/users", query={"error": "Password required"})
 
         result = um.user_add(email, password=password, quota=quota, dry_run=False)
         if result != 0:
-            return RedirectResponse(
-                url=f"/users?error=Failed+to+add+{email}",
-                status_code=302,
-            )
+            return _safe_redirect("/users",
+                                  query={"error": f"Failed to add {email}"})
 
         audit_log("user_add", actor_email(request), email, client_ip(request))
-        return RedirectResponse(
-            url=f"/users?msg=Added+{email}",
-            status_code=302,
-        )
-
-    @app.post("/users/del")
-    async def users_del(request: Request):
-        if not require_role(request, "admin"):
-            return login_redirect()
-
-        form = await request.form()
-        csrf_token = form.get("csrf_token", "")
-        if not validate_csrf(request, csrf_token):
-            return RedirectResponse(
-                url="/users?error=Invalid+session+token",
-                status_code=302,
-            )
+        return _safe_redirect("/users", query={"msg": f"Added {email}"})
 
         email = str(form.get("email", "")).strip().lower()
 
-        if not email:
-            return RedirectResponse(
-                url="/users?error=Email+required",
-                status_code=302,
-            )
+        if not _valid_email(email):
+            return _safe_redirect(
+                "/users", query={"error": "Invalid email address"})
 
         result = um.user_delete(email, dry_run=False)
         if result != 0:
-            return RedirectResponse(
-                url=f"/users?error=Failed+to+remove+{email}",
-                status_code=302,
-            )
+            return _safe_redirect("/users",
+                                  query={"error": f"Failed to remove {email}"})
 
         audit_log("user_del", actor_email(request), email, client_ip(request))
-        return RedirectResponse(
-            url=f"/users?msg=Removed+{email}",
-            status_code=302,
-        )
+        return _safe_redirect("/users", query={"msg": f"Removed {email}"})
 
     @app.post("/users/passwd")
     async def users_passwd(request: Request):
@@ -1006,18 +1112,17 @@ def create_app() -> FastAPI:
         email = str(form.get("email", "")).strip().lower()
         password = str(form.get("password", ""))
 
-        if not email or not password:
-            return RedirectResponse(
-                url="/users?error=Email+and+password+required",
-                status_code=302,
-            )
+        if not _valid_email(email):
+            return _safe_redirect(
+                "/users", query={"error": "Invalid email address"})
+        if not password:
+            return _safe_redirect(
+                "/users", query={"error": "Password required"})
 
         result = um.user_passwd(email, dry_run=False, password=password)
         if result != 0:
-            return RedirectResponse(
-                url=f"/users?error=Failed+to+change+password+for+{email}",
-                status_code=302,
-            )
+            return _safe_redirect("/users",
+                                  query={"error": f"Failed to change password for {email}"})
 
         audit_log("user_passwd", actor_email(request), email, client_ip(request))
 
@@ -1035,6 +1140,11 @@ def create_app() -> FastAPI:
         error = request.query_params.get("error", "")
         msg = request.query_params.get("msg", "")
 
+        # Generate QR code locally — never leak TOTP secret to third-party APIs
+        qr_src = ""
+        if mfa.get("otpauth_uri"):
+            qr_src = qr_svg_b64(mfa["otpauth_uri"])
+
         return templates.TemplateResponse(
             request, "settings.html",
             {
@@ -1045,6 +1155,7 @@ def create_app() -> FastAPI:
                 "config_dir": str(CONFIG_DIR),
                 "state_dir": str(STATE_DIR),
                 "mfa": mfa,
+                "qr_src": qr_src,
                 "error": error,
                 "msg": msg,
             },
@@ -1137,6 +1248,7 @@ def create_app() -> FastAPI:
             )
 
         acct["mfa_enabled"] = True
+        acct["session_version"] = acct.get("session_version", 0) + 1
         save_admin_account(acct)
 
         audit_log(
@@ -1164,6 +1276,7 @@ def create_app() -> FastAPI:
         acct = load_admin_account()
         acct["mfa_enabled"] = False
         acct["mfa_secret"] = None
+        acct["session_version"] = acct.get("session_version", 0) + 1
         save_admin_account(acct)
 
         audit_log(
@@ -1194,6 +1307,7 @@ def create_app() -> FastAPI:
         acct["mfa_secret"] = secret
         # Don't enable yet — must verify first code
         acct["mfa_enabled"] = False
+        acct["session_version"] = acct.get("session_version", 0) + 1
         save_admin_account(acct)
 
         audit_log(
@@ -1243,11 +1357,9 @@ def create_app() -> FastAPI:
             )
 
         selector = str(form.get("selector", "default")).strip()
-        if not selector or "/" in selector or ".." in selector:
-            return RedirectResponse(
-                url="/dkim?error=Invalid+selector",
-                status_code=302,
-            )
+        if not re.match(r'^[a-zA-Z0-9_-]+$', selector):
+            return _safe_redirect(
+                "/dkim", query={"error": "Invalid selector"})
 
         profile = _load_profile()
         if not profile:
@@ -1270,10 +1382,8 @@ def create_app() -> FastAPI:
             )
             return RedirectResponse(url="/dkim", status_code=302)
         except Exception as exc:
-            return RedirectResponse(
-                url=f"/dkim?error=Generation+failed:+{exc}",
-                status_code=302,
-            )
+            return _safe_redirect("/dkim",
+                                  query={"error": f"Generation failed: {exc}"})
 
     # ── Log viewer ─────────────────────────────────────────────────────
 
@@ -1376,20 +1486,14 @@ def create_app() -> FastAPI:
                 local_records, transport, profile.domain,
             )
             if issues:
-                msg = f"Found+{len(issues)}+issues"
-                return RedirectResponse(
-                    url=f"/dns?msg={msg}",
-                    status_code=302,
-                )
-            return RedirectResponse(
-                url="/dns?msg=All+records+verified+OK",
-                status_code=302,
-            )
+                return _safe_redirect(
+                    "/dns",
+                    query={"msg": f"Found {len(issues)} issues"})
+            return _safe_redirect(
+                "/dns", query={"msg": "All records verified OK"})
         except Exception as exc:
-            return RedirectResponse(
-                url=f"/dns?error=Verification+failed:+{exc}",
-                status_code=302,
-            )
+            return _safe_redirect(
+                "/dns", query={"error": f"Verification failed: {exc}"})
 
     @app.post("/dns/apply")
     async def dns_apply(request: Request):
@@ -1420,8 +1524,11 @@ def create_app() -> FastAPI:
             )
             transport = provider_from_config(data, secrets, dry_run=False)
             local = profile.generate_dns_records()
-            actions = sync_records(local, transport, profile.domain,
-                                   dry_run=False)
+            actions = await asyncio.wait_for(
+                asyncio.to_thread(
+                    sync_records, local, transport, profile.domain, False),
+                timeout=120,
+            )
 
             state = {
                 "domain": profile.domain,
@@ -1441,11 +1548,12 @@ def create_app() -> FastAPI:
                 url="/dns?msg=DNS+records+synced+OK",
                 status_code=302,
             )
+        except TimeoutError:
+            return _safe_redirect("/dns",
+                                  query={"error": "DNS sync timed out"})
         except Exception as exc:
-            return RedirectResponse(
-                url=f"/dns?error=Sync+failed:+{exc}",
-                status_code=302,
-            )
+            return _safe_redirect("/dns",
+                                  query={"error": f"Sync failed: {exc}"})
 
     # ── Mail queue ──────────────────────────────────────────────────────
 
@@ -1502,10 +1610,8 @@ def create_app() -> FastAPI:
                 status_code=302,
             )
         except Exception as exc:
-            return RedirectResponse(
-                url=f"/queue?error=Flush+failed:+{exc}",
-                status_code=302,
-            )
+            return _safe_redirect("/queue",
+                                  query={"error": f"Flush failed: {exc}"})
 
     @app.post("/queue/del")
     async def queue_del(request: Request):
@@ -1547,10 +1653,8 @@ def create_app() -> FastAPI:
                 status_code=302,
             )
         except Exception as exc:
-            return RedirectResponse(
-                url=f"/queue?error=Delete+failed:+{exc}",
-                status_code=302,
-            )
+            return _safe_redirect("/queue",
+                                  query={"error": f"Delete failed: {exc}"})
 
     # ── Certificate status ─────────────────────────────────────────────
 
@@ -1604,7 +1708,8 @@ def create_app() -> FastAPI:
         try:
             from .acme_manager import renew as acme_renew
 
-            result = acme_renew(dry_run=False)
+            result = await asyncio.wait_for(
+                asyncio.to_thread(acme_renew, False), timeout=120)
             if result != 0:
                 return RedirectResponse(
                     url="/certs?error=Renewal+failed",
@@ -1620,11 +1725,12 @@ def create_app() -> FastAPI:
                 url="/certs?msg=Certificate+renewed+successfully",
                 status_code=302,
             )
+        except TimeoutError:
+            return _safe_redirect("/certs",
+                                  query={"error": "Certificate renewal timed out"})
         except Exception as exc:
-            return RedirectResponse(
-                url=f"/certs?error=Renewal+failed:+{exc}",
-                status_code=302,
-            )
+            return _safe_redirect("/certs",
+                                  query={"error": f"Renewal failed: {exc}"})
 
     # ── Backup status ──────────────────────────────────────────────────
 
@@ -1697,7 +1803,15 @@ def create_app() -> FastAPI:
 
         from .backup_manager import run_backup
 
-        result = run_backup(dry_run=False)
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(run_backup, False), timeout=600)
+        except TimeoutError:
+            return RedirectResponse(
+                url="/backup?error=Backup+timed+out+after+10+minutes",
+                status_code=302,
+            )
+
         if result == 0:
             audit_log("backup_run", actor_email(request),
                       "manual backup triggered", client_ip(request))
@@ -1713,9 +1827,121 @@ def create_app() -> FastAPI:
 
     # ── JSON health endpoint ───────────────────────────────────────────
 
+    # ── API key management ─────────────────────────────────────────
+
+    API_KEYS_PATH = STATE_DIR / "api-keys.json"
+
+    def _load_api_keys() -> list[dict[str, Any]]:
+        """Load API keys from disk. Returns list of dicts with metadata."""
+        try:
+            data = read_json(API_KEYS_PATH)
+            return data if isinstance(data, list) else []
+        except (FileNotFoundError, ValueError):
+            return []
+
+    def _save_api_keys(keys: list[dict[str, Any]]) -> None:
+        """Persist API key list to disk."""
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        save_json_private(API_KEYS_PATH, {"keys": keys})
+
+    def _verify_api_key(token: str) -> bool:
+        """Check if a Bearer token matches any stored API key (SHA-256)."""
+        if not token.startswith("ktc_"):
+            return False
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        keys = _load_api_keys()
+        for key in keys:
+            if hmac.compare_digest(key.get("key_hash", ""), token_hash):
+                key["last_used_at"] = int(time.time())
+                _save_api_keys(keys)
+                return True
+        return False
+
+    # ── API key routes ─────────────────────────────────────────────
+
+    @app.get("/api/keys", response_class=HTMLResponse)
+    async def api_keys_page(request: Request):
+        if not require_role(request, "admin"):
+            return login_redirect()
+        keys = _load_api_keys()
+        return templates.TemplateResponse(
+            "api_keys.html", {
+                "request": request,
+                "keys": keys,
+                "csrf_token": get_csrf_token(request),
+            }
+        )
+
+    @app.post("/api/keys/create")
+    async def api_key_create(request: Request):
+        if not require_role(request, "admin"):
+            return forbidden_response()
+        form = await request.form()
+        if not validate_csrf(request, str(form.get("csrf_token", ""))):
+            return templates.TemplateResponse(
+                "api_keys.html", {
+                    "request": request,
+                    "keys": _load_api_keys(),
+                    "csrf_token": get_csrf_token(request),
+                    "error": "Invalid CSRF token",
+                },
+                status_code=403,
+            )
+        description = str(form.get("description", "")).strip()
+
+        raw_key = "ktc_" + secrets.token_hex(32)
+        key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+
+        keys = _load_api_keys()
+        keys.append({
+            "id": secrets.token_hex(8),
+            "key_hash": key_hash,
+            "description": description or "Unnamed key",
+            "created_at": int(time.time()),
+            "last_used_at": 0,
+        })
+        _save_api_keys(keys)
+
+        # Show the key once, never again
+        return templates.TemplateResponse(
+            "api_key_created.html", {
+                "request": request,
+                "raw_key": raw_key,
+                "description": description,
+                "csrf_token": get_csrf_token(request),
+            },
+        )
+
+    @app.post("/api/keys/revoke")
+    async def api_key_revoke(request: Request):
+        if not require_role(request, "admin"):
+            return forbidden_response()
+        form = await request.form()
+        if not validate_csrf(request, str(form.get("csrf_token", ""))):
+            return templates.TemplateResponse(
+                "api_keys.html", {
+                    "request": request,
+                    "keys": _load_api_keys(),
+                    "csrf_token": get_csrf_token(request),
+                    "error": "Invalid CSRF token",
+                },
+                status_code=403,
+            )
+        key_id = str(form.get("id", ""))
+        keys = _load_api_keys()
+        keys = [k for k in keys if k.get("id") != key_id]
+        _save_api_keys(keys)
+        return RedirectResponse("/api/keys", status_code=303)
+
+    # ── API routes (key-authenticated) ─────────────────────────────
+
     @app.get("/api/status")
     async def api_status(request: Request):
-        if not require_role(request, "readonly"):
+        # Accept session auth OR Bearer token
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.startswith("Bearer ") and _verify_api_key(auth_header[7:]):
+            pass  # authorized via API key
+        elif not require_role(request, "readonly"):
             return login_redirect()
 
         services = _all_service_status()
@@ -1799,6 +2025,7 @@ def cmd_admin_init(args: argparse.Namespace) -> int:
 
 def cmd_admin_start(args: argparse.Namespace) -> int:
     """Start the admin web server."""
+    setup_logging(level=args.log_level or logging.INFO)
     if not admin_is_configured():
         print("Admin password not configured.", file=sys.stderr)
         print("Run: ktc-mail admin init", file=sys.stderr)

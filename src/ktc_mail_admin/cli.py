@@ -39,7 +39,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from .config import SETUP_PATH, SECRETS_PATH
+from .config import SETUP_PATH, SECRETS_PATH, setup_logging
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
@@ -248,6 +248,7 @@ def cmd_config(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
+    setup_logging()
     parser = argparse.ArgumentParser(
         description="KTC Mail — bare-metal Debian/Ubuntu mail server suite",
     )

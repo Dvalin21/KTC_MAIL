@@ -387,9 +387,9 @@ with `0600` permissions, readable by Rspamd.
 ├── acme_manager.py          # Wildcard cert, SAN list, TLSA, renew
 ├── firewall_monitor.py      # nftables policy monitor + enforcer
 ├── ssh_policy.py            # SSH configuration manager
-├── dkim_keys.py             # DKIM key generation
+├── ~~dkim_keys.py~~           # 🔷 NOT YET IMPLEMENTED — DKIM generation is in config_renderer.py
 ├── bootstrap-mail-stack.sh  # Package dependency installer
-├── vps_relay.sh             # VPS provisioning + WireGuard setup
+├── ~~vps_relay.sh~~           # 🔷 NOT YET IMPLEMENTED — VPS relay is a planned feature
 ```
 
 ---
@@ -418,10 +418,10 @@ picks up where it left off.
 | 2 | `dns_provider.py` rewrite | DNS is the system structure |
 | 3 | `app.py` caveman rewrite | UX is the product |
 | 4 | `acme_manager.py` update | Cert with SAN list |
-| 5 | `dkim_keys.py` | Showstopper: mail won't deliver |
+| 5 | DKIM key generation | Showstopper: mail won't deliver (done in `config_renderer.py`) |
 | 6 | `ssh_policy.py` | Security baseline |
 | 7 | `firewall_monitor.py` update | Match new security policy |
-| 8 | VPS relay provisioning | Differentiator |
+| 8 | VPS relay provisioning | Differentiator (🔷 planned, not yet implemented) |
 
 ---
 

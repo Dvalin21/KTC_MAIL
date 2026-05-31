@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "${1:-}" = remove ]]; then
-  systemctl disable --now ktc-mail-setup.service ktc-mail-firewall-monitor.timer ktc-mail-acme-renew.timer 2>/dev/null || true
-fi
+case "${1:-}" in
+  remove|upgrade|deconfigure)
+    systemctl disable --now ktc-mail-setup.service ktc-mail-firewall-monitor.timer ktc-mail-acme-renew.timer 2>/dev/null || true
+    ;;
+  failed-upgrade)
+    # Nothing to do — old services already gone
+    ;;
+esac

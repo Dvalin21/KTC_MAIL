@@ -71,8 +71,8 @@ traffic.  Each item has a pass/fail test or command.
 - [ ] **Backup encryption password is stored safely** (not in config file).
       Check: `/etc/ktc-mail/backup-password` is `0400` permissions.
 
-- [ ] **Restore procedure is documented** and tested at least once.
-      See `docs/operations.md` or run `ktc-mail backup restore --help`.
+- [ ] **Restore procedure is tested** at least once.
+      Run `ktc-mail backup restore --help` for CLI usage.
 
 ### 6. System Hardening
 

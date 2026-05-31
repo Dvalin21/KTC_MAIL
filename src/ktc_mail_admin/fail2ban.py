@@ -365,6 +365,23 @@ def cmd_check(args: argparse.Namespace) -> int:
         print("Install: apt-get install fail2ban")
         return 1
 
+    # Verify nftables backend (not legacy iptables)
+    try:
+        result = subprocess.run(
+            ["fail2ban-client", "get", "ktc-mail", "action"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        if result.returncode == 0:
+            detected_action = result.stdout.strip()
+            if "iptables" in detected_action:
+                print()
+                print("WARNING: fail2ban is using iptables action:",
+                      detected_action)
+                print("Debian 12+ uses nftables. Set action=nftables-multiport")
+                print("in /etc/fail2ban/jail.d/*.conf to use the modern backend.")
+    except Exception:
+        pass
+
     if config_exists:
         print()
         print(f"Config: {FAIL2BAN_CONFIG_PATH}")

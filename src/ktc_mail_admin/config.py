@@ -13,10 +13,13 @@ Rules:
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
 import os
 import re
 import subprocess
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -77,6 +80,52 @@ ALL_PROVIDERS = frozenset({
     PROVIDER_MANUAL,
 })
 
+# ── Structured logging (M-009) ────────────────────────────────────────────
+# Stdlib-only JSON formatter. Outputs to stderr so CLI stdout remains clean.
+
+
+class JsonFormatter(logging.Formatter):
+    """Format log records as newline-delimited JSON to stderr."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        return json.dumps(
+            {
+                "timestamp": datetime.fromtimestamp(
+                    record.created, tz=timezone.utc
+                ).isoformat(),
+                "level": record.levelname,
+                "logger": record.name,
+                "message": record.getMessage(),
+                "module": record.module,
+                "line": record.lineno,
+                "function": record.funcName,
+            },
+            default=str,
+        )
+
+
+_LOG_CONFIGURED = False
+
+
+def setup_logging(*, level: int | str = logging.INFO) -> None:
+    """Configure JSON-structured logging to stderr.
+
+    Safe to call multiple times — only configures on first invocation.
+    Output goes to *stderr* so that CLI commands writing data to stdout
+    (e.g. ``ktc-mail user list``) are not corrupted by log lines.
+    """
+    global _LOG_CONFIGURED
+    if _LOG_CONFIGURED:
+        return
+    _LOG_CONFIGURED = True
+
+    handler = logging.StreamHandler()
+    handler.setFormatter(JsonFormatter())
+    root = logging.getLogger()
+    root.addHandler(handler)
+    root.setLevel(level)
+
+
 # ── DNS record ─────────────────────────────────────────────────────────────
 
 
@@ -122,11 +171,31 @@ class DnsRecord:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> DnsRecord:
+        if not isinstance(data, dict):
+            raise ValidationError("DnsRecord data must be a dict")
+
+        rtype = str(data.get("type", "")).upper()
+        if rtype not in ("A", "AAAA", "CNAME", "MX", "TXT", "NS", "SRV", "CAA", "TLSA"):
+            raise ValidationError(f"Unsupported DNS record type: {rtype!r}")
+
+        rname = data.get("name")
+        if not rname:
+            raise ValidationError("DNS record name is required")
+        rname = str(rname).rstrip(".") + "."
+
+        rvalue = data.get("value")
+        if not rvalue:
+            raise ValidationError("DNS record value is required")
+
+        ttl = int(data.get("ttl", 300))
+        if ttl < 0:
+            raise ValidationError(f"DNS record TTL must be non-negative, got {ttl}")
+
         return cls(
-            type=str(data["type"]).upper(),
-            name=str(data["name"]).rstrip(".") + ".",
-            value=str(data["value"]),
-            ttl=int(data.get("ttl", 300)),
+            type=rtype,
+            name=rname,
+            value=str(rvalue),
+            ttl=ttl,
             priority=int(data["priority"]) if data.get("priority") else None,
             proxied=bool(data.get("proxied", False)),
         )
@@ -831,10 +900,38 @@ class SetupProfile:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SetupProfile:
+        if not isinstance(data, dict):
+            raise ValidationError("SetupProfile data must be a dict")
+
+        domain = data.get("domain", "")
+        if not domain:
+            raise ValidationError("domain is required")
+        if not _valid_domain(domain):
+            raise ValidationError(f"Invalid domain format: {domain!r}")
+
+        admin_email = data.get("admin_email", "")
+        if admin_email and not _valid_email(admin_email):
+            raise ValidationError(f"Invalid admin_email: {admin_email!r}")
+
+        cert_mode = data.get("certificate_mode", "dns-01")
+        if cert_mode not in ("dns-01", "http-01", "upload"):
+            raise ValidationError(
+                f"Invalid certificate_mode: {cert_mode!r} "
+                f"(expected dns-01, http-01, or upload)"
+            )
+
+        setup_phase = data.get("setup_phase", "BOOTSTRAP")
+        valid_phases = ("BOOTSTRAP", "DNS", "TLS", "READY", "FAILED")
+        if setup_phase not in valid_phases:
+            raise ValidationError(
+                f"Invalid setup_phase: {setup_phase!r} "
+                f"(expected one of {', '.join(valid_phases)})"
+            )
+
         profile = cls(
-            domain=str(data["domain"]),
+            domain=domain,
             dns_api_token=data.get("dns_api_token", ""),
-            admin_email=str(data.get("admin_email", "")),
+            admin_email=admin_email,
             public_ipv4=str(data.get("public_ipv4", "")),
             public_ipv6=str(data.get("public_ipv6", "")),
             registrar=str(data.get("registrar", "")),
@@ -843,15 +940,47 @@ class SetupProfile:
             has_ipv6=bool(data.get("has_ipv6", False)),
             security=SecurityPolicy.from_dict(data.get("security", {})),
             smtp_relay=SmtpRelayConfig(**data.get("smtp_relay", {})),
-            certificate_mode=str(data.get("certificate_mode", "dns-01")),
+            certificate_mode=cert_mode,
             dns_provider_manual=bool(data.get("dns_provider_manual", False)),
             manage_system_hostname=bool(data.get("manage_system_hostname", True)),
-            setup_phase=str(data.get("setup_phase", "BOOTSTRAP")),
+            setup_phase=setup_phase,
             reload_services=tuple(data.get("reload_services", ["postfix", "dovecot", "nginx"])),
             update_tlsa_on_renewal=bool(data.get("update_tlsa_on_renewal", True)),
         )
         # DKIM is NOT serialised to JSON (private key stays in separate file)
         return profile
+
+
+# ── Validation ─────────────────────────────────────────────────────────────
+
+
+class ValidationError(ValueError):
+    """A config field failed format validation."""
+
+
+# RFC 5321 local-part: printable ASCII except specials and whitespace
+_EMAIL_RE = re.compile(
+    r'^[a-zA-Z0-9.!#$%&\'*+/=?^_`{|}~-]+@[a-zA-Z0-9]'
+    r'(?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?'
+    r'(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$'
+)
+
+
+def _valid_email(email: str) -> bool:
+    """Return True if *email* is a valid RFC 5321 address."""
+    return bool(_EMAIL_RE.match(email))
+
+
+def _valid_domain(domain: str) -> bool:
+    """Return True if *domain* is a valid DNS name with at least two labels."""
+    if not domain or len(domain) > 253:
+        return False
+    return bool(re.match(
+        r'^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?'
+        r'(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*'
+        r'\.[a-zA-Z]{2,}$',
+        domain,
+    ))
 
 
 # ── Utility helpers ────────────────────────────────────────────────────────

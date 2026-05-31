@@ -62,10 +62,10 @@
       <p style="margin:0.75rem 0 0.5rem;font-size:0.9rem;color:var(--muted)">
         Scan this QR code in your authenticator app, then enter the code below to verify.
       </p>
-      {% if mfa.otpauth_uri %}
+      {% if qr_src %}
       <div style="text-align:center;margin:0.75rem 0">
-        <img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data={{ mfa.otpauth_uri | urlencode }}"
-             alt="QR Code" style="width:180px;height:180px;border-radius:0.5rem">
+        <img src="{{ qr_src }}" alt="QR Code"
+             style="width:180px;height:180px;border-radius:0.5rem">
       </div>
       {% endif %}
       <form method="post" action="/settings/mfa/enable">

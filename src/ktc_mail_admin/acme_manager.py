@@ -20,6 +20,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -294,7 +295,9 @@ def deploy_hook_certonly(profile: SetupProfile, dry_run: bool = False) -> int:
     else:
         print("TLSA update disabled by configuration")
 
-    # Reload services
+    # Generate DH params (first time only) then reload services
+    if not dry_run:
+        ensure_dhparams()
     reload_services(profile, dry_run=dry_run)
 
     # Write TLS state
@@ -303,6 +306,29 @@ def deploy_hook_certonly(profile: SetupProfile, dry_run: bool = False) -> int:
         print(f"TLS state written: {TLS_STATE_PATH}")
 
     return 0
+
+
+def ensure_dhparams(path: Path = Path("/etc/ssl/dhparam.pem")) -> None:
+    """Generate DH params if the file does not exist.
+
+    Postfix uses this for DHE ciphersuites (legacy clients that don't
+    support ECDHE). Generated once; takes ~5s on modern hardware for
+    2048-bit params.
+    """
+    if path.exists():
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    print(f"Generating DH params (2048-bit) at {path} ...", flush=True)
+    result = subprocess.run(
+        [OPENSSL_BIN, "dhparam", "-out", str(path), "2048"],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        print(f"warning: DH param generation failed: {result.stderr.strip()}",
+              file=sys.stderr)
+        return
+    print(f"DH params written: {path}")
+    path.chmod(0o600)
 
 
 def reload_services(profile: SetupProfile, dry_run: bool = False) -> None:
@@ -335,12 +361,51 @@ def write_tls_state(profile: SetupProfile) -> None:
     save_json_private(TLS_STATE_PATH, payload)
 
 
+# ── Pre-flight checks ─────────────────────────────────────────────────────
+
+
+def check_dns_propagation(domain: str, timeout: int = 120, interval: int = 10) -> bool:
+    """Wait for ACME challenge domain to resolve via public DNS.
+
+    For DNS-01, the challenge is at ``_acme-challenge.<domain>``.
+    Polls Cloudflare's DoH API until the TXT record appears or *timeout*
+    seconds elapse.
+    """
+    import urllib.request as _request
+    import urllib.error as _error
+
+    challenge = f"_acme-challenge.{domain}"
+    url = f"https://cloudflare-dns.com/dns-query?name={challenge}&type=TXT"
+    deadline = time.time() + timeout
+
+    print(f"dns: polling {challenge} TXT ...", flush=True)
+    while time.time() < deadline:
+        try:
+            req = _request.Request(url, headers={"Accept": "application/dns-json"})
+            resp = _request.urlopen(req, timeout=5)
+            data = json.loads(resp.read().decode())
+            answers = data.get("Answer", [])
+            if any(a.get("type") == 16 for a in answers):  # type 16 = TXT
+                print(f"dns: {challenge} resolved — ACME can proceed")
+                return True
+        except (_error.URLError, _error.HTTPError, OSError, json.JSONDecodeError):
+            pass
+        print(f"dns: {challenge} not yet visible, waiting {interval}s ...", flush=True)
+        time.sleep(interval)
+
+    print(f"dns: {challenge} did not resolve within {timeout}s — proceeding anyway")
+    return False
+
+
 # ── Issue command ──────────────────────────────────────────────────────────
 
 
 def issue(config: Path, dry_run: bool) -> int:
     """Issue initial certificate."""
     profile = load_profile(config)
+
+    if profile.certificate_mode == "dns-01" and not dry_run:
+        check_dns_propagation(profile.domain)
 
     if profile.certificate_mode == "http-01" and not dry_run:
         ACME_WEBROOT.mkdir(parents=True, exist_ok=True)

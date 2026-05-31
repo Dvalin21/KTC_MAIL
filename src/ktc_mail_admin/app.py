@@ -34,6 +34,7 @@ from .config import (
     SmtpRelayConfig,
     DkimKeyPair,
     save_json_private,
+    setup_logging,
     detect_public_ipv4,
     detect_public_ipv6,
     detect_port_25_blocked,
@@ -933,6 +934,7 @@ down the firewall.</p>
 
 
 def main() -> None:
+    setup_logging()
     parser = argparse.ArgumentParser(description="KTC Mail setup GUI (caveman mode)")
     parser.add_argument("--host", default="127.0.0.1",
                         help="Address to bind (default 127.0.0.1 for safety)")

@@ -1018,6 +1018,14 @@ def provider_from_config(
     if provider_name == PROVIDER_DIGITALOCEAN:
         return DigitalOceanProvider(token=token, zone_name=domain)
 
+    if provider_name == PROVIDER_NAMEECHEAP:
+        raise DnsError(
+            f"provider '{provider_name}' is not yet implemented.\n"
+            "Namecheap requires reverse-engineering their XML API\n"
+            "(no documented REST API) and IP whitelist setup.\n"
+            "Contributions welcome at https://github.com/forgeos/ktc-mail"
+        )
+
     raise DnsError(f"provider not yet supported: {provider_name}")
 
 
