@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}API Key Created{% endblock %}
+{% block content %}
+
+<h1>API Key Created</h1>
+
+<div class="card">
+  <div class="msg msg-ok">
+    <strong>Key created successfully.</strong><br>
+    This key will not be shown again. Copy it now.
+  </div>
+
+  <div style="margin:1.5rem 0">
+    <label>Description</label>
+    <p>{{ description }}</p>
+  </div>
+
+  <div style="margin:1rem 0">
+    <label>API Key</label>
+    <pre style="
+      background:var(--bg-code);
+      padding:0.75rem;
+      border-radius:6px;
+      font-family:monospace;
+      font-size:1rem;
+      user-select:all;
+      white-space:pre-wrap;
+      word-break:break-all;
+    ">{{ raw_key }}</pre>
+  </div>
+
+  <p style="color:var(--muted);font-size:0.85rem">
+    Use this key in the <code>Authorization: Bearer &lt;key&gt;</code> header
+    when calling the admin REST API.
+  </p>
+
+  <a href="/api/keys" class="btn" style="display:inline-block;margin-top:1rem">Back to API Keys</a>
+</div>
+
+{% endblock %}

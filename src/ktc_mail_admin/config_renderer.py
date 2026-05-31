@@ -26,6 +26,22 @@ import sys
 from pathlib import Path
 from typing import Any
 
+def _atomic_write(path: Path, content: str, *, mode: int = 0o640) -> None:
+    """Atomically write *content* to *path* via .tmp → fsync → rename.
+
+    Sets file permissions to *mode* (default 0o640: owner rw, group r).
+    """
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(content, encoding="utf-8")
+    tmp.chmod(mode)
+    fd = tmp.open()
+    try:
+        os.fsync(fd.fileno())
+    finally:
+        fd.close()
+    tmp.rename(path)
+
+
 from .config import (
     CONFIG_DIR,
     SETUP_PATH,
@@ -78,6 +94,7 @@ def render_postfix_main_cf(profile: SetupProfile) -> str:
         "smtpd_tls_mandatory_protocols = !SSLv2, !SSLv3, !TLSv1, !TLSv1.1",
         "smtpd_tls_mandatory_ciphers = high",
         "smtpd_tls_eecdh_grade = strong",
+        "smtpd_tls_dh1024_param_file = /etc/ssl/dhparam.pem",
         "smtpd_tls_key_file = /etc/letsencrypt/live/ktc-mail/privkey.pem",
         "smtpd_tls_cert_file = /etc/letsencrypt/live/ktc-mail/fullchain.pem",
         "smtpd_tls_CAfile = /etc/letsencrypt/live/ktc-mail/chain.pem",
@@ -316,6 +333,7 @@ ssl_prefer_server_ciphers = yes
 mail_location = maildir:/var/mail/%d/%n
 mail_privileged_group = mail
 mail_access_groups = vmail
+mail_plugins = quota
 
 # ── Namespaces ─────────────────────────────────────────────
 namespace inbox {{
@@ -367,14 +385,24 @@ plugin {{
   sieve = /var/mail/%d/%n/.dovecot.sieve
   sieve_default = /var/lib/dovecot/sieve/default.sieve
   sieve_dir = /var/mail/%d/%n/sieve
+
+  # Quota — per-user limits from passwd-file userdb_quota_rule.
+  # Default 1G is overridden per-user by user_manager.py.
+  # See https://doc.dovecot.org/configuration_manual/quota/
+  quota = maildir:User quota
+  quota_rule = *:storage=1G
 }}
 
 protocol lda {{
-  mail_plugins = $mail_plugins sieve
+  mail_plugins = $mail_plugins sieve quota
 }}
 
 protocol lmtp {{
-  mail_plugins = $mail_plugins sieve
+  mail_plugins = $mail_plugins sieve quota
+}}
+
+protocol imap {{
+  mail_plugins = $mail_plugins quota
 }}
 
 # ── Service config ─────────────────────────────────────────
@@ -852,7 +880,7 @@ def write_all(
             written[relpath] = full_path
             continue
         full_path.parent.mkdir(parents=True, exist_ok=True)
-        full_path.write_text(content, encoding="utf-8")
+        _atomic_write(full_path, content)
         written[relpath] = full_path
 
     return written
@@ -984,7 +1012,7 @@ def validate(profile: SetupProfile, dest: Path = Path("/etc")) -> int:
                 target = dovecot_dir / "dovecot.conf"
 
             if target:
-                target.write_text(content, encoding="utf-8")
+                _atomic_write(target, content)
 
         errors = 0
 
@@ -1103,7 +1131,7 @@ def main() -> int:
                 print(f"dry-run: {sts_path}")
             else:
                 sts_path.parent.mkdir(parents=True, exist_ok=True)
-                sts_path.write_text(mta_sts, encoding="utf-8")
+                _atomic_write(sts_path, mta_sts)
                 written["nginx/mta-sts.txt"] = sts_path
 
             if args.dry_run:

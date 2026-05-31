@@ -1,0 +1,9 @@
+/var/lib/ktc-mail/audit.log {
+    monthly
+    rotate 12
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 root ktc-mail
+}

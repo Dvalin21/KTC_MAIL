@@ -5,6 +5,8 @@ After=network-online.target
 
 [Service]
 Type=oneshot
+User=ktc-mail
+Group=ktc-mail
 ExecStart=/usr/bin/ktc-mail metrics collect
 IOSchedulingClass=idle
 CPUSchedulingPolicy=idle

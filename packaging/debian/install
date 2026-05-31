@@ -50,6 +50,9 @@ apparmor/usr.lib.ktc-mail.rate_limiter etc/apparmor.d/
 apparmor/usr.lib.ktc-mail.admin_server etc/apparmor.d/
 apparmor/usr.lib.ktc-mail.firewall_monitor etc/apparmor.d/
 
+# ── Logrotate ─────────────────────────────────────────────
+packaging/etc/logrotate.d/ktc-mail etc/logrotate.d/
+
 # ── APT configuration ──────────────────────────────────────────
 etc/apt/apt.conf.d/50ktc-mail-unattended-upgrades etc/apt/apt.conf.d/
 

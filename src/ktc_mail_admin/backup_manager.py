@@ -383,10 +383,10 @@ def init_repository(repository: str, password: str,
     # Write password first
     write_password(password)
 
-    # Initialize the repository
+    # Initialize the repository (password was written to file above)
     result = subprocess.run(
-        ["restic", "--repo", repository, "init"],
-        input=password + "\n",
+        ["restic", "--repo", repository, "init",
+         "--password-file", str(RESTIC_PASSWORD_PATH)],
         capture_output=True, text=True, timeout=60, check=False,
     )
     if result.returncode != 0:

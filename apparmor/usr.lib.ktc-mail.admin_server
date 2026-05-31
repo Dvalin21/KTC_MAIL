@@ -1,70 +1,59 @@
-# KTC Mail — admin web server.
-#
-# Profile for /usr/lib/ktc-mail/admin_server.py (Python script).
-# Serves the FastAPI-based admin GUI on port 8081 (behind Nginx
-# reverse proxy by default).  Reads configuration files, writes
-# audit log, manages users, calls subprocesses (postqueue,
-# fail2ban-client, systemctl, openssl, etc.).
-
+# KTC Mail — admin web server
+# Profile: /usr/lib/ktc-mail/app.py
 #include <tunables/global>
 
-/usr/lib/ktc-mail/admin_server.py {
-  #include <abstractions/base>
+profile usr.lib.ktc-mail.admin_server /usr/lib/ktc-mail/app.py {
   #include <abstractions/python>
-  #include <abstractions/nameservice>
-  #include <abstractions/ssl_certs>
+  #include <abstractions/base>
+  #include <abstractions/openssl>
 
-  # Script and library access
+  # Python stdlib and site-packages
+  /usr/lib/python3/**  r,
+  /usr/lib/python3/**/*.so mr,
+
+  # KTC Mail modules
   /usr/lib/ktc-mail/ r,
   /usr/lib/ktc-mail/** r,
-  /usr/lib/python3*/ r,
-  /usr/lib/python3*/**.py r,
 
-  # Configuration (read-write for admin-hash.json, session key, etc.)
+  # Jinja2 templates
+  /usr/lib/ktc-mail/templates/ r,
+  /usr/lib/ktc-mail/templates/* r,
+
+  # Config and secrets
   /etc/ktc-mail/ r,
   /etc/ktc-mail/** r,
-  /etc/ktc-mail/admin-hash.json rw,
-  /etc/ktc-mail/session-key rw,
-  /etc/ktc-mail/state/ r,
-  /etc/ktc-mail/state/** rw,
-  /etc/ktc-mail/dkim/ r,
-  /etc/ktc-mail/dkim/*.private rw,
-
-  # State files
   /var/lib/ktc-mail/ r,
   /var/lib/ktc-mail/** rw,
-  /etc/ktc-mail/state/audit.log rw,
 
-  # Certificates (read-only)
+  # TLS certs (read-only)
+  /etc/letsencrypt/ r,
   /etc/letsencrypt/** r,
-  /etc/ssl/** r,
 
-  # Subprocess execution
-  /usr/bin/postqueue ix,
-  /usr/bin/postsuper ix,
-  /usr/bin/openssl ix,
-  /usr/bin/fail2ban-client ix,
-  /usr/bin/systemctl ix,
-  /usr/sbin/postqueue ix,
-  /usr/sbin/postsuper ix,
+  # Postfix/Dovecot config writes (needed for setup/render)
+  /etc/postfix/ r,
+  /etc/postfix/** rw,
+  /etc/dovecot/ r,
+  /etc/dovecot/** rw,
+  /etc/nginx/ r,
+  /etc/nginx/** rw,
 
-  # Logs (read for log viewer)
-  /var/log/mail.log r,
-  /var/log/mail.* r,
-  /var/log/syslog r,
+  # Network: HTTP server + outbound
+  network inet tcp,
+  network inet6 tcp,
+  network inet dgram,
+  network inet6 dgram,
 
-  # DKIM key generation
+  # Unix sockets (Postfix, Dovecot, systemd)
+  /run/systemd/notify  w,
+  /var/spool/postfix/private/** rw,
+  /var/run/dovecot/** rw,
+  /dev/log w,
+
+  # Process: reload services
+  /usr/bin/systemctl ixr,
+  /usr/bin/systemd-run ixr,
+
+  # Binary execution (certbot, openssl, etc.)
+  /usr/bin/certbot ixr,
   /usr/bin/openssl ixr,
-
-  # Backup module (called from admin GUI)
-  /usr/bin/ktc-mail ix,
-  /usr/bin/restic ix,
-
-  # Network — localhost only (Nginx reverse proxy)
-  network inet stream,
-  network inet6 stream,
-  network loopback,
-
-  # Deny everything else
-  deny / rw,
 }

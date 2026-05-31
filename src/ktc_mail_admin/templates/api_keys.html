@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}API Keys{% endblock %}
+{% block content %}
+
+<h1>API Keys</h1>
+
+{% if error %}
+<div class="msg msg-err">{{ error }}</div>
+{% endif %}
+{% if msg %}
+<div class="msg msg-ok">{{ msg }}</div>
+{% endif %}
+
+<div class="card-grid">
+  <div class="card">
+    <h2>Create New Key</h2>
+    <form method="post" action="/api/keys/create" style="margin-top:0.75rem">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="form-row">
+        <label>Description</label>
+        <input name="description" placeholder="e.g. CI/CD deployment" required>
+      </div>
+      <button type="submit">Generate Key</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>Active Keys</h2>
+    {% if keys %}
+    <table>
+      <tr>
+        <th>Description</th>
+        <th>Created</th>
+        <th>Last Used</th>
+        <th></th>
+      </tr>
+      {% for key in keys %}
+      <tr>
+        <td>{{ key.description }}</td>
+        <td>{{ key.created_at|datetime_from_ts }}</td>
+        <td>{{ key.last_used_at|datetime_from_ts if key.last_used_at else 'never' }}</td>
+        <td>
+          <form method="post" action="/api/keys/revoke" onsubmit="return confirm('Revoke this key?')">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="id" value="{{ key.id }}">
+            <button type="submit" class="danger">Revoke</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}
+    <p class="muted">No API keys configured.</p>
+    {% endif %}
+  </div>
+</div>
+
+{% endblock %}

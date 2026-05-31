@@ -8,8 +8,8 @@ BindsTo=postfix.service
 [Service]
 Type=simple
 ExecStart=/usr/lib/ktc-mail/rate_limiter.py
-User=root
-Group=root
+User=ktc-mail
+Group=ktc-mail
 # Rate limiter state is in-memory — on restart counters reset.
 # This is intentional: deferring messages is safer than allowing
 # unlimited sending while the daemon is down.
