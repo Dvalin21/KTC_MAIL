@@ -12,3 +12,6 @@ PrivateTmp=true
 ProtectSystem=full
 ProtectHome=true
 ReadWritePaths=/etc/ktc-mail /var/lib/ktc-mail /etc/letsencrypt
+
+[Install]
+WantedBy=multi-user.target

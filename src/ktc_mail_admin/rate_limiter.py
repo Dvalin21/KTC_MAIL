@@ -37,6 +37,7 @@ import socket
 import sys
 import time
 from collections import defaultdict
+from pathlib import Path
 
 # ── Configuration (from environment, or defaults) ──────────────────────────
 
@@ -46,6 +47,7 @@ MAX_PER_HOUR = int(os.environ.get("KTC_RATE_MAX_PER_HOUR", "100"))
 MAX_PER_DAY = int(os.environ.get("KTC_RATE_MAX_PER_DAY", "1000"))
 BACKLOG = 32
 PRUNE_INTERVAL = 300  # purge stale entries every 5 minutes
+PID_FILE = Path(os.environ.get("KTC_RATE_PID_FILE", "/run/ktc-mail/rate-limiter.pid"))
 
 
 # ── Logging (lazy-imported to avoid circular deps) ────────────────
@@ -243,12 +245,43 @@ def handle_client(tracker: RateTracker, conn: socket.socket) -> None:
 # ── Daemon entry point ─────────────────────────────────────────────────────
 
 
+def _notify_systemd(message: str) -> None:
+    """Send a notification to systemd via the notify socket.
+
+    This is a minimal sd_notify implementation using only stdlib.
+    See: https://www.freedesktop.org/software/systemd/man/sd_notify.html
+    """
+    notify_socket = os.environ.get("NOTIFY_SOCKET")
+    if not notify_socket:
+        return
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        sock.connect(notify_socket)
+        sock.sendall(message.encode())
+        sock.close()
+    except OSError:
+        pass
+
+
 def main() -> int:
     _ensure_logging()
     listen_addr = LISTEN_ADDR
     listen_port = LISTEN_PORT
     tracker = RateTracker()
     last_prune_check: float = 0.0
+    last_watchdog_check: float = 0.0
+
+    # PID file support
+    try:
+        PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+        PID_FILE.write_text(str(os.getpid()))
+    except OSError as exc:
+        print(f"rate-limiter: cannot write PID file {PID_FILE}: {exc}",
+              file=sys.stderr)
+        return 1
+
+    # Tell systemd we're ready
+    _notify_systemd("READY=1")
 
     # M-06: Subscribe to SIGTERM so `systemctl stop ktc-mail-rate-limit`
     # actually terminates the process instead of silently continuing.
@@ -269,6 +302,7 @@ def main() -> int:
     except OSError as exc:
         print(f"rate-limiter: cannot bind {listen_addr}:{listen_port}: {exc}",
               file=sys.stderr)
+        PID_FILE.unlink(missing_ok=True)
         return 1
 
     print(f"rate-limiter: listening on {listen_addr}:{listen_port}",
@@ -280,22 +314,29 @@ def main() -> int:
         try:
             conn, addr = sock.accept()
         except TimeoutError:
-            continue
+            pass
         except KeyboardInterrupt:
             print("rate-limiter: shutting down", file=sys.stderr)
             break
         except OSError as exc:
             print(f"rate-limiter: accept error: {exc}", file=sys.stderr)
             continue
+        else:
+            # Periodic pruning (don't block accept for long)
+            now = time.monotonic()
+            if now - last_prune_check >= PRUNE_INTERVAL:
+                tracker.prune()
+                last_prune_check = now
 
-        # Periodic pruning (don't block accept for long)
-        now = time.monotonic()
-        if now - last_prune_check >= PRUNE_INTERVAL:
-            tracker.prune()
-            last_prune_check = now
+            handle_client(tracker, conn)
 
-        handle_client(tracker, conn)
+            # Watchdog ping (every 10s if systemd watchdog is enabled)
+            if now - last_watchdog_check >= 10.0:
+                _notify_systemd("WATCHDOG=1")
+                last_watchdog_check = now
 
+    _notify_systemd("STOPPING=1")
+    PID_FILE.unlink(missing_ok=True)
     sock.close()
     return 0
 

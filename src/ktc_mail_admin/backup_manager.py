@@ -182,8 +182,8 @@ def load_config() -> BackupConfig:
         return BackupConfig()
     try:
         return BackupConfig.from_dict(read_json(BACKUP_CONFIG_PATH))
-    except Exception:
-        logger.exception("loading backup config from %s", BACKUP_CONFIG_PATH)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        logger.warning("loading backup config from %s: %s", BACKUP_CONFIG_PATH, exc)
         return BackupConfig()
 
 
@@ -199,8 +199,8 @@ def load_status() -> BackupStatus:
         return BackupStatus()
     try:
         return BackupStatus.from_dict(read_json(BACKUP_STATE_PATH))
-    except Exception:
-        logger.exception("loading backup state from %s", BACKUP_STATE_PATH)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        logger.warning("loading backup state from %s: %s", BACKUP_STATE_PATH, exc)
         return BackupStatus()
 
 
@@ -209,12 +209,16 @@ def save_status(status: BackupStatus) -> None:
     BACKUP_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     # Stored as 0640 so the admin GUI (running as a different user) can
     # read it. The restic-password file stays 0400.
-    import json
-    tmp = BACKUP_STATE_PATH.with_suffix(".tmp")
-    tmp.write_text(json.dumps(status.to_dict(), indent=2) + "\n",
-                   encoding="utf-8")
-    tmp.chmod(0o640)
-    tmp.rename(BACKUP_STATE_PATH)
+    import os
+    payload = json.dumps(status.to_dict(), indent=2) + "\n"
+    fd = os.open(BACKUP_STATE_PATH.with_suffix(".tmp"),
+                 os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
+    try:
+        os.write(fd, payload.encode("utf-8"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    BACKUP_STATE_PATH.with_suffix(".tmp").rename(BACKUP_STATE_PATH)
 
 
 # ── Restic wrapper ──────────────────────────────────────────────────────────
@@ -297,6 +301,7 @@ def restic_installed() -> bool:
     result = subprocess.run(
         ["which", "restic"],
         capture_output=True, text=True, check=False,
+        timeout=SUBPROCESS_TIMEOUT,
     )
     return result.returncode == 0
 
@@ -306,6 +311,7 @@ def restic_version() -> str:
     result = subprocess.run(
         ["restic", "version"],
         capture_output=True, text=True, check=False,
+        timeout=SUBPROCESS_TIMEOUT,
     )
     if result.returncode == 0:
         return result.stdout.strip()

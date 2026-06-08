@@ -12,3 +12,6 @@ IOSchedulingClass=idle
 CPUSchedulingPolicy=idle
 # Default syslog level is info; suppress the "result" log line
 StandardOutput=null
+
+[Install]
+WantedBy=multi-user.target

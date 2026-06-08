@@ -39,6 +39,7 @@ from .config import (
     SETUP_PATH,
     SecurityPolicy,
     read_json,
+    SUBPROCESS_TIMEOUT,
 )
 
 NFT_TABLE = "inet ktc_mail"
@@ -60,8 +61,11 @@ class Finding:
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 
-def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, text=True, capture_output=True, check=False)
+def _run(cmd: list[str], input_data: str | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        cmd, text=True, capture_output=True, check=False, timeout=SUBPROCESS_TIMEOUT,
+        input=input_data
+    )
 
 
 def load_policy(config_path: Path) -> SecurityPolicy:
@@ -87,23 +91,35 @@ def _nft_available() -> bool:
     return _run(["which", "nft"]).returncode == 0
 
 
+def _save_current_ruleset() -> str | None:
+    """Save current nftables ruleset for rollback.
+    
+    Returns the ruleset as a string, or None if save fails.
+    """
+    result = _run(["nft", "list", "table", NFT_TABLE])
+    if result.returncode == 0:
+        return result.stdout
+    return None
+
+
+def _restore_ruleset(ruleset: str) -> bool:
+    """Restore a previously saved nftables ruleset.
+    
+    Args:
+        ruleset: The ruleset string returned by _save_current_ruleset().
+        
+    Returns:
+        True if restore succeeded, False otherwise.
+    """
+    if not ruleset:
+        return False
+    result = _run(["nft", "-f", "-"], input_data=ruleset)
+    return result.returncode == 0
+
+
 def _chain_exists() -> bool:
     """Check whether our nftables table + chain already exist."""
     return _run(["nft", "list", "chain", NFT_TABLE, NFT_CHAIN]).returncode == 0
-
-
-def _create_chain() -> None:
-    """Create the nftables table and INPUT chain from scratch.
-
-    Idempotent: safe to call if the table already exists (``nft add
-    table`` is a no-op for existing tables, and ``nft create chain``
-    will fail harmlessly if the chain already exists — but we only
-    call this when ``_chain_exists()`` returned False).
-    """
-    _run(["nft", "add", "table", "inet", NFT_TABLE])
-    _run(["nft", "add", "chain", "inet", NFT_TABLE, NFT_CHAIN,
-          "{", "type", "filter", "hook", "input",
-          "priority", "0;", "policy", "drop;", "}"])
 
 
 # ── Ruleset generation ──────────────────────────────────────────────────────
@@ -182,17 +198,18 @@ def inspect(required_ports: list[int]) -> list[Finding]:
 
 
 def enforce(required_ports: list[int]) -> None:
-    """Apply the nftables ruleset atomically.
+    """Apply the nftables ruleset atomically with rollback on failure.
 
-    Uses ``nft -f`` with the generated ruleset.  The ruleset itself
-    handles first-run vs. update via idempotent ``add table`` /
-    ``add chain`` commands, so there is no special first-run path.
-
-    The ruleset file is written atomically (tempfile + rename) so that
-    a crash mid-write cannot produce a partial file.
+    1. Save current ruleset for rollback
+    2. Generate and write new ruleset atomically (tempfile + rename)
+    3. Apply new ruleset with nft -f
+    4. If application fails, restore saved ruleset
     """
     ports = sorted(required_ports)
     ruleset = generate_ruleset(ports)
+
+    # Save current ruleset BEFORE making changes
+    saved_ruleset = _save_current_ruleset()
 
     NFT_RULESET_PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp = NFT_RULESET_PATH.with_suffix(".tmp")
@@ -204,9 +221,16 @@ def enforce(required_ports: list[int]) -> None:
     if result.returncode != 0:
         print(f"nftables: error applying ruleset: {result.stderr.strip()}",
               file=sys.stderr)
-        # On first-run on very old nftables, add may fail for table that
-        # already was created implicitly.  Fall through — we still report
-        # the inspection findings below.
+        # ROLLBACK: restore the saved ruleset
+        if saved_ruleset:
+            if _restore_ruleset(saved_ruleset):
+                print("nftables: rolled back to previous ruleset", file=sys.stderr)
+            else:
+                print("nftables: CRITICAL - rollback FAILED, firewall may be in inconsistent state",
+                      file=sys.stderr)
+        else:
+            print("nftables: WARNING - no previous ruleset to roll back to",
+                  file=sys.stderr)
         return
 
     # Verify and count

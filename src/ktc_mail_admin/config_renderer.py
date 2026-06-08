@@ -32,13 +32,12 @@ def _atomic_write(path: Path, content: str, *, mode: int = 0o640) -> None:
     Sets file permissions to *mode* (default 0o640: owner rw, group r).
     """
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(content, encoding="utf-8")
-    tmp.chmod(mode)
-    fd = tmp.open()
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
     try:
-        os.fsync(fd.fileno())
+        os.write(fd, content.encode("utf-8"))
+        os.fsync(fd)
     finally:
-        fd.close()
+        os.close(fd)
     tmp.rename(path)
 
 
@@ -888,6 +887,12 @@ def write_all(
 
 # ── DKIM key generation ──────────────────────────────────────────────────
 
+import re
+
+# DKIM selector regex per RFC 6376: alphanumeric and hyphens,
+# not starting or ending with hyphen, max 63 chars
+DKIM_SELECTOR_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+
 
 def dkim_generate(
     domain: str,
@@ -905,6 +910,12 @@ def dkim_generate(
     The private key is returned as PEM bytes — caller decides where to
     write it. The DNS record is a ready-to-publish TXT value.
     """
+    if not DKIM_SELECTOR_RE.match(selector):
+        raise ValueError(
+            f"invalid DKIM selector: {selector!r}. "
+            "Must be alphanumeric with hyphens, not starting/ending with "
+            "hyphen, max 63 characters."
+        )
     priv = subprocess.run(
         ["openssl", "genrsa", str(bits)],
         capture_output=True, check=True,
@@ -942,8 +953,12 @@ def dkim_write(args: argparse.Namespace) -> int:
 
     path = DKIM_DIR / f"{selector}.private"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(priv_pem)
-    path.chmod(0o600)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, priv_pem)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
     print(f"wrote: {path}")
     print()

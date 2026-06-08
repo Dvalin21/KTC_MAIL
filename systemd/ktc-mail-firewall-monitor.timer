@@ -5,6 +5,7 @@ Description=Run KTC Mail firewall monitor every five minutes
 OnBootSec=2min
 OnUnitActiveSec=5min
 AccuracySec=30s
+Unit=ktc-mail-firewall-monitor.service
 
 [Install]
 WantedBy=timers.target

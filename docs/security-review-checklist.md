@@ -49,8 +49,8 @@ traffic.  Each item has a pass/fail test or command.
 ### 4. Abuse Prevention
 
 - [ ] **Fail2ban jails are active.**
-      `sudo fail2ban-client status` shows `Postfix`, `Dovecot`, `Roundcube`
-      jails with non-zero totals.
+      `sudo fail2ban-client status` shows `Postfix`, `Dovecot`, `Rspamd`,
+      `Recidive`, and `nginx-http-auth` jails with non-zero totals.
 
 - [ ] **DNSBL checks are enabled** in Postfix config.
       `postconf smtpd_recipient_restrictions` includes `reject_rbl_client`.
@@ -86,8 +86,8 @@ traffic.  Each item has a pass/fail test or command.
 - [ ] **System is up-to-date** with security patches.
       `sudo apt-get upgrade --dry-run | grep -c 'upgraded'` is acceptable.
 
-- [ ] **Audit logging is enabled** and logrotate is configured.
-      `ls -la /var/lib/ktc-mail/audit.log`
+- [ ] **Audit logging state is intentional.**
+      `ls -la /var/lib/ktc-mail/audit.log` — absence of this path is expected because no audit logger is implemented in source. If this file exists, verify it is populated by an external mechanism and rotated with logrotate.
 
 ### 7. Monitoring
 

@@ -5,6 +5,7 @@ Description=Run KTC Mail Prometheus metrics collector every five minutes
 OnBootSec=2min
 OnUnitActiveSec=5min
 AccuracySec=30s
+Unit=ktc-mail-exporter.service
 
 [Install]
 WantedBy=timers.target

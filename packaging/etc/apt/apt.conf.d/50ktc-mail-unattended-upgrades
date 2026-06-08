@@ -1,0 +1,39 @@
+# KTC Mail — unattended-upgrades configuration for automatic security updates
+# This file is installed by the ktc-mail Debian package.
+
+Unattended-Upgrade::Origins-Pattern {
+	"origin=Debian,codename=${distro_codename},label=Debian-Security";
+	"origin=Debian,codename=${distro_codename}-security,label=Debian-Security";
+	"origin=Debian,codename=${distro_codename}-security,label=Debian";
+};
+
+// Only install security updates (not all updates)
+Unattended-Upgrade::Package-Blacklist {
+};
+
+Unattended-Upgrade::AutoFixInterruptedDpkg "true";
+Unattended-Upgrade::MinimalSteps "true";
+Unattended-Upgrade::InstallOnShutdown "false";
+
+// Send email on errors (requires mailx or similar)
+Unattended-Upgrade::Mail "root";
+Unattended-Upgrade::MailReport "on-change";
+
+// Remove unused dependencies after upgrade
+Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+Unattended-Upgrade::Remove-Unused-Dependencies "true";
+Unattended-Upgrade::Remove-New-Unused-Dependencies "true";
+
+// Reboot automatically if needed (only at 04:00 daily)
+Unattended-Upgrade::Automatic-Reboot "true";
+Unattended-Upgrade::Automatic-Reboot-Time "04:00";
+
+// Log to syslog
+Unattended-Upgrade::SyslogEnable "true";
+Unattended-Upgrade::SyslogFacility "daemon";
+
+// Download and install upgrades in the background
+Unattended-Upgrade::Download-Only "false";
+
+// Verbose logging for debugging
+Acquire::http::Dl-Limit "0";

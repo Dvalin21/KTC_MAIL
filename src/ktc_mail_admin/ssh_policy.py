@@ -102,6 +102,7 @@ def write_config(
     test = subprocess.run(
         ["sshd", "-t"],
         capture_output=True, text=True, check=False,
+        timeout=SUBPROCESS_TIMEOUT,
     )
     if test.returncode != 0:
         raise SshPolicyError(

@@ -22,15 +22,26 @@ fi
 if command -v aa-enforce &>/dev/null; then
     for prof in /etc/apparmor.d/usr.lib.ktc-mail.*; do
         if [[ -f "$prof" ]]; then
-            apparmor_parser -r "$prof" 2>/dev/null || true
-            aa-enforce "$(basename "$prof")" 2>/dev/null || true
+            name="$(basename "$prof")"
+            if ! apparmor_parser -r "$prof" 2>&1; then
+                echo "ERROR: apparmor_parser failed for $name" >&2
+                exit 1
+            fi
+            if ! aa-enforce "$name" 2>&1; then
+                echo "ERROR: aa-enforce $name failed — profile not enforcing" >&2
+                exit 1
+            fi
+            echo "AppArmor: $name enforced"
         fi
     done
 elif command -v aa-complain &>/dev/null; then
     # If only complain mode tools are available, load in complain mode
     for prof in /etc/apparmor.d/usr.lib.ktc-mail.*; do
         if [[ -f "$prof" ]]; then
-            apparmor_parser -r "$prof" 2>/dev/null || true
+            if ! apparmor_parser -r "$prof" 2>&1; then
+                echo "ERROR: apparmor_parser failed for $(basename "$prof")" >&2
+                exit 1
+            fi
         fi
     done
 fi
