@@ -3,7 +3,9 @@ set -euo pipefail
 
 case "${1:-}" in
   remove|upgrade|deconfigure)
-    systemctl disable --now ktc-mail-setup.service ktc-mail-firewall-monitor.timer ktc-mail-acme-renew.timer 2>/dev/null || true
+    systemctl disable --now ktc-mail-setup.service ktc-mail-firewall-monitor.timer \
+        ktc-mail-acme-renew.timer ktc-mail-backup.timer ktc-mail-exporter.timer \
+        ktc-mail-rate-limit.service 2>/dev/null || true
     ;;
   failed-upgrade)
     # Nothing to do — old services already gone

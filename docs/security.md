@@ -15,7 +15,8 @@
 - Admin authentication with phishing-resistant MFA, recovery codes, session timeout, and WebAuthn support.
 - Role-based access control for domain admins, mailbox admins, read-only auditors, and break-glass operators.
 - Root-owned API credential storage with separate provider scopes for DNS challenge records and TLSA updates.
-- ACME DNS-01 renewal hooks that reload Postfix, Dovecot, and Nginx only after certificate validation succeeds.
+- ACME renewal hooks run after certbot confirms successful issuance/renewal —
+  the deploy hook regenerates TLSA records and reloads Postfix, Dovecot, and Nginx.
 - MTA-STS and TLS-RPT hosting to improve SMTP transport security visibility.
 - DKIM key rotation workflows with staged DNS publication before signing cutover.
 - DMARC policy ramp from `none` to `quarantine` to `reject` with report review.

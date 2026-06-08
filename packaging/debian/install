@@ -54,7 +54,7 @@ apparmor/usr.lib.ktc-mail.firewall_monitor etc/apparmor.d/
 packaging/etc/logrotate.d/ktc-mail etc/logrotate.d/
 
 # ── APT configuration ──────────────────────────────────────────
-etc/apt/apt.conf.d/50ktc-mail-unattended-upgrades etc/apt/apt.conf.d/
+packaging/etc/apt/apt.conf.d/50ktc-mail-unattended-upgrades etc/apt/apt.conf.d/
 
 # ── Documentation ─────────────────────────────────────────────────
 etc/ktc-mail/config.example.json usr/share/doc/ktc-mail/examples/

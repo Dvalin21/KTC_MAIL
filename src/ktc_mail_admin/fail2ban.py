@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .config import CONFIG_DIR, SETUP_PATH, SecurityPolicy, read_json
+from .config import CONFIG_DIR, SETUP_PATH, SUBPROCESS_TIMEOUT, SecurityPolicy, read_json
 
 # ── Paths ───────────────────────────────────────────────────────────────
 
@@ -209,7 +209,7 @@ def check_fail2ban_installed() -> bool:
     """Check if fail2ban is installed on the system."""
     result = subprocess.run(
         ["which", "fail2ban-server"],
-        capture_output=True, text=True, check=False,
+        capture_output=True, text=True, check=False, timeout=SUBPROCESS_TIMEOUT,
     )
     return result.returncode == 0
 
@@ -218,7 +218,7 @@ def check_fail2ban_running() -> bool:
     """Check if fail2ban service is active."""
     result = subprocess.run(
         ["systemctl", "is-active", "fail2ban"],
-        capture_output=True, text=True, check=False,
+        capture_output=True, text=True, check=False, timeout=SUBPROCESS_TIMEOUT,
     )
     return result.stdout.strip() == "active"
 
@@ -234,7 +234,7 @@ def check_fail2ban_jails() -> list[dict[str, str]]:
 
     result = subprocess.run(
         ["fail2ban-client", "status"],
-        capture_output=True, text=True, check=False,
+        capture_output=True, text=True, check=False, timeout=SUBPROCESS_TIMEOUT,
     )
     if result.returncode != 0:
         return []
@@ -300,7 +300,7 @@ def reload_fail2ban() -> bool:
 
     result = subprocess.run(
         ["fail2ban-client", "reload"],
-        capture_output=True, text=True, check=False,
+        capture_output=True, text=True, check=False, timeout=SUBPROCESS_TIMEOUT,
     )
     if result.returncode != 0:
         print(f"fail2ban: reload failed: {result.stderr.strip()}",
@@ -369,7 +369,7 @@ def cmd_check(args: argparse.Namespace) -> int:
     try:
         result = subprocess.run(
             ["fail2ban-client", "get", "ktc-mail", "action"],
-            capture_output=True, text=True, timeout=5, check=False,
+            capture_output=True, text=True, timeout=SUBPROCESS_TIMEOUT, check=False,
         )
         if result.returncode == 0:
             detected_action = result.stdout.strip()
@@ -379,8 +379,13 @@ def cmd_check(args: argparse.Namespace) -> int:
                       detected_action)
                 print("Debian 12+ uses nftables. Set action=nftables-multiport")
                 print("in /etc/fail2ban/jail.d/*.conf to use the modern backend.")
-    except Exception:
-        pass
+        elif result.returncode != 0:
+            print(f"fail2ban: backend check failed (exit {result.returncode}): {result.stderr.strip()}",
+                  file=sys.stderr)
+    except subprocess.TimeoutExpired:
+        print("fail2ban: backend check timed out after 15s — unable to verify nftables backend",
+              file=sys.stderr)
+        return 1
 
     if config_exists:
         print()

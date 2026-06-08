@@ -236,6 +236,11 @@ def write() -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     TMP_METRICS_PATH.write_text(metrics, encoding="utf-8")
     TMP_METRICS_PATH.chmod(0o644)
+    fd = os.open(TMP_METRICS_PATH, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
     TMP_METRICS_PATH.rename(METRICS_PATH)  # atomic on same filesystem
     print(f"ktc-mail exporter: wrote {len(metrics)} bytes to {METRICS_PATH}")
 

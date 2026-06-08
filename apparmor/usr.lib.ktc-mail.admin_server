@@ -21,7 +21,9 @@ profile usr.lib.ktc-mail.admin_server /usr/lib/ktc-mail/app.py {
 
   # Config and secrets
   /etc/ktc-mail/ r,
-  /etc/ktc-mail/** r,
+  /etc/ktc-mail/*.json rw,
+  /etc/ktc-mail/dkim/ rw,
+  /etc/ktc-mail/dkim/** rw,
   /var/lib/ktc-mail/ r,
   /var/lib/ktc-mail/** rw,
 
@@ -29,19 +31,24 @@ profile usr.lib.ktc-mail.admin_server /usr/lib/ktc-mail/app.py {
   /etc/letsencrypt/ r,
   /etc/letsencrypt/** r,
 
-  # Postfix/Dovecot config writes (needed for setup/render)
+  # Postfix/Dovecot config writes — restricted to rendered output dirs only
   /etc/postfix/ r,
-  /etc/postfix/** rw,
+  /etc/postfix/*.cf rw,
+  /etc/postfix/*.map rw,
   /etc/dovecot/ r,
-  /etc/dovecot/** rw,
+  /etc/dovecot/*.conf rw,
+  /etc/dovecot/*.conf.ext rw,
   /etc/nginx/ r,
-  /etc/nginx/** rw,
+  /etc/nginx/*.conf rw,
+  /etc/nginx/sites-enabled/** rw,
 
-  # Network: HTTP server + outbound
+  # Network: HTTP server (inbound) + DNS/ACME outbound only
   network inet tcp,
   network inet6 tcp,
-  network inet dgram,
-  network inet6 dgram,
+  # Deny outbound to private ranges by default; specific rules below
+  # DNS UDP (ACME validation + TLSA)
+  network inet dgram peer 127.0.0.1,
+  network inet6 dgram peer ::1,
 
   # Unix sockets (Postfix, Dovecot, systemd)
   /run/systemd/notify  w,

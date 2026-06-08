@@ -17,6 +17,7 @@ Postfix knows which recipients are valid and where to deliver.
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -25,6 +26,19 @@ from typing import Any
 PASSWD_FILE = Path("/etc/dovecot/passwd")
 ALIAS_FILE = Path("/etc/postfix/virtual_alias")
 MBX_FILE = Path("/etc/postfix/virtual_mbx")
+
+# Characters that would break passwd-file parsing or Postfix map lookup.
+# Reject them before any line is written or command is run.
+_INVALID_EMAIL_CHARS = (":", "\n", "\r", "\0")
+
+
+def _validate_email(email: str) -> str | None:
+    """Reject dangerous characters; return sanitized lower-case email or None."""
+    if not isinstance(email, str) or not email.strip():
+        return None
+    if any(c in email for c in _INVALID_EMAIL_CHARS):
+        return None
+    return email.lower().strip()
 
 
 # ── Helpers ────────────────────────────────────────────────────────────
@@ -68,9 +82,14 @@ def _format_line(email: str, password_hash: str, quota: str) -> str:
 
 
 def _hash_password(password: str) -> str:
-    """Hash password via doveadm. Canonical tool, don't reimplement."""
+    """Hash password via doveadm. Canonical tool, don't reimplement.
+
+    Password is passed via stdin (-p was removed) to avoid /proc/<pid>/cmdline
+    exposure (MEDIUM-16). doveadm reads from stdin when -p is omitted.
+    """
     result = subprocess.run(
-        ["doveadm", "pw", "-s", "SHA512-CRYPT", "-p", password],
+        ["doveadm", "pw", "-s", "SHA512-CRYPT"],
+        input=password + "\n",
         capture_output=True, text=True, check=True,
     )
     return result.stdout.strip()
@@ -87,7 +106,7 @@ def _write_lines(path: Path, lines: list[str]) -> None:
     """Write lines to file atomically."""
     tmp = path.with_suffix(".tmp")
     tmp.write_text("".join(lines), encoding="utf-8")
-    tmp.chmod(0o644)
+    tmp.chmod(0o640)
     tmp.rename(path)
 
 
@@ -109,7 +128,8 @@ def user_add(
     dry_run: bool = False,
 ) -> int:
     """Add a mail user. Returns 0 on success, 1 on error."""
-    if "@" not in email:
+    sanitized = _validate_email(email)
+    if sanitized is None:
         print(f"error: '{email}' is not a valid email address", file=sys.stderr)
         return 1
 
@@ -119,17 +139,17 @@ def user_add(
         for l in existing
         if _parse_passwd(l) is not None
     }
-    if email in emails:
-        print(f"error: user '{email}' already exists", file=sys.stderr)
+    if sanitized in emails:
+        print(f"error: user '{sanitized}' already exists", file=sys.stderr)
         return 1
 
     if dry_run:
-        print(f"dry-run: would add user '{email}' (quota: {quota})")
+        print(f"dry-run: would add user '{sanitized}' (quota: {quota})")
         return 0
 
     if password is None:
         import getpass
-        password = getpass.getpass(f"Password for {email}: ")
+        password = getpass.getpass(f"Password for {sanitized}: ")
         confirm = getpass.getpass("Confirm: ")
         if password != confirm:
             print("error: passwords do not match", file=sys.stderr)
@@ -141,19 +161,19 @@ def user_add(
     hash_str = _hash_password(password)
 
     # Append to passwd file
-    line = _format_line(email, hash_str, quota) + "\n"
+    line = _format_line(sanitized, hash_str, quota) + "\n"
     existing.append(line)
     _write_lines(PASSWD_FILE, existing)
 
     # Update Postfix alias map (user@domain → same for local delivery)
     alias_lines = _read_lines(ALIAS_FILE)
-    alias_lines.append(f"{email} {email}\n")
+    alias_lines.append(f"{sanitized} {sanitized}\n")
     _write_lines(ALIAS_FILE, alias_lines)
 
     # Update Postfix mailbox map (user@domain → domain/user/)
-    domain, user = email.split("@", 1)
+    domain, user = sanitized.split("@", 1)
     mbx_lines = _read_lines(MBX_FILE)
-    mbx_lines.append(f"{email} {domain}/{user}/\n")
+    mbx_lines.append(f"{sanitized} {domain}/{user}/\n")
     _write_lines(MBX_FILE, mbx_lines)
 
     # Ensure maildir exists
@@ -161,25 +181,26 @@ def user_add(
     maildir.mkdir(parents=True, exist_ok=True)
 
     _dovecot_reload()
-    print(f"added: {email} (quota: {quota})")
+    print(f"added: {sanitized} (quota: {quota})")
     return 0
 
 
 def user_delete(email: str, dry_run: bool = False) -> int:
     """Remove a mail user."""
-    if "@" not in email:
+    sanitized = _validate_email(email)
+    if sanitized is None:
         print(f"error: '{email}' is not a valid email address", file=sys.stderr)
         return 1
 
     old_lines = _read_lines(PASSWD_FILE)
-    new_lines = [l for l in old_lines if not l.startswith(email + ":")]
+    new_lines = [l for l in old_lines if not l.startswith(sanitized + ":")]
 
     if len(new_lines) == len(old_lines):
-        print(f"error: user '{email}' not found", file=sys.stderr)
+        print(f"error: user '{sanitized}' not found", file=sys.stderr)
         return 1
 
     if dry_run:
-        print(f"dry-run: would remove user '{email}'")
+        print(f"dry-run: would remove user '{sanitized}'")
         return 0
 
     _write_lines(PASSWD_FILE, new_lines)
@@ -187,11 +208,11 @@ def user_delete(email: str, dry_run: bool = False) -> int:
     # Remove from alias and mailbox maps
     for f in (ALIAS_FILE, MBX_FILE):
         lines = _read_lines(f)
-        lines = [l for l in lines if not l.startswith(email + " ")]
+        lines = [l for l in lines if not l.startswith(sanitized + " ")]
         _write_lines(f, lines)
 
     _dovecot_reload()
-    print(f"removed: {email}")
+    print(f"removed: {sanitized}")
     return 0
 
 
@@ -225,7 +246,8 @@ def user_passwd(email: str, password: str | None = None,
         password: New password. If None, prompts interactively.
         dry_run: If True, only print what would be done.
     """
-    if "@" not in email:
+    sanitized = _validate_email(email)
+    if sanitized is None:
         print(f"error: '{email}' is not a valid email address", file=sys.stderr)
         return 1
 
@@ -233,15 +255,15 @@ def user_passwd(email: str, password: str | None = None,
     new_lines = []
     found = False
     for l in lines:
-        if l.startswith(email + ":"):
+        if l.startswith(sanitized + ":"):
             found = True
             if dry_run:
-                print(f"dry-run: would change password for '{email}'")
+                print(f"dry-run: would change password for '{sanitized}'")
                 new_lines.append(l)
                 continue
             if password is None:
                 import getpass
-                pw = getpass.getpass(f"New password for {email}: ")
+                pw = getpass.getpass(f"New password for {sanitized}: ")
                 confirm = getpass.getpass("Confirm: ")
                 if pw != confirm:
                     print("error: passwords do not match", file=sys.stderr)
@@ -260,18 +282,18 @@ def user_passwd(email: str, password: str | None = None,
                 new_lines.append(l)
                 continue
             quota = parsed.get("quota", "1G")
-            new_lines.append(_format_line(email, hash_str, quota) + "\n")
+            new_lines.append(_format_line(sanitized, hash_str, quota) + "\n")
         else:
             new_lines.append(l)
 
     if not found:
-        print(f"error: user '{email}' not found", file=sys.stderr)
+        print(f"error: user '{sanitized}' not found", file=sys.stderr)
         return 1
 
     if not dry_run:
         _write_lines(PASSWD_FILE, new_lines)
         _dovecot_reload()
-        print(f"password changed: {email}")
+        print(f"password changed: {sanitized}")
 
     return 0
 

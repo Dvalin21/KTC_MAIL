@@ -6,6 +6,7 @@ Description=Run KTC Mail ACME renewal twice daily
 OnCalendar=daily
 RandomizedDelaySec=6h
 Persistent=true
+Unit=ktc-mail-acme-renew.service
 
 [Install]
 WantedBy=timers.target

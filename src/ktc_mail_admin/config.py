@@ -12,12 +12,16 @@ Rules:
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
 import os
 import re
 import subprocess
+
+logger = logging.getLogger("ktc-mail.config")
+
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,6 +45,10 @@ CERT_NAME = "ktc-mail"
 KTC_MAIL_BIN = "/usr/bin/ktc-mail"
 DNS_HOOK = "/usr/lib/ktc-mail/dns_provider.py"  # legacy hook path (keep for compat)
 ACME_HOOK = "/usr/lib/ktc-mail/acme_manager.py"  # legacy hook path (keep for compat)
+
+# Subprocess default timeout (seconds). Centralised here so every module imports
+# one value instead of scattering magic numbers.
+SUBPROCESS_TIMEOUT = 15
 
 # Backup paths (Phase 6)
 BACKUP_CONFIG_PATH = CONFIG_DIR / "backup.json"
@@ -420,15 +428,7 @@ class DkimKeyPair:
             capture_output=True,
             check=True,
         )
-        pub_b64 = pub_der.stdout.hex()
-        # openssl base64 -A produces single-line base64
-        base64_proc = subprocess.run(
-            ["openssl", "base64", "-A"],
-            input=pub_der.stdout,
-            capture_output=True,
-            check=True,
-        )
-        pub_dns = base64_proc.stdout.decode("utf-8").strip()
+        pub_dns = base64.encodebytes(pub_der.stdout).decode("utf-8").strip()
 
         return cls(
             selector=selector,
@@ -993,16 +993,23 @@ def json_dumps(obj: Any) -> str:
 
 
 def save_json_private(path: Path | str, payload: dict[str, Any]) -> None:
-    """Write a JSON file with 0600 permissions, atomically.
+    """Write a JSON file with 0600 permissions, atomically with fsync.
 
-    Uses tempfile + rename to avoid the chmod race window that
-    write-then-chmod creates.  Accepts Path or str.
+    Uses os.open + os.write + os.fsync + os.close + rename to ensure
+    data durability.  Avoids the chmod race window that write-then-chmod
+    creates.  Accepts Path or str.
     """
     import json
+    import os
     p = Path(path)
     tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    tmp.chmod(0o600)
+    payload_bytes = (json.dumps(payload, indent=2) + "\n").encode("utf-8")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, payload_bytes)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
     tmp.rename(p)  # atomic on the same filesystem
 
 

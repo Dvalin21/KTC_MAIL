@@ -14,15 +14,12 @@ profile usr.lib.ktc-mail.rate_limiter /usr/lib/ktc-mail/rate_limiter.py {
   /usr/lib/ktc-mail/ r,
   /usr/lib/ktc-mail/** r,
 
-  # Config and state
-  /etc/ktc-mail/ r,
-  /etc/ktc-mail/* r,
-  /var/lib/ktc-mail/ r,
-  /var/lib/ktc-mail/* rw,
+  # rate_limiter uses env vars + in-memory state; no /etc or /var/lib I/O.
 
-  # Network: policy server listen + outbound TCP
-  network inet tcp,
-  network inet6 tcp,
+  # Network: localhost-only Postfix policy daemon.
+  # Outbound TCP not required.
+  network inet stream peer 127.0.0.1,
+  network inet stream peer ::1,
 
   # Systemd notify
   /run/systemd/notify  w,

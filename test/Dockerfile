@@ -39,8 +39,9 @@ COPY setup.py .
 # Install ktc-mail Python package
 # --break-system-packages for Debian bookworm (PEP 668); fallback for older distros.
 # DO NOT suppress errors — a failed install must fail the build.
-RUN pip install --no-cache-dir -e . --break-system-packages 2>/dev/null || \
-    pip install --no-cache-dir -e . 2>/dev/null || \
+RUN set -eux; \
+    pip install --no-cache-dir -e . --break-system-packages || \
+    pip install --no-cache-dir -e . || \
     (echo "FATAL: pip install failed" >&2 && exit 1)
 
 # Create test setup profile

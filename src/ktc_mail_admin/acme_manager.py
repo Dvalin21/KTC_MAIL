@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import os
 import shlex
 import shutil
@@ -37,11 +38,15 @@ from .config import (
     SetupProfile,
     save_json_private,
     read_json,
+    SUBPROCESS_TIMEOUT,
 )
 
 
 class AcmeError(RuntimeError):
     """Certificate automation cannot complete safely."""
+
+
+logger = logging.getLogger("ktc-mail.acme")
 
 
 # ── Binary paths (env-overridable for testing) ──────────────────────────────
@@ -110,9 +115,10 @@ def certbot_issue_command(profile: SetupProfile) -> list[str]:
 
 def certbot_renew_command() -> list[str]:
     """Build the certbot renew command with deploy hook."""
+    quoted = shlex.quote(str(SETUP_PATH))
     return [
         CERTBOT_BIN, "renew",
-        "--deploy-hook", f"{KTC_MAIL_BIN} acme deploy-hook --config {SETUP_PATH}",
+        "--deploy-hook", f"{KTC_MAIL_BIN} acme deploy-hook --config {quoted}",
     ]
 
 
@@ -241,6 +247,7 @@ def deploy_hook_certonly(profile: SetupProfile, dry_run: bool = False) -> int:
 
     # Only update TLSA if configured
     if profile.update_tlsa_on_renewal:
+        tlsa_failures = 0
         tlsa_records = generate_tlsa_records(profile, cert_path)
         if dry_run:
             for rec in tlsa_records:
@@ -271,6 +278,7 @@ def deploy_hook_certonly(profile: SetupProfile, dry_run: bool = False) -> int:
             save_json_private(SETUP_PATH, setup_data)
 
             # Push TLSA updates via DNS provider
+            tlsa_failures = 0
             try:
                 from . import dns_provider as dns_mod
                 secrets_path = CONFIG_DIR / "secrets.json"
@@ -290,8 +298,17 @@ def deploy_hook_certonly(profile: SetupProfile, dry_run: bool = False) -> int:
                         transport.update(existing, tlsa)
                     else:
                         transport.create(tlsa)
+            except (OSError, ValueError, ConnectionError, TimeoutError) as exc:
+                print(f"dns ERROR: TLSA update failed: {exc}", file=sys.stderr)
+                tlsa_failures += 1
             except Exception as exc:
-                print(f"dns warning: TLSA update failed: {exc}", file=sys.stderr)
+                print(f"dns ERROR: unexpected TLSA failure: {exc}", file=sys.stderr)
+                tlsa_failures += 1
+                raise
+        if tlsa_failures:
+            print("deploy-hook abort: TLSA update failed; not reloading services",
+                  file=sys.stderr)
+            return 1
     else:
         print("TLSA update disabled by configuration")
 
@@ -319,16 +336,34 @@ def ensure_dhparams(path: Path = Path("/etc/ssl/dhparam.pem")) -> None:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     print(f"Generating DH params (2048-bit) at {path} ...", flush=True)
+
+    # Write to temp file first, then atomic rename with fsync
+    tmp = path.with_suffix(".tmp")
     result = subprocess.run(
-        [OPENSSL_BIN, "dhparam", "-out", str(path), "2048"],
+        [OPENSSL_BIN, "dhparam", "-out", str(tmp), "2048"],
         capture_output=True, text=True, check=False,
+        timeout=120,
     )
     if result.returncode != 0:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
         print(f"warning: DH param generation failed: {result.stderr.strip()}",
               file=sys.stderr)
         return
+
+    # Ensure the written file is durable on disk
+    try:
+        fd = os.open(tmp, os.O_RDONLY)
+        os.fsync(fd)
+        os.close(fd)
+    except OSError:
+        pass
+
+    tmp.chmod(0o600)
+    tmp.rename(path)
     print(f"DH params written: {path}")
-    path.chmod(0o600)
 
 
 def reload_services(profile: SetupProfile, dry_run: bool = False) -> None:
@@ -363,13 +398,69 @@ def write_tls_state(profile: SetupProfile) -> None:
 
 # ── Pre-flight checks ─────────────────────────────────────────────────────
 
-
-def check_dns_propagation(domain: str, timeout: int = 120, interval: int = 10) -> bool:
+def check_dns_propagation(domain: str, config: Path = SETUP_PATH,
+                           timeout: int = 120, interval: int = 5) -> bool:
     """Wait for ACME challenge domain to resolve via public DNS.
 
     For DNS-01, the challenge is at ``_acme-challenge.<domain>``.
-    Polls Cloudflare's DoH API until the TXT record appears or *timeout*
-    seconds elapse.
+    Uses the configured DNS provider to query for the TXT record.
+    If DNS provider is 'manual', returns True immediately (cannot verify).
+    """
+    challenge = f"_acme-challenge.{domain}"
+
+    # Load profile to get DNS provider info
+    setup_data = read_json(config) if config.exists() else {}
+    dns_provider = setup_data.get("dns_provider", "")
+    dns_provider_manual = setup_data.get("dns_provider_manual", False)
+
+    # If manual DNS, we can't programmatically verify - proceed anyway
+    if dns_provider_manual or not dns_provider:
+        print(f"dns: manual DNS configured, skipping propagation check for {challenge}")
+        return True
+
+    # Load secrets and create DNS transport
+    try:
+        from . import dns_provider as dns_mod
+        secrets_path = CONFIG_DIR / "secrets.json"
+        secrets = read_json(secrets_path) if secrets_path.exists() else {}
+        transport = dns_mod.provider_from_config(
+            setup_data, secrets, dry_run=False,
+        )
+    except Exception as exc:
+        print(f"dns warning: cannot create DNS transport: {exc}", file=sys.stderr)
+        print(f"dns: falling back to generic propagation check for {challenge}")
+        return _check_dns_propagation_fallback(challenge, timeout, interval)
+
+    deadline = time.time() + timeout
+    print(f"dns: polling {challenge} TXT via {dns_provider} ...", flush=True)
+
+    while time.time() < deadline:
+        try:
+            records = transport.list_all(domain)
+            for rec in records:
+                if rec.type == "TXT" and rec.name == challenge:
+                    print(f"dns: {challenge} resolved — ACME can proceed")
+                    return True
+        except Exception as exc:
+            print(f"dns warning: query failed: {exc}", file=sys.stderr)
+
+        print(f"dns: {challenge} not yet visible, waiting {interval}s ...", flush=True)
+        time.sleep(interval)
+
+    print(f"dns: {challenge} did not resolve within {timeout}s — proceeding anyway")
+    return False
+
+
+def _check_dns_propagation_fallback(domain: str,
+                                     timeout: int = 120,
+                                     interval: int = 5) -> bool:
+    """Fallback DNS check using public DoH resolver.
+
+    WARNING: This uses Cloudflare's DoH endpoint regardless of configured
+    DNS provider. For non-Cloudflare providers, the challenge may not be
+    visible (split-horizon DNS, no delegation) or may be rate-limited.
+    Results are advisory only — the function returns False on timeout and
+    the caller proceeds anyway.
     """
     import urllib.request as _request
     import urllib.error as _error
@@ -378,22 +469,17 @@ def check_dns_propagation(domain: str, timeout: int = 120, interval: int = 10) -
     url = f"https://cloudflare-dns.com/dns-query?name={challenge}&type=TXT"
     deadline = time.time() + timeout
 
-    print(f"dns: polling {challenge} TXT ...", flush=True)
     while time.time() < deadline:
         try:
             req = _request.Request(url, headers={"Accept": "application/dns-json"})
             resp = _request.urlopen(req, timeout=5)
             data = json.loads(resp.read().decode())
             answers = data.get("Answer", [])
-            if any(a.get("type") == 16 for a in answers):  # type 16 = TXT
-                print(f"dns: {challenge} resolved — ACME can proceed")
+            if any(a.get("type") == 16 for a in answers):
                 return True
         except (_error.URLError, _error.HTTPError, OSError, json.JSONDecodeError):
             pass
-        print(f"dns: {challenge} not yet visible, waiting {interval}s ...", flush=True)
         time.sleep(interval)
-
-    print(f"dns: {challenge} did not resolve within {timeout}s — proceeding anyway")
     return False
 
 
@@ -405,7 +491,7 @@ def issue(config: Path, dry_run: bool) -> int:
     profile = load_profile(config)
 
     if profile.certificate_mode == "dns-01" and not dry_run:
-        check_dns_propagation(profile.domain)
+        check_dns_propagation(profile.domain, config)
 
     if profile.certificate_mode == "http-01" and not dry_run:
         ACME_WEBROOT.mkdir(parents=True, exist_ok=True)
