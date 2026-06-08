@@ -1,6 +1,6 @@
 [Unit]
 Description=KTC Mail Prometheus metrics collector
-Documentation=https://github.com/Dvalin21/ktc-mail
+Documentation=https://github.com/Dvalin21/KTC_MAIL
 After=network-online.target
 
 [Service]
@@ -10,8 +10,13 @@ Group=ktc-mail
 ExecStart=/usr/bin/ktc-mail metrics collect
 IOSchedulingClass=idle
 CPUSchedulingPolicy=idle
-# Default syslog level is info; suppress the "result" log line
-StandardOutput=null
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/ktc-mail
 
 [Install]
 WantedBy=multi-user.target
