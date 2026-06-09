@@ -428,8 +428,11 @@ def check_dns_propagation(domain: str, config: Path = SETUP_PATH,
         )
     except Exception as exc:
         print(f"dns warning: cannot create DNS transport: {exc}", file=sys.stderr)
-        print(f"dns: falling back to generic propagation check for {challenge}")
-        return _check_dns_propagation_fallback(challenge, timeout, interval)
+        # No fallback to Cloudflare DoH - that would defeat the purpose of
+        # using the configured provider and could give false positives
+        # (split-horizon DNS, rate limiting). Return False; ACME server
+        # will validate authoritatively and fail if not propagated.
+        return False
 
     deadline = time.time() + timeout
     print(f"dns: polling {challenge} TXT via {dns_provider} ...", flush=True)
@@ -448,38 +451,6 @@ def check_dns_propagation(domain: str, config: Path = SETUP_PATH,
         time.sleep(interval)
 
     print(f"dns: {challenge} did not resolve within {timeout}s — proceeding anyway")
-    return False
-
-
-def _check_dns_propagation_fallback(domain: str,
-                                     timeout: int = 120,
-                                     interval: int = 5) -> bool:
-    """Fallback DNS check using public DoH resolver.
-
-    WARNING: This uses Cloudflare's DoH endpoint regardless of configured
-    DNS provider. For non-Cloudflare providers, the challenge may not be
-    visible (split-horizon DNS, no delegation) or may be rate-limited.
-    Results are advisory only — the function returns False on timeout and
-    the caller proceeds anyway.
-    """
-    import urllib.request as _request
-    import urllib.error as _error
-
-    challenge = f"_acme-challenge.{domain}"
-    url = f"https://cloudflare-dns.com/dns-query?name={challenge}&type=TXT"
-    deadline = time.time() + timeout
-
-    while time.time() < deadline:
-        try:
-            req = _request.Request(url, headers={"Accept": "application/dns-json"})
-            resp = _request.urlopen(req, timeout=5)
-            data = json.loads(resp.read().decode())
-            answers = data.get("Answer", [])
-            if any(a.get("type") == 16 for a in answers):
-                return True
-        except (_error.URLError, _error.HTTPError, OSError, json.JSONDecodeError):
-            pass
-        time.sleep(interval)
     return False
 
 
