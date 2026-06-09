@@ -156,11 +156,11 @@ class DnsRecord:
     def key(self) -> str:
         """Unique key for this record within a zone.
 
-        Two records with the same type+name COLLIDE. The last one wins.
-        This is how DNS works — you cannot have two TXT records with
-        the same name (they merge into one multi-value set in practice,
-        but for our purposes we treat them as distinct by value).
+        For TXT (and other multi-value types), include value to distinguish
+        multiple records at the same name (e.g., SPF + DMARC at domain root).
         """
+        if self.type == "TXT":
+            return f"{self.type}:{self.name}:{hashlib.sha256(self.value.encode()).hexdigest()[:16]}"
         return f"{self.type}:{self.name}"
 
     def to_dict(self) -> dict[str, Any]:
@@ -661,7 +661,7 @@ class SetupProfile:
     reload_services: tuple[str, ...] = ("postfix", "dovecot", "nginx")
     update_tlsa_on_renewal: bool = True
 
-    sogo_db_password: str = ""
+    dmarc_policy: str = "none"  # none | quarantine | reject
 
     # ── Derived hostnames (read-only properties) ──────────────────────
 
@@ -757,7 +757,7 @@ class SetupProfile:
         if self.public_ipv6:
             spf_parts.append(f"ip6:{self.public_ipv6}")
         spf_parts.append("mx")
-        spf_parts.append("~all")  # softfail by default
+        spf_parts.append("-all")  # hardfail by default
         rs.add(DnsRecord("TXT", self.domain, " ".join(spf_parts),
                          purpose="SPF sender policy"))
 
@@ -765,15 +765,15 @@ class SetupProfile:
         if self.dkim is not None:
             rs.add(self.dkim.dns_txt_record(self.domain))
 
-        # DMARC — policy + reporting (optional: start at p=none)
+        # DMARC — policy + reporting (configurable: none | quarantine | reject)
         dmarc = (
-            f"v=DMARC1; p=none; "
+            f"v=DMARC1; p={self.dmarc_policy}; "
             f"rua=mailto:dmarc@{self.domain}; "
             f"ruf=mailto:dmarc@{self.domain}; "
             f"fo=1"
         )
         rs.add(DnsRecord("TXT", f"_dmarc.{self.domain}", dmarc,
-                         purpose="DMARC (p=none to start, promote later)"))
+                         purpose=f"DMARC (p={self.dmarc_policy})"))
 
         # TLS-RPT — TLS reporting
         rs.add(DnsRecord(
@@ -897,7 +897,7 @@ class SetupProfile:
             "update_tlsa_on_renewal": self.update_tlsa_on_renewal,
             "open_ports": self.security.actual_open_ports,
             "cert_san_names": self.cert_san_names,
-            "sogo_db_password": self.sogo_db_password,
+            "dmarc_policy": self.dmarc_policy,
         }
         return d
 
@@ -949,7 +949,7 @@ class SetupProfile:
             setup_phase=setup_phase,
             reload_services=tuple(data.get("reload_services", ["postfix", "dovecot", "nginx"])),
             update_tlsa_on_renewal=bool(data.get("update_tlsa_on_renewal", True)),
-            sogo_db_password=data.get("sogo_db_password", ""),
+            dmarc_policy=data.get("dmarc_policy", "none"),
         )
         # DKIM is NOT serialised to JSON (private key stays in separate file)
         return profile
@@ -1023,6 +1023,39 @@ def read_json(path: Path | str) -> dict[str, Any]:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
+def _secrets_get(key: str) -> str | None:
+    """Get a value from secrets.json, or None if not found."""
+    if not SECRETS_PATH.exists():
+        return None
+    try:
+        data = read_json(SECRETS_PATH)
+        return data.get(key)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _secrets_set(key: str, value: str) -> None:
+    """Set a value in secrets.json atomically."""
+    data = {}
+    if SECRETS_PATH.exists():
+        try:
+            data = read_json(SECRETS_PATH)
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+    data[key] = value
+    save_json_private(SECRETS_PATH, data)
+
+
+def get_sogo_db_password() -> str | None:
+    """Get the SOGo database password from secrets.json."""
+    return _secrets_get("sogo_db_password")
+
+
+def set_sogo_db_password(password: str) -> None:
+    """Save the SOGo database password to secrets.json atomically."""
+    _secrets_set("sogo_db_password", password)
+
+
 def detect_public_ipv4() -> str:
     """Detect public IPv4 via external API. Returns '' on failure."""
     try:
@@ -1049,15 +1082,23 @@ def detect_port_25_blocked() -> bool:
     Returns True if connection times out or is refused
     (likely blocked by ISP). Returns False if accepted.
     """
+    import socket
     try:
-        import socket
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(5)
         result = sock.connect_ex(("gmail-smtp-in.l.google.com", 25))
         sock.close()
         return result != 0
-    except Exception:
-        return True  # assume blocked if we can't even probe
+    except socket.gaierror:
+        # DNS failure - not a port 25 block, can't determine
+        return False
+    except socket.timeout:
+        # Connection timeout - likely blocked
+        return True
+    except OSError:
+        # Other OS errors (network unreachable, etc) - unclear
+        # Return False to avoid false positive block
+        return False
 
 
 def detect_registrar(domain: str) -> str:
