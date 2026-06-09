@@ -661,6 +661,8 @@ class SetupProfile:
     reload_services: tuple[str, ...] = ("postfix", "dovecot", "nginx")
     update_tlsa_on_renewal: bool = True
 
+    sogo_db_password: str = ""
+
     # ── Derived hostnames (read-only properties) ──────────────────────
 
     @property
@@ -895,6 +897,7 @@ class SetupProfile:
             "update_tlsa_on_renewal": self.update_tlsa_on_renewal,
             "open_ports": self.security.actual_open_ports,
             "cert_san_names": self.cert_san_names,
+            "sogo_db_password": self.sogo_db_password,
         }
         return d
 
@@ -946,6 +949,7 @@ class SetupProfile:
             setup_phase=setup_phase,
             reload_services=tuple(data.get("reload_services", ["postfix", "dovecot", "nginx"])),
             update_tlsa_on_renewal=bool(data.get("update_tlsa_on_renewal", True)),
+            sogo_db_password=data.get("sogo_db_password", ""),
         )
         # DKIM is NOT serialised to JSON (private key stays in separate file)
         return profile
