@@ -42,6 +42,7 @@ def _atomic_write(path: Path, content: str, *, mode: int = 0o640) -> None:
 
 
 from .config import (
+    CERT_NAME,
     CONFIG_DIR,
     SETUP_PATH,
     SetupProfile,
@@ -94,9 +95,9 @@ def render_postfix_main_cf(profile: SetupProfile) -> str:
         "smtpd_tls_mandatory_ciphers = high",
         "smtpd_tls_eecdh_grade = strong",
         "smtpd_tls_dh1024_param_file = /etc/ssl/dhparam.pem",
-        "smtpd_tls_key_file = /etc/letsencrypt/live/ktc-mail/privkey.pem",
-        "smtpd_tls_cert_file = /etc/letsencrypt/live/ktc-mail/fullchain.pem",
-        "smtpd_tls_CAfile = /etc/letsencrypt/live/ktc-mail/chain.pem",
+        f"smtpd_tls_key_file = /etc/letsencrypt/live/{CERT_NAME}/privkey.pem",
+        f"smtpd_tls_cert_file = /etc/letsencrypt/live/{CERT_NAME}/fullchain.pem",
+        f"smtpd_tls_CAfile = /etc/letsencrypt/live/{CERT_NAME}/chain.pem",
         "smtpd_tls_session_cache_database = btree:${data_directory}/smtpd_scache",
         "smtpd_tls_received_header = yes",
         "",
@@ -322,8 +323,8 @@ local 127.0.0.1 {{
   ssl = no
 }}
 
-ssl_cert = </etc/letsencrypt/live/ktc-mail/fullchain.pem
-ssl_key = </etc/letsencrypt/live/ktc-mail/privkey.pem
+ssl_cert = </etc/letsencrypt/live/{CERT_NAME}/fullchain.pem
+ssl_key = </etc/letsencrypt/live/{CERT_NAME}/privkey.pem
 ssl_min_protocol = TLSv1.2
 ssl_cipher_list = ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384
 ssl_prefer_server_ciphers = yes
@@ -626,8 +627,8 @@ server {{
     listen [::]:443 ssl http2;
     server_name {profile.webmail_host};
 
-    ssl_certificate /etc/letsencrypt/live/ktc-mail/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/ktc-mail/privkey.pem;
+    ssl_certificate /etc/letsencrypt/live/{CERT_NAME}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/{CERT_NAME}/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
     ssl_prefer_server_ciphers on;
@@ -678,8 +679,8 @@ server {{
     listen [::]:443 ssl http2;
     server_name {profile.admin_host};
 
-    ssl_certificate /etc/letsencrypt/live/ktc-mail/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/ktc-mail/privkey.pem;
+    ssl_certificate /etc/letsencrypt/live/{CERT_NAME}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/{CERT_NAME}/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
     ssl_prefer_server_ciphers on;
