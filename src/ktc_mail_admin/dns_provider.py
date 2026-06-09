@@ -1163,9 +1163,9 @@ def ptr_report(profile: SetupProfile) -> str:
             return (
                 f"PTR: {ptr_name} → {target}\n"
                 f"     Your DNS provider supports PTR management. "
-                f"Will attempt to set automatically."
+                f"Will attempt to set automatically.\n"
             )
-    except Exception:
+    except (OSError, ValueError, json.JSONDecodeError):
         pass
 
     return (

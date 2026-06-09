@@ -20,6 +20,7 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -118,7 +119,7 @@ def _cert_expiry() -> float:
                 days = _cert_expiry_days(end_date)
                 return float(days) if days is not None else -1.0
         return -1.0
-    except Exception:
+    except (OSError, ValueError):
         return -1.0
 
 
@@ -164,7 +165,7 @@ def _last_success(path: Path, key: str = "updated_at") -> float:
         data = read_json(path)
         ts = data.get(key, -1)
         return float(ts) if ts > 0 else -1.0
-    except Exception:
+    except (OSError, ValueError, json.JSONDecodeError):
         return -1.0
 
 
