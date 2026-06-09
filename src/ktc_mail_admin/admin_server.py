@@ -60,6 +60,7 @@ from .config import (
     DNS_STATE_PATH,
     DKIM_DIR,
     BACKUP_STATE_PATH,
+    CERT_NAME,
     read_json,
     save_json_private,
     setup_logging,
@@ -497,56 +498,43 @@ def _cert_info_from_path(cert_path: Path) -> dict[str, Any]:
 
     Returns a dict with keys: end_date, issuer, subject, sans, fingerprint.
     Empty dict if the cert file does not exist or parsing fails.
+    Uses a SINGLE openssl call for all fields.
     """
     info: dict[str, Any] = {}
     if not cert_path.exists():
         return info
     try:
-        # End date
+        # Single openssl call for all fields
         r = subprocess.run(
-            ["openssl", "x509", "-in", str(cert_path), "-noout", "-enddate"],
+            [
+                "openssl", "x509", "-in", str(cert_path), "-noout",
+                "-enddate", "-issuer", "-subject",
+                "-ext", "subjectAltName",
+                "-fingerprint", "-sha256",
+            ],
             capture_output=True, text=True, timeout=5,
         )
-        if r.returncode == 0 and r.stdout.strip():
-            info["end_date"] = r.stdout.strip().replace("notAfter=", "")
+        if r.returncode != 0:
+            logger.warning("openssl x509 failed: %s", r.stderr)
+            return info
 
-        # Issuer
-        r = subprocess.run(
-            ["openssl", "x509", "-in", str(cert_path), "-noout", "-issuer"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if r.returncode == 0 and r.stdout.strip():
-            info["issuer"] = r.stdout.strip().replace("issuer=", "")
-
-        # Subject
-        r = subprocess.run(
-            ["openssl", "x509", "-in", str(cert_path), "-noout", "-subject"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if r.returncode == 0 and r.stdout.strip():
-            info["subject"] = r.stdout.strip().replace("subject=", "")
-
-        # SANs
-        r = subprocess.run(
-            ["openssl", "x509", "-in", str(cert_path), "-noout",
-             "-ext", "subjectAltName"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if r.returncode == 0 and r.stdout.strip():
-            info["sans"] = r.stdout.strip()
-
-        # SHA-256 fingerprint
-        r = subprocess.run(
-            ["openssl", "x509", "-in", str(cert_path), "-noout",
-             "-fingerprint", "-sha256"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if r.returncode == 0 and r.stdout.strip():
-            info["fingerprint"] = (
-                r.stdout.strip().replace("SHA256 Fingerprint=", "")
-            )
+        for line in r.stdout.splitlines():
+            line = line.strip()
+            if line.startswith("notAfter="):
+                info["end_date"] = line.replace("notAfter=", "")
+            elif line.startswith("issuer="):
+                info["issuer"] = line.replace("issuer=", "")
+            elif line.startswith("subject="):
+                info["subject"] = line.replace("subject=", "")
+            elif line.startswith("X509v3 Subject Alternative Name:"):
+                # SANs may span multiple lines; capture the rest
+                idx = r.stdout.index(line)
+                info["sans"] = r.stdout[idx:].strip()
+            elif line.startswith("SHA256 Fingerprint="):
+                info["fingerprint"] = line.replace("SHA256 Fingerprint=", "")
     except Exception:
         logger.exception("reading cert info from %s", cert_path)
+    return info
     return info
 
 
@@ -567,34 +555,69 @@ def _cert_expiry_days(end_date_str: str) -> int | None:
         return None
 
 
-# ── Login rate limiter ───────────────────────────────────────────────────────
+# ── Login rate limiter (Redis-backed) ─────────────────────────────────────────
 # Per-IP sliding window: max 5 failed attempts in 60 seconds.
-_login_attempts: dict[str, list[float]] = {}  # IP -> [timestamps]
+# Uses Redis for multi-worker support. Falls back to in-memory if Redis unavailable.
 _LOGIN_RATE_LIMIT = 5
 _LOGIN_RATE_WINDOW = 60  # seconds
+_login_attempts_fallback: dict[str, list[float]] = {}
+
+_REDIS_URL = os.environ.get("KTC_ADMIN_REDIS", "redis://localhost:6379/0")
+_redis_client = None
+
+
+def _get_redis():
+    global _redis_client
+    if _redis_client is not None:
+        return _redis_client
+    try:
+        import redis
+        _redis_client = redis.from_url(_REDIS_URL, socket_connect_timeout=2, socket_timeout=2, decode_responses=True)
+        _redis_client.ping()
+        return _redis_client
+    except Exception:
+        return None
 
 
 def _login_rate_check(ip: str) -> bool:
     """Return True if this IP is currently rate-limited (blocked)."""
     now = time.time()
-    # Get existing attempts, purge anything outside the window
     window_start = now - _LOGIN_RATE_WINDOW
-    attempts = _login_attempts.get(ip)
+    r = _get_redis()
+    if r:
+        key = f"ktc:ratelimit:login:{ip}"
+        # Remove old entries, count remaining
+        r.zremrangebyscore(key, 0, window_start)
+        count = r.zcard(key)
+        return count >= _LOGIN_RATE_LIMIT
+    # Fallback to in-memory
+    attempts = _login_attempts_fallback.get(ip)
     if not attempts:
         return False
-    # Prune stale entries in-place (O(n) but n ≤ rate limit)
-    _login_attempts[ip] = [t for t in attempts if t > window_start]
-    return len(_login_attempts[ip]) >= _LOGIN_RATE_LIMIT
+    _login_attempts_fallback[ip] = [t for t in attempts if t > window_start]
+    return len(_login_attempts_fallback[ip]) >= _LOGIN_RATE_LIMIT
 
 
 def _login_rate_record(ip: str) -> None:
     """Record a failed login attempt from *ip*."""
-    _login_attempts.setdefault(ip, []).append(time.time())
+    now = time.time()
+    r = _get_redis()
+    if r:
+        key = f"ktc:ratelimit:login:{ip}"
+        r.zadd(key, {str(now): now})
+        r.expire(key, _LOGIN_RATE_WINDOW + 10)
+        return
+    _login_attempts_fallback.setdefault(ip, []).append(now)
 
 
 def _login_rate_clear(ip: str) -> None:
     """Clear failed attempt history for *ip* (on successful login)."""
-    _login_attempts.pop(ip, None)
+    r = _get_redis()
+    if r:
+        key = f"ktc:ratelimit:login:{ip}"
+        r.delete(key)
+        return
+    _login_attempts_fallback.pop(ip, None)
 
 
 # ── FastAPI app setup ─────────────────────────────────────────────────────────
@@ -619,8 +642,13 @@ def create_app() -> FastAPI:
         session_key = secrets.token_hex(32)
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         try:
-            sk_path.write_text(session_key, encoding="utf-8")
-            sk_path.chmod(0o600)
+            # Atomic write with fsync to avoid race window
+            fd = os.open(sk_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            try:
+                os.write(fd, session_key.encode("utf-8"))
+                os.fsync(fd)
+            finally:
+                os.close(fd)
         except Exception:
             logger.exception("writing session key to %s", sk_path)
 
@@ -645,9 +673,26 @@ def create_app() -> FastAPI:
 
     # ── Security headers (CSP) ──────────────────────────────────────────
     # Defense-in-depth: limits what resources can load even if an XSS
-    # vulnerability exists.  The 'unsafe-inline' relaxations are required
-    # because templates use onsubmit= handlers and inline styles; these
-    # should be removed when the frontend is migrated to a JS bundle.
+    # vulnerability exists.
+    #
+    # CURRENT STATE: 'unsafe-inline' is used for scripts and styles because:
+    #   - Templates use `onsubmit=` attribute handlers (e.g., login.html, users.html)
+    #   - Inline `<style>` blocks for quick theming
+    #   - No external JS bundles yet
+    #
+    # MIGRATION PATH (when removing 'unsafe-inline'):
+    #   1. Move all `onsubmit=` → `add_event_listener('submit', ...)` in external JS bundle
+    #   2. Move inline `<style>` → external CSS or <link rel="stylesheet">
+    #   3. Add CSP nonce: generate nonce per-request, pass to templates, use `script-src 'self' 'nonce-{{ nonce }}'`
+    #   4. Test with CSP report-only mode first: `Content-Security-Policy-Report-Only`
+    #
+    # Target CSP after migration:
+    #   default-src 'self'
+    #   script-src 'self'
+    #   style-src 'self'
+    #   img-src 'self' data:
+    #   frame-ancestors 'none'
+    #   form-action 'self'
 
     @app.middleware("http")
     async def add_security_headers(request: Request, call_next):
@@ -771,13 +816,28 @@ def create_app() -> FastAPI:
 
     def _valid_email(email: str) -> bool:
         """Return True if *email* is a valid RFC 5321 address safe for passwd-file."""
-        return bool(self._EMAIL_RE.match(email))
+        return bool(_EMAIL_RE.match(email))
 
     def client_ip(request: Request) -> str:
-        """Extract client IP from request, respecting X-Forwarded-For."""
-        forwarded = request.headers.get("x-forwarded-for", "")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
+        """Extract client IP from request, respecting X-Forwarded-For.
+
+        Only trusts X-Forwarded-For when behind a known proxy.
+        Configure trusted proxy IPs via KTC_TRUSTED_PROXIES env var
+        (comma-separated CIDRs, e.g., '127.0.0.1/32,10.0.0.0/8').
+        """
+        # Check if we're behind a trusted proxy
+        trusted_proxies = os.environ.get("KTC_TRUSTED_PROXIES", "")
+        if request.client and trusted_proxies:
+            import ipaddress
+            client_ip_obj = ipaddress.ip_address(request.client.host)
+            for net_str in trusted_proxies.split(","):
+                net_str = net_str.strip()
+                if net_str and client_ip_obj in ipaddress.ip_network(net_str):
+                    # Behind trusted proxy — trust X-Forwarded-For
+                    forwarded = request.headers.get("x-forwarded-for", "")
+                    if forwarded:
+                        return forwarded.split(",")[0].strip()
+        # Not behind trusted proxy, or no X-Forwarded-For
         if request.client:
             return request.client.host or ""
         return ""
@@ -1082,8 +1142,20 @@ def create_app() -> FastAPI:
         audit_log("user_add", actor_email(request), email, client_ip(request))
         return _safe_redirect("/users", query={"msg": f"Added {email}"})
 
-        email = str(form.get("email", "")).strip().lower()
+    @app.post("/users/del")
+    async def users_del(request: Request):
+        if not require_role(request, "admin"):
+            return login_redirect()
 
+        form = await request.form()
+        csrf_token = form.get("csrf_token", "")
+        if not validate_csrf(request, csrf_token):
+            return RedirectResponse(
+                url="/users?error=Invalid+session+token",
+                status_code=302,
+            )
+
+        email = str(form.get("email", "")).strip().lower()
         if not _valid_email(email):
             return _safe_redirect(
                 "/users", query={"error": "Invalid email address"})
@@ -1667,7 +1739,7 @@ def create_app() -> FastAPI:
         tls_state = _read_state(TLS_STATE_PATH)
 
         cert_details: dict[str, Any] = {}
-        cert_path = Path("/etc/letsencrypt/live/ktc-mail/fullchain.pem")
+        cert_path = Path(f"/etc/letsencrypt/live/{CERT_NAME}/fullchain.pem")
         if cert_path.exists():
             cert_details = _cert_info_from_path(cert_path)
             if "end_date" in cert_details:
@@ -1975,7 +2047,7 @@ def create_app() -> FastAPI:
 
         # Cert expiry
         cert_days: int | None = None
-        cert_path = Path("/etc/letsencrypt/live/ktc-mail/fullchain.pem")
+        cert_path = Path(f"/etc/letsencrypt/live/{CERT_NAME}/fullchain.pem")
         if cert_path.exists():
             info = _cert_info_from_path(cert_path)
             if "end_date" in info:

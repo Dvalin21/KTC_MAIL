@@ -103,10 +103,14 @@ def _read_lines(path: Path) -> list[str]:
 
 
 def _write_lines(path: Path, lines: list[str]) -> None:
-    """Write lines to file atomically."""
+    """Write lines to file atomically with fsync."""
     tmp = path.with_suffix(".tmp")
-    tmp.write_text("".join(lines), encoding="utf-8")
-    tmp.chmod(0o640)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
+    try:
+        os.write(fd, "".join(lines).encode("utf-8"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
     tmp.rename(path)
 
 

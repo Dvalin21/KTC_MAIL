@@ -29,6 +29,7 @@ setup(
         "jinja2>=3.0.0",
         "itsdangerous>=2.0.0",
         "qrcode>=7.0",
+        "redis>=4.5.0",
     ],
     extras_require={
         "dev": [],

@@ -90,19 +90,17 @@ for dbname in sogo sogo_sessions; do
         su - postgres -c "createdb -O sogo ${dbname}" 2>/dev/null || true
     fi
 done
-# Store generated password for reference and update setup profile
+# Store generated password for reference and update secrets.json
 echo "SOGo DB password: ${SOGO_DB_PASSWORD}" > "${CONFIG_DIR}/sogo-db-password"
 chmod 600 "${CONFIG_DIR}/sogo-db-password"
 
-# Update setup.json with SOGo DB password
+# Update secrets.json with SOGo DB password
 if [[ -f "${CONFIG_DIR}/setup.json" ]] && command -v ktc-mail &>/dev/null; then
     "${PYTHON}" -c "
-import json, sys
-with open('${CONFIG_DIR}/setup.json') as f:
-    data = json.load(f)
-data['sogo_db_password'] = '${SOGO_DB_PASSWORD}'
-with open('${CONFIG_DIR}/setup.json', 'w') as f:
-    json.dump(data, f, indent=2)
+import sys
+sys.path.insert(0, '/usr/lib/ktc-mail')
+from ktc_mail_admin.config import set_sogo_db_password
+set_sogo_db_password('${SOGO_DB_PASSWORD}')
 " 2>/dev/null || true
 fi
 

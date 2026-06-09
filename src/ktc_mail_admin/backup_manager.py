@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import subprocess
 import sys
 import time
@@ -209,16 +210,20 @@ def save_status(status: BackupStatus) -> None:
     BACKUP_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     # Stored as 0640 so the admin GUI (running as a different user) can
     # read it. The restic-password file stays 0400.
+    # Use save_json_private for consistent atomic write with fsync.
+    # save_json_private uses 0600, so we need to temporarily use a custom impl
+    # or accept 0600 for status (it's world-readable anyway via API).
+    # For consistency, use the same atomic write pattern.
     import os
     payload = json.dumps(status.to_dict(), indent=2) + "\n"
-    fd = os.open(BACKUP_STATE_PATH.with_suffix(".tmp"),
-                 os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
+    tmp = BACKUP_STATE_PATH.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
     try:
         os.write(fd, payload.encode("utf-8"))
         os.fsync(fd)
     finally:
         os.close(fd)
-    BACKUP_STATE_PATH.with_suffix(".tmp").rename(BACKUP_STATE_PATH)
+    tmp.rename(BACKUP_STATE_PATH)
 
 
 # ── Restic wrapper ──────────────────────────────────────────────────────────
@@ -337,10 +342,17 @@ def write_password(password: str) -> None:
 
     The password is stored in a separate file from the backup config
     so that backing up the config doesn't expose the repo password.
+    Uses atomic write with fsync to avoid race window.
     """
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    RESTIC_PASSWORD_PATH.write_text(password.strip() + "\n", encoding="utf-8")
-    RESTIC_PASSWORD_PATH.chmod(0o400)
+    tmp = RESTIC_PASSWORD_PATH.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o400)
+    try:
+        os.write(fd, (password.strip() + "\n").encode("utf-8"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    tmp.rename(RESTIC_PASSWORD_PATH)
 
 
 def password_exists() -> bool:

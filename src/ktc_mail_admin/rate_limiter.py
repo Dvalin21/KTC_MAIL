@@ -31,6 +31,7 @@ Systemd: ktc-mail-rate-limit.service
 
 from __future__ import annotations
 
+import atexit
 import os
 import signal
 import socket
@@ -43,11 +44,21 @@ from pathlib import Path
 
 LISTEN_ADDR = os.environ.get("KTC_RATE_BIND", "127.0.0.1")
 LISTEN_PORT = int(os.environ.get("KTC_RATE_PORT", "12345"))
+HEALTH_PORT = int(os.environ.get("KTC_RATE_HEALTH_PORT", "12346"))
 MAX_PER_HOUR = int(os.environ.get("KTC_RATE_MAX_PER_HOUR", "100"))
 MAX_PER_DAY = int(os.environ.get("KTC_RATE_MAX_PER_DAY", "1000"))
 BACKLOG = 32
 PRUNE_INTERVAL = 300  # purge stale entries every 5 minutes
 PID_FILE = Path(os.environ.get("KTC_RATE_PID_FILE", "/run/ktc-mail/rate-limiter.pid"))
+
+def _cleanup_pid_file() -> None:
+    """Clean up PID file on exit (registered via atexit)."""
+    try:
+        PID_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+atexit.register(_cleanup_pid_file)
 
 
 # ── Logging (lazy-imported to avoid circular deps) ────────────────
@@ -292,6 +303,36 @@ def main() -> int:
         _shutdown = True
 
     signal.signal(signal.SIGTERM, _on_sigterm)
+
+    # Start health check server in background thread
+    def _health_server():
+        hsock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        hsock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            hsock.bind((listen_addr, HEALTH_PORT))
+            hsock.listen(5)
+        except OSError:
+            return
+        while not _shutdown:
+            try:
+                hsock.settimeout(1.0)
+                conn, _ = hsock.accept()
+            except TimeoutError:
+                continue
+            except OSError:
+                break
+            try:
+                conn.settimeout(2.0)
+                conn.recv(1024)  # discard request
+                conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nOK")
+            except OSError:
+                pass
+            finally:
+                conn.close()
+
+    import threading
+    health_thread = threading.Thread(target=_health_server, daemon=True)
+    health_thread.start()
 
     # Create socket
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

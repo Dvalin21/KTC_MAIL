@@ -427,12 +427,8 @@ def check_dns_propagation(domain: str, config: Path = SETUP_PATH,
             setup_data, secrets, dry_run=False,
         )
     except Exception as exc:
-        print(f"dns warning: cannot create DNS transport: {exc}", file=sys.stderr)
-        # No fallback to Cloudflare DoH - that would defeat the purpose of
-        # using the configured provider and could give false positives
-        # (split-horizon DNS, rate limiting). Return False; ACME server
-        # will validate authoritatively and fail if not propagated.
-        return False
+        print(f"dns ERROR: cannot create DNS transport: {exc}", file=sys.stderr)
+        raise AcmeError(f"DNS transport creation failed: {exc}") from exc
 
     deadline = time.time() + timeout
     print(f"dns: polling {challenge} TXT via {dns_provider} ...", flush=True)
@@ -444,7 +440,7 @@ def check_dns_propagation(domain: str, config: Path = SETUP_PATH,
                 if rec.type == "TXT" and rec.name == challenge:
                     print(f"dns: {challenge} resolved — ACME can proceed")
                     return True
-        except Exception as exc:
+        except (OSError, ValueError, ConnectionError, TimeoutError) as exc:
             print(f"dns warning: query failed: {exc}", file=sys.stderr)
 
         print(f"dns: {challenge} not yet visible, waiting {interval}s ...", flush=True)
