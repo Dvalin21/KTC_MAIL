@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import binascii
 import collections
 import hashlib
 import hmac
@@ -65,6 +66,8 @@ from .config import (
     save_json_private,
     setup_logging,
     SetupProfile,
+    _EMAIL_RE,
+    _valid_email,
 )
 
 # ── Module-level paths ───────────────────────────────────────────────────────
@@ -102,7 +105,7 @@ def audit_log(
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         with open(AUDIT_LOG_PATH, "a", encoding="utf-8") as f:
             f.write(line)
-    except Exception:
+    except OSError:
         logger.exception("writing audit log to %s", AUDIT_LOG_PATH)
 
 
@@ -167,7 +170,7 @@ def verify_password(password: str, stored: str) -> bool:
             dklen=64,
         )
         return hmac.compare_digest(expected, actual)
-    except Exception:
+    except (ValueError, binascii.Error):
         return False
 
 
@@ -195,7 +198,7 @@ def load_admin_account() -> dict[str, Any]:
         data = read_json(ADMIN_HASH_PATH)
         default.update(data)
         return default
-    except Exception:
+    except (OSError, ValueError, json.JSONDecodeError):
         return default
 
 
@@ -259,7 +262,7 @@ def _load_profile() -> SetupProfile | None:
         return None
     try:
         return SetupProfile.from_dict(read_json(SETUP_PATH))
-    except Exception:
+    except (OSError, ValueError, json.JSONDecodeError):
         logger.exception("loading setup profile")
         return None
 
@@ -282,7 +285,7 @@ def _all_service_status() -> dict[str, str]:
             ["systemctl", "show", "-p", "ActiveState", "--value", *svcs],
             capture_output=True, text=True, timeout=5,
         )
-    except Exception:
+    except (subprocess.TimeoutExpired, OSError, subprocess.SubprocessError):
         logger.exception("checking service status")
         svcs_fallback = {s: "unknown" for s in svcs}
         SERVICE_CACHE["status"] = (now, svcs_fallback)
@@ -305,7 +308,7 @@ def _read_state(path: Path) -> dict[str, Any]:
         return {}
     try:
         return read_json(path)
-    except Exception:
+    except (OSError, ValueError, json.JSONDecodeError):
         logger.exception("reading state file %s", path)
         return {}
 
@@ -320,7 +323,7 @@ def _queue_depth() -> int:
             ["postqueue", "-p"],
             capture_output=True, text=True, timeout=5,
         )
-    except Exception:
+    except (subprocess.TimeoutExpired, OSError, subprocess.SubprocessError):
         logger.exception("running postqueue")
         return -1
 
@@ -379,7 +382,7 @@ def _parse_queue() -> list[dict[str, Any]]:
             ["postqueue", "-p"],
             capture_output=True, text=True, timeout=5,
         )
-    except Exception:
+    except (subprocess.TimeoutExpired, OSError, subprocess.SubprocessError):
         logger.exception("running postqueue")
         return []
 
@@ -448,7 +451,7 @@ def _list_dkim_keys(domain: str) -> list[dict[str, Any]]:
             if pub.returncode == 0:
                 b64 = base64.b64encode(pub.stdout).decode()
                 dns_record = f"v=DKIM1; k=rsa; p={b64}"
-        except Exception:
+        except (subprocess.SubprocessError, OSError, binascii.Error):
             logger.exception("extracting DKIM public key for %s", selector)
         st = f.stat()
         keys.append({
@@ -532,7 +535,7 @@ def _cert_info_from_path(cert_path: Path) -> dict[str, Any]:
                 info["sans"] = r.stdout[idx:].strip()
             elif line.startswith("SHA256 Fingerprint="):
                 info["fingerprint"] = line.replace("SHA256 Fingerprint=", "")
-    except Exception:
+    except (subprocess.SubprocessError, OSError, ValueError, IndexError):
         logger.exception("reading cert info from %s", cert_path)
     return info
     return info
@@ -575,7 +578,16 @@ def _get_redis():
         _redis_client = redis.from_url(_REDIS_URL, socket_connect_timeout=2, socket_timeout=2, decode_responses=True)
         _redis_client.ping()
         return _redis_client
-    except Exception:
+    except (ImportError, OSError):
+        return None
+    except Exception as exc:
+        # redis module was loaded; catch RedisError if available
+        try:
+            import redis
+            if isinstance(exc, redis.RedisError):
+                return None
+        except (ImportError, AttributeError):
+            pass
         return None
 
 
@@ -636,7 +648,7 @@ def create_app() -> FastAPI:
     if sk_path.exists():
         try:
             session_key = sk_path.read_text(encoding="utf-8").strip()
-        except Exception:
+        except OSError:
             pass
     if not session_key:
         session_key = secrets.token_hex(32)
@@ -649,7 +661,7 @@ def create_app() -> FastAPI:
                 os.fsync(fd)
             finally:
                 os.close(fd)
-        except Exception:
+        except OSError:
             logger.exception("writing session key to %s", sk_path)
 
     # Allow env override for testing
@@ -745,7 +757,7 @@ def create_app() -> FastAPI:
         try:
             dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
             return dt.strftime("%Y-%m-%d %H:%M UTC")
-        except Exception:
+        except (ValueError, OSError, OverflowError):
             return "unknown"
     templates.env.filters["datetime_from_ts"] = datetime_from_ts
 
@@ -804,19 +816,6 @@ def create_app() -> FastAPI:
         min_level = ROLE_HIERARCHY.get(min_role, 0)
         user_level = ROLE_HIERARCHY.get(user_role, 0)
         return user_level >= min_level
-
-    # RFC 5321 email pattern (local@domain) with passwd-file safety.
-    # Rejects characters unsafe for Dovecot passwd-file format:
-    # colon, newline, carriage return, null byte.
-    _EMAIL_RE = re.compile(
-        r'^[a-zA-Z0-9.!#$%&\'*+/=?^_`{|}~-]+@[a-zA-Z0-9]'
-        r'(?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?'
-        r'(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$'
-    )
-
-    def _valid_email(email: str) -> bool:
-        """Return True if *email* is a valid RFC 5321 address safe for passwd-file."""
-        return bool(_EMAIL_RE.match(email))
 
     def client_ip(request: Request) -> str:
         """Extract client IP from request, respecting X-Forwarded-For.
@@ -2086,7 +2085,7 @@ def cmd_admin_init(args: argparse.Namespace) -> int:
         try:
             profile = SetupProfile.from_dict(read_json(SETUP_PATH))
             print(f"  Email: {profile.admin_email}", file=sys.stderr)
-        except Exception:
+        except (OSError, ValueError, json.JSONDecodeError):
             pass
     print(f"  Password: {password}", file=sys.stderr)
     print()

@@ -18,7 +18,10 @@ import json
 import logging
 import os
 import re
+import socket
 import subprocess
+import urllib.error
+import urllib.request
 
 logger = logging.getLogger("ktc-mail.config")
 
@@ -1059,20 +1062,18 @@ def set_sogo_db_password(password: str) -> None:
 def detect_public_ipv4() -> str:
     """Detect public IPv4 via external API. Returns '' on failure."""
     try:
-        import urllib.request
         resp = urllib.request.urlopen("https://api.ipify.org", timeout=5)
         return resp.read().decode("utf-8").strip()
-    except Exception:
+    except (urllib.error.URLError, OSError, socket.timeout):
         return ""
 
 
 def detect_public_ipv6() -> str:
     """Detect public IPv6 via external API. Returns '' on failure."""
     try:
-        import urllib.request
         resp = urllib.request.urlopen("https://api6.ipify.org", timeout=5)
         return resp.read().decode("utf-8").strip()
-    except Exception:
+    except (urllib.error.URLError, OSError, socket.timeout):
         return ""
 
 
@@ -1128,7 +1129,8 @@ def detect_registrar(domain: str) -> str:
         if "route53" in output or "amazon" in output:
             return PROVIDER_ROUTE53
         return ""
-    except Exception:
+    except (subprocess.TimeoutExpired, OSError, subprocess.SubprocessError) as exc:
+        logger.debug("detecting registrar for %s: %s", domain, exc)
         return ""
 
 
@@ -1140,5 +1142,6 @@ def system_hostname() -> str:
             capture_output=True, text=True, timeout=5,
         )
         return result.stdout.strip()
-    except Exception:
+    except (subprocess.TimeoutExpired, OSError, subprocess.SubprocessError) as exc:
+        logger.debug("getting hostname: %s", exc)
         return ""

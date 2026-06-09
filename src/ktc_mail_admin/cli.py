@@ -381,6 +381,11 @@ def main() -> int:
 
     try:
         return handler(args)
+    except SystemExit:
+        raise
+    except KeyboardInterrupt:
+        print("Interrupted", file=sys.stderr)
+        return 130
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
