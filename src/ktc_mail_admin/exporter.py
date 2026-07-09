@@ -109,9 +109,10 @@ def _cert_expiry() -> float:
         return -1.0
     try:
         from .admin_server import _cert_info_from_path, _cert_expiry_days
+        from .config import CERT_NAME
         from pathlib import Path
-        # Standard Let's Encrypt paths
-        cert_path = Path("/etc/letsencrypt/live/ktc-mail/fullchain.pem")
+        # Standard Let's Encrypt paths (single source of truth via CERT_NAME)
+        cert_path = Path(f"/etc/letsencrypt/live/{CERT_NAME}/fullchain.pem")
         if cert_path.exists():
             info = _cert_info_from_path(str(cert_path))
             end_date = info.get("end_date", "")

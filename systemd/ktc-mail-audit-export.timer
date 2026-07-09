@@ -1,0 +1,12 @@
+[Unit]
+Description=Run KTC Mail audit-log export every 10 minutes
+Documentation=https://github.com/Dvalin21/KTC_MAIL
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+AccuracySec=30s
+Unit=ktc-mail-audit-export.service
+
+[Install]
+WantedBy=timers.target

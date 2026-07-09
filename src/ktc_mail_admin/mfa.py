@@ -164,3 +164,66 @@ def otpauth_uri(
         f"&period={interval}"
     )
     return f"otpauth://totp/{quote(issuer)}:{quote(label)}?{params}"
+
+
+# ── Recovery codes ────────────────────────────────────────────────────────
+
+import hashlib
+import secrets as _secrets
+
+_RECOVERY_CODE_BYTES = 5  # 10 base32 chars, ~50 bits of entropy each
+_RECOVERY_DEFAULT_COUNT = 10
+
+
+def generate_recovery_codes(count: int = _RECOVERY_DEFAULT_COUNT) -> list[str]:
+    """Generate *count* single-use recovery codes (plaintext, for display).
+
+    Each code is a base32 string (RFC4648, no padding) of 5 random
+    bytes.  The caller MUST display these ONCE to the user and store only
+    their hashes (see ``hash_recovery_code``).
+    """
+    if count < 1:
+        count = _RECOVERY_DEFAULT_COUNT
+    return [
+        base64.b32encode(_secrets.token_bytes(_RECOVERY_CODE_BYTES))
+        .decode("ascii")
+        .rstrip("=")
+        for _ in range(count)
+    ]
+
+
+def hash_recovery_code(code: str) -> str:
+    """Return the stored form of a recovery code (SHA-256 hex).
+
+    Only hashes are persisted; plaintext codes live in the user's password
+    manager, not on disk.
+    """
+    return hashlib.sha256(code.strip().upper().encode("utf-8")).hexdigest()
+
+
+def verify_and_consume_recovery_code(
+    stored_hashes: list[str], code: str
+) -> tuple[bool, list[str]]:
+    """Verify a recovery code and (if valid) consume it.
+
+    Args:
+        stored_hashes: list of SHA-256 hex hashes currently valid.
+        code:          the plaintext code submitted by the user.
+
+    Returns:
+        (ok, remaining_hashes) where *remaining_hashes* is the input
+        list with the matched hash removed (so the caller can persist a
+        one-time-use reduction).  Comparison is constant-time per entry.
+    """
+    if not code:
+        return False, list(stored_hashes)
+    target = hash_recovery_code(code)
+    remaining = []
+    matched = False
+    for h in stored_hashes:
+        if not matched and hmac.compare_digest(h, target):
+            matched = True  # consumed; do not carry forward
+            continue
+        remaining.append(h)
+    return matched, remaining
+

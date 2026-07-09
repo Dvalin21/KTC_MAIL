@@ -3,8 +3,14 @@
 
 # ── Current repo state ─────────────────────────────────────────────────────
 Tree:      clean
-Branch:    main
-HEAD:      527603e6ad8bd87ab175012b4f30fdc30b57eda6
+Branch:    clean-scaffold
+HEAD:      e2ba7a5 (pushed to origin)
+#
+# NOTE: this file was last meaningfully updated at 527603e (cleanup commit).
+# As of 2026-07-09 the working branch is `clean-scaffold` and the original
+# 8-phase vision (docs/implementation-plan.md) is complete: recovery codes +
+# break-glass (Phase 5) and remote audit export + unit-test harness (Phase 6)
+# were added. See PRODUCTION_READINESS.md "Completion — 2026-07-09".
 
 # ── Verified fixes (committed or staged with exact diff size) ──────────────
 32 files changed, 500 insertions(+), 165 deletions(-)

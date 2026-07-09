@@ -1,8 +1,8 @@
 # KTC_MAIL — Production Readiness Status
 
-**Last Updated:** 2026-06-09  
-**Branch:** main (pushed to origin)  
-**Base Commit:** ed8afd7
+**Last Updated:** 2026-07-09  
+**Branch:** clean-scaffold (pushed to origin)  
+**Base Commit:** e2ba7a5
 
 ---
 
@@ -13,7 +13,7 @@
 | CRIT-1 | Missing `users_del` endpoint (orphaned code at lines 1085-1097) | ✅ Fixed — proper handler with CSRF, validation, audit log |
 | CRIT-2 | `_valid_email` uses non-existent `self._EMAIL_RE` | ✅ Fixed — uses local `_EMAIL_RE` |
 | CRIT-3 | Session key write race (`write_text` + `chmod`) | ✅ Fixed — atomic `os.open` + `fsync` + `rename` at 0600 |
-| CRIT-4 | Hardcoded `/etc/letsencrypt/live/ktc-mail/` paths | ✅ Fixed — uses `CERT_NAME` constant |
+| CRIT-4 | Hardcoded `/etc/letsencrypt/live/ktc-mail/` paths | ✅ Fixed — `exporter.py` now uses `CERT_NAME` constant (was the last literal; all other call sites already used the constant) |
 | CRIT-5 | In-memory rate limiting (broken in multi-worker) | ✅ Fixed — Redis-backed with in-memory fallback; added `python3-redis` dep |
 
 ---
@@ -104,6 +104,26 @@ systemd-analyze verify systemd/*.service *.timer    # ✅
 
 ---
 
-**Branch:** `main`  
-**Remote:** `origin/main` (force-pushed ed8afd7)  
+**Branch:** `clean-scaffold`  
+**Remote:** `origin/clean-scaffold` (HEAD e2ba7a5)  
 **Next Review:** After MED-6 broad exception audit
+
+---
+
+## 🚀 Completion — 2026-07-09 (original 8-phase vision closed)
+
+The original `docs/implementation-plan.md` exit criteria are now met:
+
+| Phase | Deliverable | Status |
+|-------|-------------|--------|
+| 5 | Recovery codes (one-time, hashed, operator-gated regenerate) | ✅ `mfa.py` + `admin_server` routes |
+| 5 | Break-glass operator (single-use, TTL, audited, 0400 token file) | ✅ `breakglass.py` + `ktc-mail admin break-glass` + `/login/break-glass` |
+| 6 | Remote audit-log export (syslog UDP/TCP/TLS + SIEM webhook, idempotent) | ✅ `audit_export.py` + `ktc-mail audit export` + systemd timer |
+| 6 | Unit-test harness (recovery/break-glass/auditexport/renderer contracts) | ✅ `test/unit/` — 22 tests passing |
+| 3 | Config-renderer contract tests (postfix/dovecot/rspamd/sogo/nginx) | ✅ `test/unit/test_renderers.py` |
+
+**Notes**
+- `CRIT-4` fully closed: the last literal letsencrypt path in `exporter.py` now uses `CERT_NAME`.
+- VPS relay (WireGuard) and CrowdSec live in `revised-architecture.md` (post-vision) and are OUT of scope for the original 8-phase plan. CrowdSec enrollment code already exists in `fail2ban.py`.
+- Open product decisions (README "before production" list) still require your input: webmail client (SOGo wired by default), compliance regime/log retention, backup destination.
+

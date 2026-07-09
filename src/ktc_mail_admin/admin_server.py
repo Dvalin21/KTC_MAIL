@@ -189,6 +189,7 @@ def load_admin_account() -> dict[str, Any]:
         "role": DEFAULT_ROLE,
         "mfa_secret": None,
         "mfa_enabled": False,
+        "mfa_recovery_codes": [],  # list[str] of SHA-256 hex (Phase 5)
         "session_version": 0,
         "updated_at": 0,
     }
@@ -211,6 +212,7 @@ def save_admin_account(account: dict[str, Any]) -> None:
         "role": account.get("role", DEFAULT_ROLE),
         "mfa_secret": account.get("mfa_secret"),
         "mfa_enabled": bool(account.get("mfa_enabled", False)),
+        "mfa_recovery_codes": account.get("mfa_recovery_codes", []),
         "session_version": account.get("session_version", 0),
         "updated_at": int(time.time()),
     }
@@ -858,6 +860,7 @@ def create_app() -> FastAPI:
         return {
             "enabled": enabled,
             "secret_present": bool(secret),
+            "recovery_codes": len(acct.get("mfa_recovery_codes", []) or []),
             "role": acct.get("role", DEFAULT_ROLE),
             "otpauth_uri": (
                 mfa_mod.otpauth_uri(secret, acct.get("email", "admin"))
@@ -991,6 +994,31 @@ def create_app() -> FastAPI:
             )
 
         if not code or not mfa_mod.verify_totp(secret, code):
+            # Fall back to a one-time recovery code before rejecting.
+            acct = load_admin_account()
+            stored = acct.get("mfa_recovery_codes", []) or []
+            if code and stored:
+                ok, remaining = mfa_mod.verify_and_consume_recovery_code(stored, code)
+                if ok:
+                    acct["mfa_recovery_codes"] = remaining
+                    save_admin_account(acct)
+                    _login_rate_clear(ip)
+                    email = request.session.get("mfa_pending_email", "unknown")
+                    audit_log(
+                        "mfa_recovery", email,
+                        f"recovery code used ({len(remaining)} remaining)",
+                        client_ip(request),
+                    )
+                    request.session["authenticated"] = True
+                    request.session["email"] = email
+                    request.session["role"] = acct.get("role", DEFAULT_ROLE)
+                    request.session["mfa_verified"] = True
+                    request.session["login_time"] = int(time.time())
+                    request.session["session_version"] = acct.get("session_version", 0)
+                    request.session.pop("mfa_pending", None)
+                    request.session.pop("mfa_pending_email", None)
+                    request.session.pop("mfa_pending_time", None)
+                    return RedirectResponse(url="/", status_code=302)
             _login_rate_record(ip)
             email = request.session.get("mfa_pending_email", "unknown")
             logger.warning("Failed MFA: ip=%s email=%s", ip, email)
@@ -1017,7 +1045,40 @@ def create_app() -> FastAPI:
         audit_log("login", email, "login (MFA)", client_ip(request))
         return RedirectResponse(url="/", status_code=302)
 
-    @app.get("/logout")
+    @app.post("/login/break-glass")
+    async def login_break_glass(request: Request):
+        """Consume a single-use break-glass token to gain operator access.
+
+        The token is issued by `ktc-mail admin break-glass`.  It is
+        one-use, short-TTL, and every issuance is audited.  On success
+        the operator is logged in and the token is wiped.
+        """
+        form = await request.form()
+        token = str(form.get("breakglass_token", "")).strip()
+        csrf_token = form.get("csrf_token", "")
+        if not validate_csrf(request, csrf_token):
+            return RedirectResponse(
+                url="/login?error=Invalid+session+token", status_code=302)
+        if not token:
+            return RedirectResponse(
+                url="/login?error=Break-glass+token+required", status_code=302)
+
+        from .breakglass import consume as breakglass_consume
+        ok, operator = breakglass_consume(token)
+        if not ok:
+            logger.warning("Failed break-glass login (bad/expired/used token)")
+            return RedirectResponse(
+                url="/login?error=Invalid+or+expired+break-glass+token",
+                status_code=302)
+
+        request.session["authenticated"] = True
+        request.session["email"] = operator
+        request.session["role"] = "operator"  # break-glass grants operator
+        request.session["mfa_verified"] = True
+        request.session["login_time"] = int(time.time())
+        request.session["break_glass"] = True
+        audit_log("login", operator, "login (break-glass)", client_ip(request))
+        return RedirectResponse(url="/", status_code=302)
     async def logout(request: Request):
         request.session.clear()
         return RedirectResponse(url="/login", status_code=302)
@@ -1359,6 +1420,38 @@ def create_app() -> FastAPI:
             status_code=302,
         )
 
+    @app.post("/settings/mfa/recovery")
+    async def settings_mfa_recovery(request: Request):
+        """Regenerate one-time recovery codes (operator-gated).
+
+        Old codes are invalidated; new plaintext codes are shown ONCE
+        in the redirect message.  Stored only as SHA-256 hashes.
+        """
+        if not require_role(request, "operator"):
+            return login_redirect()
+        form = await request.form()
+        csrf_token = form.get("csrf_token", "")
+        if not validate_csrf(request, csrf_token):
+            return RedirectResponse(
+                url="/settings?error=Invalid+session+token",
+                status_code=302,
+            )
+        from .mfa import generate_recovery_codes, hash_recovery_code
+        plain = generate_recovery_codes()
+        acct = load_admin_account()
+        acct["mfa_recovery_codes"] = [hash_recovery_code(c) for c in plain]
+        acct["session_version"] = acct.get("session_version", 0) + 1
+        save_admin_account(acct)
+        audit_log(
+            "mfa_recovery_regen", actor_email(request),
+            f"{len(plain)} recovery codes regenerated", client_ip(request),
+        )
+        return RedirectResponse(
+            url="/settings?msg=Recovery+codes+regenerated.+Store+these+now:"
+                 "&recovery=" + ",".join(plain),
+            status_code=302,
+        )
+
     @app.post("/settings/mfa/init")
     async def settings_mfa_init(request: Request):
         """Generate a new TOTP secret (replaces any existing one)."""
@@ -1376,6 +1469,10 @@ def create_app() -> FastAPI:
         acct = load_admin_account()
         secret = mfa_mod.generate_secret()
         acct["mfa_secret"] = secret
+        # One-time recovery codes: show once, store hashed only.
+        from .mfa import generate_recovery_codes, hash_recovery_code
+        plain = generate_recovery_codes()
+        acct["mfa_recovery_codes"] = [hash_recovery_code(c) for c in plain]
         # Don't enable yet — must verify first code
         acct["mfa_enabled"] = False
         acct["session_version"] = acct.get("session_version", 0) + 1
@@ -1386,7 +1483,8 @@ def create_app() -> FastAPI:
             "MFA secret generated", client_ip(request),
         )
         return RedirectResponse(
-            url="/settings?msg=MFA+secret+generated.+Scan+the+QR+code+and+verify",
+            url="/settings?msg=MFA+secret+generated.+Scan+the+QR+code+and+verify"
+                 "&recovery=" + ",".join(plain),
             status_code=302,
         )
 
@@ -2145,8 +2243,24 @@ def add_subparser(sub) -> None:
     p_admin = sub.add_parser("admin", help="Admin web interface management")
     p_admin.add_argument(
         "admin_cmd",
-        choices=("start", "init", "check"),
-        help="admin start | init | check",
+        choices=("start", "init", "check", "break-glass"),
+        help="admin start | init | check | break-glass",
+    )
+    p_admin.add_argument(
+        "--operator", default="",
+        help="Operator identity requesting break-glass access",
+    )
+    p_admin.add_argument(
+        "--reason", default="",
+        help="Why normal auth is unavailable (audited)",
+    )
+    p_admin.add_argument(
+        "--ttl", type=int, default=900,
+        help="Token validity in seconds (default 900)",
+    )
+    p_admin.add_argument(
+        "--i-understand", action="store_true",
+        help="REQUIRED: acknowledge this is a single-use audited credential",
     )
     p_admin.add_argument("--host", default="127.0.0.1",
                          help="Bind address (default 127.0.0.1)")
@@ -2169,11 +2283,59 @@ def dispatch(args: argparse.Namespace) -> int:
         "init": cmd_admin_init,
         "start": cmd_admin_start,
         "check": cmd_admin_check,
+        "break-glass": cmd_admin_breakglass,
     }
     handler = dispatch_map.get(args.admin_cmd)
     if handler is None:
         return 1
     return handler(args)
+
+
+def cmd_admin_breakglass(args: argparse.Namespace) -> int:
+    """Issue a single-use break-glass operator token (Phase 5).
+
+    Requires explicit --i-understand.  The plaintext token is printed
+    ONCE to stdout; only its SHA-256 hash is persisted (0400 file).
+    Every use is audited via the admin audit log.
+    """
+    if not args.i_understand:
+        print(
+            "error: break-glass is a single-use audited credential.",
+            file=sys.stderr,
+        )
+        print(
+            "Re-run with --i-understand to acknowledge.",
+            file=sys.stderr,
+        )
+        return 1
+    if not args.operator:
+        print("error: --operator <identity> is required", file=sys.stderr)
+        return 1
+    if not args.reason:
+        print("error: --reason <why> is required (audited)", file=sys.stderr)
+        return 1
+    from .breakglass import issue as breakglass_issue
+
+    token = breakglass_issue(
+        operator=args.operator,
+        reason=args.reason,
+        ttl=args.ttl,
+    )
+    # Mirror into the append-only audit log.
+    try:
+        audit_log(
+            "break_glass", args.operator,
+            f"issued ({args.ttl}s TTL): {args.reason}",
+            "local",
+        )
+    except Exception:  # auditing must not block issuance
+        pass
+    print("BREAK-GLASS TOKEN (single use, show ONCE):")
+    print(f"  {token.token}")
+    print(f"  expires: {token.expires_at} (TTL {args.ttl}s)")
+    print("Stored hashed at /etc/ktc-mail/breakglass.token (0400).")
+    print("Use it once to log in as operator, then rotate.")
+    return 0
 
 
 # ── Direct entry point (for testing) ─────────────────────────────────────────
