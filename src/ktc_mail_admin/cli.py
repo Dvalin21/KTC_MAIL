@@ -39,7 +39,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from .config import SETUP_PATH, SECRETS_PATH, setup_logging
+from .config import SETUP_PATH, SECRETS_PATH, STATE_DIR, setup_logging
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
@@ -233,6 +233,28 @@ def cmd_metrics(args: argparse.Namespace) -> int:
     return metric_main()
 
 
+def cmd_audit(args: argparse.Namespace) -> int:
+    """Audit-log export (syslog/SIEM)."""
+    from .audit_export import run_once
+    from .config import STATE_DIR
+
+    if args.audit_cmd != "export":
+        return 1
+    sent = run_once(
+        args.audit_log,
+        syslog_host=args.syslog_host,
+        syslog_port=args.syslog_port,
+        syslog_tcp=args.tcp,
+        syslog_tls=args.tls,
+        siem_url=args.siem_url,
+    )
+    if sent == 0:
+        print("audit export: no new lines to forward")
+    else:
+        print(f"audit export: forwarded {sent} event(s)")
+    return 0
+
+
 def cmd_config(args: argparse.Namespace) -> int:
     """Dispatch to config_renderer module functions."""
     from .config_renderer import main as cr_main
@@ -338,22 +360,42 @@ def main() -> int:
     p_user.add_argument("--quota", default="1G",
                         help="Mailbox quota (default: 1G)")
 
-    # ── admin ──────────────────────────────────────────────────────────
+    # ── admin ─────────────────────────────────────────────────
     from .admin_server import add_subparser as add_admin_subparser
     add_admin_subparser(sub)
 
-    # ── fail2ban ───────────────────────────────────────────────────────
+    # ── audit export ─────────────────────────────────
+    p_audit = sub.add_parser("audit", help="Audit-log export (syslog/SIEM)")
+    p_audit.add_argument(
+        "audit_cmd", choices=("export",),
+        help="export = forward new audit lines to configured targets",
+    )
+    p_audit.add_argument("--syslog-host", default=None,
+                        help="Remote syslog host (UDP 514 unless --tcp)")
+    p_audit.add_argument("--syslog-port", type=int, default=514,
+                        help="Remote syslog port (default 514)")
+    p_audit.add_argument("--tcp", action="store_true",
+                        help="Use TCP instead of UDP")
+    p_audit.add_argument("--tls", action="store_true",
+                        help="Wrap TCP in TLS (requires --tcp)")
+    p_audit.add_argument("--siem-url", default=None,
+                        help="HTTPS SIEM/webhook endpoint (JSON batch)")
+    p_audit.add_argument("--audit-log", type=Path,
+                        default=STATE_DIR / "audit.log",
+                        help="Audit log path (default: STATE_DIR/audit.log)")
+
+    # ── fail2ban ───────────────────────────────────────
     from .fail2ban import add_subparser as add_f2b_subparser
     add_f2b_subparser(sub)
 
-    # ── metrics ─────────────────────────────────────────────────────────
+    # ── metrics ───────────────────────────────────────
     p_metrics = sub.add_parser("metrics", help="Prometheus metrics collection")
     p_metrics.add_argument(
         "metrics_cmd", choices=("collect",),
         help="collect = run all collectors and write .prom file",
     )
 
-    # ── backup ─────────────────────────────────────────────────────────
+    # ── backup ─────────────────────────────────────────
     from .backup_manager import add_subparser as add_backup_subparser
     add_backup_subparser(sub)
 
@@ -372,6 +414,7 @@ def main() -> int:
         "fail2ban": cmd_fail2ban,
         "backup": cmd_backup,
         "metrics": cmd_metrics,
+        "audit": cmd_audit,
     }
 
     handler = dispatch.get(args.command)

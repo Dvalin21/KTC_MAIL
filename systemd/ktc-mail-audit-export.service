@@ -1,0 +1,34 @@
+[Unit]
+Description=KTC Mail audit-log export (syslog/SIEM)
+Documentation=https://github.com/Dvalin21/KTC_MAIL
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ktc-mail
+Group=ktc-mail
+# Targets are read from the environment (set in the unit drop-in or
+# by the packaging postinst). Example:
+#   KTC_SYSLOG_HOST=logs.example.com
+#   KTC_SYSLOG_PORT=514
+#   KTC_SYSLOG_TCP=1
+#   KTC_SIEM_URL=https://siem.example.com/ingest
+Environment=KTC_SYSLOG_HOST= KTC_SYSLOG_PORT=514 KTC_SYSLOG_TCP=0 KTC_SIEM_URL=
+ExecStart=/usr/bin/ktc-mail audit export \
+    --syslog-host ${KTC_SYSLOG_HOST} \
+    --syslog-port ${KTC_SYSLOG_PORT} \
+    --tcp ${KTC_SYSLOG_TCP} \
+    --siem-url ${KTC_SIEM_URL}
+IOSchedulingClass=idle
+CPUSchedulingPolicy=idle
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/ktc-mail
+# Needs only the audit log (read) + the position sidecar (write).
+ProtectControlGroups=true
+ProtectKernelTunables=true
+RestrictAddressFamilies=AF_INET AF_INET6
