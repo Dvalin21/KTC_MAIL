@@ -215,7 +215,6 @@ def enforce(required_ports: list[int]) -> None:
     NFT_RULESET_PATH.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_text(NFT_RULESET_PATH, ruleset, mode=0o600)  # 0600: private ruleset
     result = _run(["nft", "-f", str(NFT_RULESET_PATH)])
-    result = _run(["nft", "-f", str(NFT_RULESET_PATH)])
     if result.returncode != 0:
         print(f"nftables: error applying ruleset: {result.stderr.strip()}",
               file=sys.stderr)
