@@ -128,12 +128,14 @@ maturity gap is the dominant fact — do NOT expect feature parity.
 | Prometheus metrics | yes (exporter) | yes |
 | Backup (restic) | yes (destination unset — operator decision) | yes (Borg/rsync) |
 | API keys (Bearer) | yes | yes |
-| OIDC/LDAP auth | **NO** (explicitly future) | yes (LDAP/OIDC) |
+| OIDC/LDAP auth | **LDAP yes** (Dovecot passdb driver=ldap + dovecot-ldap.conf.ext, toggle via SetupProfile.auth_backend); OIDC **deferred** (needs external IdP + OAuth2 proxy) | yes (LDAP/OIDC) |
 | Multiple domains / mailbox UI | **partial** (single-domain profile; user CRUD present) | yes (full multi-domain + SQL mailbox DB) |
 | Web admin GUI | yes (FastAPI + Jinja) | yes (PHP/Symfony) |
 | Antivirus (ClamAV) | **yes** (rspamd -> clamd) | yes |
 | Greylisting | **yes** (rspamd) | yes |
 | Full-text search | **yes** (fts-xapian) | yes (Solr/ES) |
+| LDAP auth | **yes** (Dovecot passdb=ldap, toggle) | yes |
+| OIDC auth | **deferred** (external IdP required) | yes |
 | Mobile/ActiveSync | **NO** | yes (SOGo ActiveSync) |
 | Containerization | **NO** (by design) | yes (core product) |
 
@@ -143,8 +145,7 @@ maturity gap is the dominant fact — do NOT expect feature parity.
    profile-driven; users live in a passwd file. The reference suite runs a
    MariaDB-backed multi-domain tenant model. KTC's user_manager is
    real but flat.
-2. **OIDC/LDAP** — KTC says "future auth backend". The reference
-   suite has it now.
+2. **OIDC/LDAP** — LDAP is DONE (Dovecot `passdb driver=ldap` + `dovecot-ldap.conf.ext`, selected by `SetupProfile.auth_backend`; `dovecot-ldap` in Depends; `user_manager` skips the passwd-file write under LDAP). OIDC is DEFERRED: Dovecot has no native OIDC — it needs an external IdP (Keycloak) + OAuth2 proxy in front of IMAP/SMTP, which is a multi-component epic out of scope for this pass. It is documented, not stubbed.
 3. **ActiveSync / mobile** — KTC wires SOGo but not SOGo's
    ActiveSync; no EAS.
 4. (Greylisting + ClamAV + full-text search are DONE this cycle.)
@@ -192,7 +193,7 @@ maturity gap is the dominant fact — do NOT expect feature parity.
 
 ---
 
-**Branch:** `clean-scaffold-v2`
-**Remote:** `origin/clean-scaffold-v2` (committed at `ab1de47`, pushed)
-**Next:** C-4 OIDC/LDAP (or D-5 multi-domain/SQL — owner's call);
+**Branch:** `clean-scaffold-v3` (clean history; see NOTE)
+**Remote:** `origin/clean-scaffold-v3` (committed at `5c7e797`, pushed)
+**Next:** D-5 multi-domain/SQL (or BX observability/API docs — owner's call);
 then MED-6 sweep if desired.
