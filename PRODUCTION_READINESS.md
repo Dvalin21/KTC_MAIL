@@ -1,10 +1,10 @@
 # KTC Mail — Production Readiness Status
 
 **Last Updated:** 2026-07-10 (post ClamAV + FTS parity work)
-**Branch:** `clean-scaffold-v2` (mailcow-free history)
+**Branch:** `clean-scaffold-v2` (banned-name-free history)
 **Base Commit:** ab1de47
 
-> NOTE: this project bans the word "mailcow" from code/docs/commits/GitHub.
+> NOTE: this project bans the reference project's name from code/docs/commits/GitHub.
 > Docs use "the reference Docker Compose mail suite". The original
 > `clean-scaffold` branch still has a historical commit with the banned
 > word; it could not be force-pushed (GitHub branch protection). Work
