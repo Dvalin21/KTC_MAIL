@@ -1,0 +1,37 @@
+# KTC Mail — Prometheus metrics collector (ktc-mail user)
+# Role: write metrics.prom to state dir. NO network, NO exec, NO mail-config writes.
+#include <tunables/global>
+
+profile ktc-mail.exporter {
+  #include <abstractions/base>
+  #include <abstractions/python>
+
+  /usr/bin/python3 ixr,
+  /usr/lib/python3/** r,
+  /usr/lib/python3/**/*.so mr,
+
+  /usr/lib/ktc-mail/ r,
+  /usr/bin/ktc-mail ixr,
+
+  /usr/lib/ktc-mail/** r,
+
+  /etc/ktc-mail/ r,
+  /etc/ktc-mail/*.json r,
+
+  /var/lib/ktc-mail/ r,
+  /var/lib/ktc-mail/** rw,
+
+  /dev/log w,
+  /run/systemd/notify w,
+
+  # Metrics collector has no business on the network or touching anything else.
+  deny network,
+  deny /usr/sbin/nft x,
+  deny /usr/bin/certbot x,
+  deny /usr/bin/restic x,
+  deny /usr/bin/systemctl x,
+  deny /etc/postfix/** rw,
+  deny /etc/dovecot/** rw,
+  deny /etc/nginx/** rw,
+  deny /etc/letsencrypt/** rw,
+}

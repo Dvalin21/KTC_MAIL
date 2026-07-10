@@ -1,0 +1,41 @@
+# KTC Mail — audit-log export to syslog/SIEM (ktc-mail user)
+# Role: read the audit log, forward new lines. Read-only on mail config;
+# no exec; no network beyond the SIEM/syslog target.
+#include <tunables/global>
+
+profile ktc-mail.audit-export {
+  #include <abstractions/base>
+  #include <abstractions/python>
+
+  /usr/bin/python3 ixr,
+  /usr/lib/python3/** r,
+  /usr/lib/python3/**/*.so mr,
+
+  /usr/lib/ktc-mail/ r,
+  /usr/bin/ktc-mail ixr,
+
+  /usr/lib/ktc-mail/** r,
+
+  /etc/ktc-mail/ r,
+  /etc/ktc-mail/*.json r,
+
+  /var/lib/ktc-mail/ r,
+  /var/lib/ktc-mail/** rw,
+
+  network inet tcp,
+  network inet6 tcp,
+  network inet dgram,
+  network inet6 dgram,
+
+  /dev/log w,
+  /run/systemd/notify w,
+
+  # Export must ONLY read the log + advance its position file.
+  deny /usr/sbin/nft x,
+  deny /usr/bin/certbot x,
+  deny /usr/bin/restic x,
+  deny /etc/postfix/** rw,
+  deny /etc/dovecot/** rw,
+  deny /etc/nginx/** rw,
+  deny /usr/bin/systemctl x,
+}

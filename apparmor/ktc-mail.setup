@@ -1,0 +1,59 @@
+# KTC Mail — first-run setup wizard (root)
+# Role: writes the full mail stack config; reloads services.
+# Attaches via systemd AppArmorProfile=ktc-mail.setup (one binary, many roles).
+#include <tunables/global>
+
+profile ktc-mail.setup {
+  #include <abstractions/base>
+  #include <abstractions/python>
+
+  /usr/bin/python3 ixr,
+  /usr/lib/python3/** r,
+  /usr/lib/python3/**/*.so mr,
+
+  /usr/lib/ktc-mail/ r,
+  /usr/bin/ktc-mail ixr,
+
+  /usr/lib/ktc-mail/** r,
+
+  # Config + secrets (read + write: wizard persists setup.json/secrets.json)
+  /etc/ktc-mail/ r,
+  /etc/ktc-mail/** rw,
+  /var/lib/ktc-mail/ r,
+  /var/lib/ktc-mail/** rw,
+
+  # Mail-stack config writes (the wizard's job)
+  /etc/postfix/ r,
+  /etc/postfix/** rw,
+  /etc/dovecot/ r,
+  /etc/dovecot/** rw,
+  /etc/nginx/ r,
+  /etc/nginx/** rw,
+  /etc/rspamd/ r,
+  /etc/rspamd/** rw,
+  /etc/sogo/ r,
+  /etc/sogo/** rw,
+  /etc/ssh/ r,
+  /etc/ssh/** rw,
+  /etc/letsencrypt/ r,
+  /etc/letsencrypt/** rw,
+  /etc/ssl/ r,
+  /etc/ssl/** rw,
+
+  # Service control (reload postfix/dovecot/nginx)
+  /usr/bin/systemctl ixr,
+  /usr/bin/systemd-run ixr,
+  # TLS issuance during setup
+  /usr/bin/certbot ixr,
+  /usr/bin/openssl ixr,
+
+  network inet tcp,
+  network inet6 tcp,
+
+  /dev/log w,
+  /run/systemd/notify w,
+
+  # Setup MUST NOT touch the live firewall — that is firewall-monitor's role.
+  deny /usr/sbin/nft x,
+  deny /usr/sbin/nft rw,
+}

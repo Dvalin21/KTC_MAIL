@@ -22,6 +22,7 @@ ExecStart=/usr/bin/ktc-mail audit export \
     --syslog-port ${KTC_SYSLOG_PORT} \
     --tcp ${KTC_SYSLOG_TCP} \
     --siem-url ${KTC_SIEM_URL}
+AppArmorProfile=ktc-mail.audit-export
 IOSchedulingClass=idle
 CPUSchedulingPolicy=idle
 StandardOutput=journal

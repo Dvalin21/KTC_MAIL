@@ -8,10 +8,13 @@ adduser ktc-mail ssl-cert 2>/dev/null || true
 
 install -d -m 0750 -o root -g ktc-mail /etc/ktc-mail /etc/ktc-mail/dkim
 install -d -m 0770 -o root -g ktc-mail /var/lib/ktc-mail
-# Setup GUI and admin server need root to write Postfix/Dovecot configs;
+# Runtime dir on tmpfs (recreated at boot via tmpfiles.d/ktc-mail.conf)
+install -d -m 0750 -o ktc-mail -g ktc-mail /run/ktc-mail
+systemd-tmpfiles --create ktc-mail.conf 2>/dev/null || true
+# Setup GUI and admin portal need root to write Postfix/Dovecot configs;
 # rate-limiter and exporter use ktc-mail user.
 systemctl daemon-reload
-systemctl enable ktc-mail-setup.service ktc-mail-firewall-monitor.timer ktc-mail-acme-renew.timer ktc-mail-backup.timer ktc-mail-exporter.timer ktc-mail-rate-limit.service ktc-mail-audit-export.timer
+systemctl enable ktc-mail-setup.service ktc-mail-admin.service ktc-mail-firewall-monitor.timer ktc-mail-acme-renew.timer ktc-mail-backup.timer ktc-mail-exporter.timer ktc-mail-rate-limit.service ktc-mail-audit-export.timer
 systemctl restart ktc-mail-setup.service
 
 # Apply default SSH policy (key-only) if no custom config exists
@@ -19,32 +22,45 @@ if [[ ! -f /etc/ssh/sshd_config.d/ktc-mail.conf ]]; then
   /usr/bin/ktc-mail ssh apply 2>/dev/null || true
 fi
 
-# Load AppArmor profiles (conditional — AppArmor may not be present)
+# Load + enforce AppArmor role profiles (conditional — AppArmor may not be present).
+# Profiles are named (ktc-mail.<role>) and attached per-unit via systemd
+# AppArmorProfile=. If AppArmor tooling IS present we MUST load at least one
+# profile; loading zero is a misconfiguration, not a no-op — fail loudly.
 if command -v aa-enforce &>/dev/null; then
-    for prof in /etc/apparmor.d/usr.lib.ktc-mail.*; do
-        if [[ -f "$prof" ]]; then
-            name="$(basename "$prof")"
-            if ! apparmor_parser -r "$prof" 2>&1; then
-                echo "ERROR: apparmor_parser failed for $name" >&2
-                exit 1
-            fi
-            if ! aa-enforce "$name" 2>&1; then
-                echo "ERROR: aa-enforce $name failed — profile not enforcing" >&2
-                exit 1
-            fi
-            echo "AppArmor: $name enforced"
+    loaded=0
+    for prof in /etc/apparmor.d/ktc-mail.*; do
+        [[ -f "$prof" ]] || continue
+        name="$(basename "$prof")"
+        if ! apparmor_parser -r "$prof" 2>&1; then
+            echo "ERROR: apparmor_parser failed for $name" >&2
+            exit 1
         fi
+        if ! aa-enforce "$name" 2>&1; then
+            echo "ERROR: aa-enforce $name failed — profile not enforcing" >&2
+            exit 1
+        fi
+        echo "AppArmor: $name enforced"
+        loaded=$((loaded + 1))
     done
+    if [[ "$loaded" -eq 0 ]]; then
+        echo "ERROR: AppArmor present but no ktc-mail profiles found in /etc/apparmor.d/ — confinement is OFF" >&2
+        exit 1
+    fi
 elif command -v aa-complain &>/dev/null; then
-    # If only complain mode tools are available, load in complain mode
-    for prof in /etc/apparmor.d/usr.lib.ktc-mail.*; do
-        if [[ -f "$prof" ]]; then
-            if ! apparmor_parser -r "$prof" 2>&1; then
-                echo "ERROR: apparmor_parser failed for $(basename "$prof")" >&2
-                exit 1
-            fi
+    # If only complain mode tools are available, at least parse+load them.
+    loaded=0
+    for prof in /etc/apparmor.d/ktc-mail.*; do
+        [[ -f "$prof" ]] || continue
+        if ! apparmor_parser -r "$prof" 2>&1; then
+            echo "ERROR: apparmor_parser failed for $(basename "$prof")" >&2
+            exit 1
         fi
+        loaded=$((loaded + 1))
     done
+    if [[ "$loaded" -eq 0 ]]; then
+        echo "ERROR: AppArmor present but no ktc-mail profiles found in /etc/apparmor.d/" >&2
+        exit 1
+    fi
 fi
 
 # Recommend unattended-upgrades package

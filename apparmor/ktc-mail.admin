@@ -1,0 +1,49 @@
+# KTC Mail — admin web portal (FastAPI, root)
+# Role: admin GUI. Writes user/dovecot/nginx config + state. Binds loopback
+# only (post-C-0.2). Must never issue certs or touch the firewall.
+#include <tunables/global>
+
+profile ktc-mail.admin {
+  #include <abstractions/base>
+  #include <abstractions/python>
+  #include <abstractions/openssl>
+
+  /usr/bin/python3 ixr,
+  /usr/lib/python3/** r,
+  /usr/lib/python3/**/*.so mr,
+
+  /usr/lib/ktc-mail/ r,
+  /usr/bin/ktc-mail ixr,
+
+  /usr/lib/ktc-mail/** r,
+
+  /etc/ktc-mail/ r,
+  /etc/ktc-mail/** rw,
+  /var/lib/ktc-mail/ r,
+  /var/lib/ktc-mail/** rw,
+
+  # Admin GUI manages users (dovecot), vhosts (nginx), reads certs.
+  /etc/dovecot/ r,
+  /etc/dovecot/** rw,
+  /etc/nginx/ r,
+  /etc/nginx/** rw,
+  /etc/ssl/ r,
+  /etc/ssl/** r,
+  /etc/letsencrypt/ r,
+  /etc/letsencrypt/** r,
+
+  # Service control for reloads triggered from the GUI.
+  /usr/bin/systemctl ixr,
+
+  network inet tcp,
+  network inet6 tcp,
+
+  /dev/log w,
+  /run/systemd/notify w,
+
+  # The admin portal is not the firewall or the CA.
+  deny /usr/sbin/nft x,
+  deny /usr/bin/certbot x,
+  deny /usr/bin/restic x,
+  deny /etc/postfix/** rw,
+}

@@ -6,6 +6,7 @@ After=network.target
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/ktc-mail backup now
+AppArmorProfile=ktc-mail.backup
 User=root
 Group=root
 TimeoutStartSec=7200

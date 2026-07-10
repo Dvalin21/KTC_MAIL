@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=simple
 User=root
 ExecStart=/usr/bin/ktc-mail setup --port 8080
+AppArmorProfile=ktc-mail.setup
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
