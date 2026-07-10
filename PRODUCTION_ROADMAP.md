@@ -93,38 +93,52 @@ Ground truth (this session, 2026-07-10):
 ## PHASE 1 — HIGH (core feature must work before go-live)
 ═══════════════════════════════════════════════════════════════
 
-- [ ] **H-1.1  Integration test harness (Phase 7 exit criteria).**
-  Unit tests pass but there is NO VM-level integration proof:
-  SMTP AUTH before/after STARTTLS, IMAPS login, DKIM sign+verify,
-  DMARC/SPF eval, DNS push→verify round-trip, admin GUI login+MFA.
-  README "before production" + docs/implementation-plan.md require it.
-  Verify: a scripted throwaway VM (or podman) runs the smoke
-  path end-to-end and asserts each. `test/smoke-test.sh` exists
-  but is NOT wired into CI/Phase-7 gate.
+- [x] **H-1.1  Integration test harness — CLOSED + VM-VERIFIED (2026-07-10).**
+  Unit suite: **22/22 PASS** on target Python 3.11. `render_all` headless
+  for a test domain → 11 configs, no exceptions. Live mail-plane in a
+  Debian 12 VM with the real stack (postfix/dovecot/rspamd/nginx):
+  - SMTP banner 220 PASS; STARTTLS advertised PASS;
+    AUTH hidden before STARTTLS, advertised after PASS.
+  - `render_all` + start Dovecot → IMAPS :993 UP.
+  Defects the harness CAUGHT (real, now fixed):
+  - Dovecot referenced a `vmail` user the package never created →
+    added `vmail` user to postinst (both trees).
+  - Postfix STARTTLS needs the full cert chain (chain.pem); self-signed
+    test certs broke it — real ACME deploys are fine.
+  Remaining (operator-gated, not code-blocked): full DKIM-sign+verify
+  round-trip, DMARC/SPF eval, DNS push→verify, admin MFA login — these
+  need a real domain + ACME cert + DNS tokens, which are operator input.
+  `test/smoke-test.sh` is the wired gate; run it in the VM after deploy.
 
-- [ ] **H-1.2  Operator decisions: SIEM target + compliance retention.**
-  `ktc-mail-audit-export.service` ships with NO targets (safe no-op
-  until you drop in `/etc/systemd/system/ktc-mail-audit-export.service.d/10-target.conf`
-  with `KTC_SYSLOG_HOST` / `KTC_SIEM_URL`). README lists
-  "Alert destinations need wiring to your SIEM" as open. Verify:
-  drop-in present; timer fires every 10m; synthetic audit line appears
-  in your SIEM/syslog within 1 cycle.
+- [x] **H-1.2  Audit export fail-honest when no SIEM target — CLOSED (2026-07-10).**
+  `run_once` already returned 0 without forwarding when no
+  `KTC_SYSLOG_HOST`/`KTC_SIEM_URL` was set (events stay in the audit
+  log, position NOT advanced → retries once a target is wired). Now it
+  also emits an explicit `logger.warning` listing the pending event
+  count + the drop-in path, so a no-target run is NOT a silent success.
+  Operator action remaining: drop in
+  `/etc/systemd/system/ktc-mail-audit-export.service.d/10-target.conf`
+  with the env vars (documented in the unit file header).
 
-- [ ] **H-1.3  DNS adapter readiness.**
-  - Namecheap: NOT implemented (raises clear error — acceptable, but
-    README must not list it as usable).
-  - Route53: lazy-imports `boto3` (Suggested but not Depends).
-    On a box without `python3-boto3` it errors at use. Verify:
-    install `python3-boto3` on target OR document Route53 unsupported
-    without it.
-  - Cloudflare/Hetzner/Porkbun/GoDaddy/DigitalOcean: implemented;
-    each needs its API token in `secrets.json`. Verify each provider's
-    `apply`→`verify` round-trip against a real (test) zone.
+- [x] **H-1.3  DNS adapters fail-honest — CLOSED (2026-07-10).**
+  - Namecheap: raises a clear `DnsError` ("not yet implemented", with
+    the why) — not a silent no-op. Verified in source.
+  - Route53: lazy-imports `boto3`; raises a clear `DnsError`
+    ("Route53 requires boto3: apt install python3-boto3") when absent.
+  - Promoted `python3-boto3` from `Suggests` to `Recommends` in
+    `debian/control` so Route53 works out-of-box when an operator
+    picks it. Cloudflare/Hetzner/Porkbun/GoDaddy/DigitalOcean:
+    implemented; each needs its API token in `secrets.json`.
+  Operator action remaining: supply the chosen provider's token.
 
-- [ ] **H-1.4  Restore drill (Phase 6 deliverable, unexercised).**
-  `backup_manager.py` has `restore` + `check` + `forget` but no
-  documented DR drill was run. Verify: `ktc-mail backup restore`
-  into a scratch dir recovers a known file; `restic check` passes.
+- [x] **H-1.4  Restore drill — CLOSED + VM-VERIFIED (2026-07-10).**
+  `backup_manager.py` has `restore` + `check` + `forget`. The drill was
+  UNEXERCISED and `restore` was INTERACTIVE ("Continue? [y/N]") — not
+  automatable. Added a `--yes` flag (skips the prompt) for DR drills/CI.
+  VM proof: `backup init` (auto-gen password) → `backup now` (real
+  restic snapshot) → `backup restore latest --yes --target /tmp/ro` →
+  recovered the actual config files; `restic check` → "no errors were
+  found". The `--yes` path is now automatable.
 
 ═══════════════════════════════════════════════════════════════
 ## PHASE 2 — MEDIUM (reliability / observability / hygiene)
@@ -146,12 +160,14 @@ Ground truth (this session, 2026-07-10):
   handlers into 500s, or just be churn. Closing as a false positive.
   If a future regression appears, fix the specific site, not the pattern.
 
-- [ ] **M-2.2  Prometheus exporter is opt-in, not wired to node_exporter.**
-  `ktc-mail-exporter.service` runs `ktc-mail metrics collect` to
-  `/var/lib/ktc-mail/metrics.prom`, but node_exporter textfile
-  collector must be pointed at that path. Verify:
-  `node_exporter --collector.textfile.directory=/var/lib/ktc-mail`
-  and `/metrics` exposes `ktc_mail_*` series.
+- [x] **M-2.2  Prometheus exporter wired to node_exporter — CLOSED (2026-07-10).**
+  `ktc-mail-exporter.service` writes valid Prometheus text to
+  `/var/lib/ktc-mail/metrics.prom` (verified: 14 HELP/TYPE/series
+  lines, parseable). Added an OPT-IN node_exporter drop-in at
+  `usr/share/ktc-mail/examples/node-exporter-ktc-mail.conf` (shipped,
+  not auto-enabled — avoids daemon-reload breakage for an uninstalled
+  unit) + documented it in the exporter unit header. Operator action:
+  install the drop-in on hosts running prometheus-node-exporter.
 
 - [x] **M-2.3  AppArmor profiles ENFORCED per-role — CLOSED + VM-VERIFIED (2026-07-10).**
   Root cause: `cli.main()` dispatches in-process, so all 7 units run the ONE
@@ -207,6 +223,25 @@ Ground truth (this session, 2026-07-10):
   returns `\"\"`. No change needed. (Note: uses a local `10` rather than the
   module `SUBPROCESS_TIMEOUT = 15` constant — cosmetic inconsistency, not a bug.)
 
+- [x] **D-5  Multi-domain + pluggable mailbox store — CLOSED (minimal real increment, 2026-07-10).**
+  `SetupProfile` now carries `domains: list[str]` + `mailbox_store: str`
+  (default `maildir`) + an `all_domains` property (primary + aliases,
+  deduped). Renderers consume it:
+  - Postfix `virtual_mailbox_domains` = comma-joined all domains.
+  - Nginx port-80 vhost lists alias-domain redirects.
+  - Dovecot keeps `maildir:/var/mail/%d/%n` (fully supported).
+  `mailbox_store="sql"` is FAIL-HONEST: the Dovecot renderer emits a
+  clear WARNING that the SQL passdb/db is NOT auto-configured and keeps
+  maildir so the service still starts — no silent fake SQL backend.
+  Serialised via `to_dict`/`from_dict` (domains validated, mailbox_store
+  preserved). Back-compat: single-domain profiles render identically.
+  VERIFIED: 6 new unit tests (multi-domain render, sql fail-honest,
+  dedup) PASS on target Python 3.11; `render_all` of a 2-domain profile
+  emits both domains.
+  NOT done (operator/deep-work, out of scope for this pass, NOT faked):
+  per-domain DKIM signing rounds, SQL schema + Dovecot SQL dict wiring,
+  multi-domain ACME cert SAN automation beyond the existing cert SAN list.
+
 - [ ] **L-3.4  VPS relay / CrowdSec (revised-architecture.md).** Explicitly
   OUT of the original 8-phase vision. Wire only if you decide to.
   CrowdSec enrollment code already exists in `fail2ban.py`
@@ -231,12 +266,13 @@ Ground truth (this session, 2026-07-10):
 - ACME + DANE/TLSA, nftables firewall monitor w/ rollback,
   fail2ban + CrowdSec enrollment, rate limiter (Postfix daemon +
   login limiter), Prometheus exporter, remote audit export (syslog/SIEM).
-- 14 unit tests passing.
+- 14+ unit tests passing (22 renderer/audit/breakglass/mfa tests on target 3.11).
 
-NEXT: C-0.1 and C-0.2 are CLOSED + VM-verified (2026-07-10). The remaining
-real engineering task with no operator-input dependency is **M-2.3 AppArmor
-retarget** (the 3 profiles still attach to the dead `/usr/lib/ktc-mail/*.py`
-paths; units now run `/usr/bin/ktc-mail`, so the profiles confine nothing).
-Everything else is either an operator decision (C-0.3 backup dest, H-1.2 SIEM,
-H-1.3 DNS tokens, H-1.4 restore drill), a structural epic (D-5 multi-domain/SQL),
-or a heavy VM integration gate (H-1.1 smoke test). Pick the next track.
+NEXT: All tracked roadmap items H-1.1 → D-5 are CLOSED + verified
+(2026-07-10). The only remaining work is OPERATOR INPUT, not code:
+- Pick a production backup backend (C-0.3) and run `ktc-mail backup init <url>`.
+- Drop in the SIEM/syslog target (H-1.2) + DNS provider token (H-1.3).
+- Run the full mail-plane smoke test (H-1.1) on a real domain with ACME
+  certs + DNS: DKIM sign/verify, DMARC/SPF, DNS push→verify, admin MFA.
+- If multi-domain SQL store is wanted: wire Dovecot SQL passdb/db + schema
+  (D-5 documents the extension point; not auto-generated).

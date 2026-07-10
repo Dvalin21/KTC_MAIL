@@ -1,6 +1,9 @@
 [Unit]
 Description=KTC Mail Prometheus metrics collector
 Documentation=https://github.com/Dvalin21/KTC_MAIL
+# Writes /var/lib/ktc-mail/metrics.prom (Prometheus text format).
+# Scrape it with node_exporter's textfile collector — see
+# /usr/share/ktc-mail/examples/node-exporter-ktc-mail.conf (opt-in).
 After=network-online.target
 
 [Service]

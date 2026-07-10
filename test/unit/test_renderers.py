@@ -96,3 +96,43 @@ def test_all_renderers_run_without_exception():
         cr.render_nginx_webmail_vhost,
     ):
         assert isinstance(fn(p), str)
+
+
+def _multi_profile() -> SetupProfile:
+    p = _profile()
+    p.domains = ["alias1.example.com", "alias2.example.com"]
+    return p
+
+
+def test_multi_domain_virtual_mailbox_domains():
+    out = cr.render_postfix_main_cf(_multi_profile())
+    assert (
+        "virtual_mailbox_domains = example.com, alias1.example.com, alias2.example.com"
+        in out
+    )
+
+
+def test_multi_domain_back_compat_single():
+    out = cr.render_postfix_main_cf(_profile())
+    assert "virtual_mailbox_domains = example.com" in out
+
+
+def test_multi_domain_nginx_alias_comments():
+    out = cr.render_nginx_webmail_vhost(_multi_profile())
+    assert "alias: alias1.example.com" in out
+    assert "alias: alias2.example.com" in out
+
+
+def test_mailbox_store_sql_is_fail_honest():
+    p = _profile()
+    p.mailbox_store = "sql"
+    out = cr.render_dovecot_conf(p)
+    assert "mailbox_store=sql selected" in out
+    # still keeps maildir so the service starts (no silent fake SQL)
+    assert "mail_location = maildir:/var/mail/%d/%n" in out
+
+
+def test_all_domains_dedupes():
+    p = SetupProfile(domain="example.com", domains=["example.com", "b.com"])
+    assert p.all_domains == ["example.com", "b.com"]
+

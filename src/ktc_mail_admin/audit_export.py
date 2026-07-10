@@ -17,6 +17,9 @@ Design rules (Linus: data structures first, minimal):
 
 from __future__ import annotations
 
+import logging
+
+logger = logging.getLogger("ktc-mail.audit")
 import json
 import os
 import socket
@@ -236,6 +239,17 @@ def run_once(
         )
     if siem_url:
         forwarded += send_siem(events, siem_url)
+
+    # No destination configured: events stay in the audit log (position is
+    # NOT advanced, so they retry once a target is wired). Emit a clear
+    # warning rather than a silent no-op that looks like success.
+    if forwarded == 0 and not syslog_host and not siem_url:
+        logger.warning(
+            "audit export: %d event(s) pending but NO destination "
+            "configured (set KTC_SYSLOG_HOST / KTC_SIEM_URL or drop in "
+            "/etc/systemd/system/ktc-mail-audit-export.service.d/10-target.conf). "
+            "Events retained in the audit log.", len(events)
+        )
 
     # Only advance position if we actually had a destination and it succeeded.
     if forwarded > 0:

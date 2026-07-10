@@ -716,13 +716,15 @@ def cmd_snapshots(args: argparse.Namespace) -> int:
 
 
 def restore_snapshot(snapshot_id: str, target: str = "/",
-                     dry_run: bool = False) -> int:
+                     dry_run: bool = False, force: bool = False) -> int:
     """Restore a backup snapshot.
 
     Args:
         snapshot_id: restic snapshot ID (short or full).
         target: restore target path (default: /, i.e. in-place restore).
         dry_run: if True, only print what would be done.
+        force: if True, skip the interactive confirmation prompt
+            (required for automated DR drills / CI).
 
     Returns:
         0 on success, 1 on failure.
@@ -732,7 +734,7 @@ def restore_snapshot(snapshot_id: str, target: str = "/",
         print("error: backup not configured", file=sys.stderr)
         return 1
 
-    if not dry_run:
+    if not dry_run and not force:
         print("WARNING: This will overwrite files in", target)
         print("Make sure no mail services are running during restore.")
         print("Suggested: systemctl stop postfix dovecot rspamd")
@@ -775,6 +777,7 @@ def cmd_restore(args: argparse.Namespace) -> int:
         snapshot_id=args.snapshot_id,
         target=args.target,
         dry_run=args.dry_run,
+        force=args.yes,
     )
 
 
@@ -940,6 +943,9 @@ def add_subparser(sub) -> None:
                            help="Restore target directory (default: /)")
     p_restore.add_argument("--dry-run", action="store_true",
                            help="Show what would be restored")
+    p_restore.add_argument("--yes", action="store_true",
+                           help="Skip the interactive confirmation prompt "
+                                "(for automated DR drills / CI)")
 
     # check
     p_check = bsub.add_parser("check", help="Verify repository integrity")

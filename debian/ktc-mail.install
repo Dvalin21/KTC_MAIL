@@ -62,6 +62,9 @@ apparmor/ktc-mail.rate-limit etc/apparmor.d/
 # ── tmpfiles (runtime dir on tmpfs) ──────────────────────────
 packaging/etc/tmpfiles.d/ktc-mail.conf usr/lib/tmpfiles.d/
 
+# ── Opt-in node_exporter textfile wiring (see file header) ────
+packaging/usr/share/ktc-mail/examples/node-exporter-ktc-mail.conf usr/share/ktc-mail/examples/
+
 # ── Logrotate ─────────────────────────────────────────────
 packaging/etc/logrotate.d/ktc-mail etc/logrotate.d/
 

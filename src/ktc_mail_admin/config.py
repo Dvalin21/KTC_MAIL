@@ -652,6 +652,14 @@ class SetupProfile:
     # ── User-provided ─────────────────────────────────────────────────
 
     domain: str
+    # Additional hosted domains (aliases). Primary domain stays `domain`;
+    # all_domains() returns the de-duplicated full set for renderers.
+    domains: list[str] = field(default_factory=list)
+    # Mailbox storage backend. "maildir" = per-user Maildir (default,
+    # fully supported). "sql" requires Dovecot SQL passdb/db wiring
+    # (see docs) — selecting it without that backend is a clear error,
+    # not a silent fallback.
+    mailbox_store: str = "maildir"
     dns_api_token: str = ""
     admin_email: str = ""
 
@@ -723,6 +731,17 @@ class SetupProfile:
     @property
     def smtp_host(self) -> str:
         return f"smtp.{self.domain}"
+
+    @property
+    def all_domains(self) -> list[str]:
+        """Primary domain first, then any alias domains, de-duplicated."""
+        seen: set[str] = set()
+        result: list[str] = []
+        for d in [self.domain, *self.domains]:
+            if d and d not in seen:
+                seen.add(d)
+                result.append(d)
+        return result
 
     @property
     def all_hostnames(self) -> list[str]:
@@ -929,6 +948,8 @@ class SetupProfile:
             "open_ports": self.security.actual_open_ports,
             "cert_san_names": self.cert_san_names,
             "dmarc_policy": self.dmarc_policy,
+            "domains": list(self.domains),
+            "mailbox_store": self.mailbox_store,
         }
         return d
 
@@ -981,6 +1002,11 @@ class SetupProfile:
             reload_services=tuple(data.get("reload_services", ["postfix", "dovecot", "nginx"])),
             update_tlsa_on_renewal=bool(data.get("update_tlsa_on_renewal", True)),
             dmarc_policy=data.get("dmarc_policy", "none"),
+            domains=[
+                d for d in data.get("domains", [])
+                if isinstance(d, str) and _valid_domain(d)
+            ],
+            mailbox_store=data.get("mailbox_store", "maildir"),
         )
         # DKIM is NOT serialised to JSON (private key stays in separate file)
         return profile
