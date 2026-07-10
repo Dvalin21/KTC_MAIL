@@ -36,6 +36,17 @@ PKG     debian/* (7 fixes)        .deb now builds + installs + units run:
                                  VERIFIED by build+install in qemu/kvm
                                  Debian 12 VM (systemd-analyze verify clean,
                                  metrics/audit subcommands run as ktc-mail).
+PKG2  systemd units + postinst exec'd /usr/lib/ktc-mail/*.py directly, but
+      those scripts use relative imports -> ImportError on the target
+      (Python 3.11.2). Entire runtime (setup/rate-limit/firewall/acme/ssh)
+      was DEAD. ALSO app.py had 3.11-incompatible nested f-strings
+      (SyntaxError on target). FIXED (2026-07-10): units now exec
+      `ktc-mail <subcommand>` (setup/acme/firewall/rate-limit; added the
+      missing rate-limit subcommand); postinst -> `ktc-mail ssh apply`;
+      app.py nested f-strings refactored (py_compile clean on 3.11);
+      ssh_policy.py SUBPROCESS_TIMEOUT import added + 0755 in package.
+      VERIFIED in VM: setup binds, rate-limit runs, firewall --enforce
+      applies nftables, ssh apply writes valid sshd drop-in (sshd -t OK).
 
 # ── Feature parity work (bare-metal vs reference Docker suite) ──────
 A-1  ClamAV        config_renderer: rspamd antivirus module -> clamd socket.

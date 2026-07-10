@@ -8,4 +8,5 @@ override_dh_fixperms:
 	chmod 0755 debian/ktc-mail/usr/lib/ktc-mail/rate_limiter.py \
 	             debian/ktc-mail/usr/lib/ktc-mail/firewall_monitor.py \
 	             debian/ktc-mail/usr/lib/ktc-mail/acme_manager.py \
-	             debian/ktc-mail/usr/lib/ktc-mail/app.py
+	             debian/ktc-mail/usr/lib/ktc-mail/app.py \
+	             debian/ktc-mail/usr/lib/ktc-mail/ssh_policy.py
