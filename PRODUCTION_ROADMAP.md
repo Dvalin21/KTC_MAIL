@@ -70,16 +70,24 @@ Ground truth (this session, 2026-07-10):
   drop-in (sshd -t passes). All on Python 3.11.2. No ship-blocker remains
   at the package OR runtime level.
 
-- [ ] **C-0.3  Backup DESTINATION is unset (data-loss risk) — OPERATOR DECISION, not a code defect.**
-  `backup_manager.py` already raises `RuntimeError("backup repository not
-  configured")` in `_restic()` when `repository`/`enabled` are unset, so
-  `ktc-mail backup run` FAILS HONESTLY (non-zero exit) — it does not silently
-  pretend to back up. The gap is purely operational: you must pick a restic
-  backend (local `/backup`, S3, sftp, rest-server...) and run
-  `ktc-mail backup init`. Nothing to fix in code. Until you set it, backups
-  do not happen — that is YOUR call, per README "before production".
-  Verify when you pick a backend: `ktc-mail backup init` + `ktc-mail backup run`
-  → restic snapshot created; `restic check` passes.
+- [x] **C-0.3  Backup DESTINATION handling — CLOSED (code risk) + VM-VERIFIED (2026-07-10).**
+  The operator still chooses the restic backend at deploy time (that part
+  is genuinely his call), BUT the code path had two latent ship-blockers
+  that the VM run exposed and are now fixed:
+  - `backup_manager.py` used `SUBPROCESS_TIMEOUT` (line 309/319) WITHOUT
+    importing it → `NameError` crashed `backup init` on every box. Added
+    the missing `from .config import SUBPROCESS_TIMEOUT`.
+  - `backup init <repo>` with no `--password` wrote an EMPTY password file
+    → restic "empty password is not a password" failure. Now auto-generates
+    a 32-byte `secrets.token_urlsafe` key (stored 0400) when none supplied.
+  - `backup set --enable` now REFUSES (exit 1) when no repository is set,
+    so an enabled-but-unconfigured repo can't make the daily timer fail
+    every run (broken window). `backup now` with no repo also fails honest.
+  VERIFIED in Debian 12 VM: `backup init /tmp/ktc-bk` (auto-gen password)
+  → initialized; `backup set --enable` → 0; `backup now` → real restic
+  snapshot (141 files, 413.5K, retention applied), exit 0. Operator action
+  remaining: pick a production backend (S3/sftp/rest-server) and run
+  `ktc-mail backup init <url>` — the code is ready for any restic repo.
 
 ═══════════════════════════════════════════════════════════════
 ## PHASE 1 — HIGH (core feature must work before go-live)

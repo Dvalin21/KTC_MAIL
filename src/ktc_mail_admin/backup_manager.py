@@ -37,6 +37,7 @@ from .config import (
     BACKUP_DEFAULT_PATHS,
     CONFIG_DIR,
     RESTIC_PASSWORD_PATH,
+    SUBPROCESS_TIMEOUT,
     read_json,
     save_json_private,
 )
@@ -384,6 +385,16 @@ def init_repository(repository: str, password: str,
         print("error: restic is not installed (apt install restic)",
               file=sys.stderr)
         return 1
+
+    # A backup encryption password is mandatory. If the operator didn't
+    # supply one we generate a strong random key rather than failing with
+    # a confusing "empty password" error — the key is written 0400 and is
+    # recoverable from the password file, never from the config JSON.
+    if not password:
+        import secrets
+        password = secrets.token_urlsafe(32)
+        print("generated random repository password (stored 0400 at "
+              f"{RESTIC_PASSWORD_PATH})")
 
     # Check if already initialized
     config = load_config()
@@ -877,6 +888,14 @@ def cmd_configure(args: argparse.Namespace) -> int:
     if args.schedule:
         config.schedule = args.schedule
     if args.enable:
+        # Refuse to enable a backup with no destination. An enabled-but-
+        # unconfigured repo makes the daily timer fail every run (broken
+        # window). The operator must set a repository first.
+        if not config.repository:
+            print("error: cannot enable backup — no repository set. "
+                  "Run 'ktc-mail backup init <repository-url>' first.",
+                  file=sys.stderr)
+            return 1
         config.enabled = True
     if args.disable:
         config.enabled = False
