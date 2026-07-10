@@ -6,7 +6,8 @@ adduser --system --group --no-create-home --quiet ktc-mail 2>/dev/null || true
 # Allow reading Let's Encrypt TLS certs (genuinely optional — ssl-cert group may not exist)
 adduser ktc-mail ssl-cert 2>/dev/null || true
 
-install -d -m 0750 -o root -g ktc-mail /etc/ktc-mail /var/lib/ktc-mail /etc/ktc-mail/dkim
+install -d -m 0750 -o root -g ktc-mail /etc/ktc-mail /etc/ktc-mail/dkim
+install -d -m 0770 -o root -g ktc-mail /var/lib/ktc-mail
 # Setup GUI and admin server need root to write Postfix/Dovecot configs;
 # rate-limiter and exporter use ktc-mail user.
 systemctl daemon-reload
