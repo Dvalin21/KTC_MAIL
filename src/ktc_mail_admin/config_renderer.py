@@ -335,7 +335,7 @@ ssl_prefer_server_ciphers = yes
 mail_location = maildir:/var/mail/%d/%n
 mail_privileged_group = mail
 mail_access_groups = vmail
-mail_plugins = quota
+mail_plugins = quota fts fts_xapian
 
 # ── Namespaces ─────────────────────────────────────────────
 namespace inbox {{
@@ -396,21 +396,33 @@ plugin {{
 }}
 
 protocol lda {{
-  mail_plugins = $mail_plugins sieve quota
+  mail_plugins = $mail_plugins sieve quota fts fts_xapian
 }}
 
 protocol lmtp {{
-  mail_plugins = $mail_plugins sieve quota
+  mail_plugins = $mail_plugins sieve quota fts fts_xapian
 }}
 
 protocol imap {{
-  mail_plugins = $mail_plugins quota
+  mail_plugins = $mail_plugins quota fts fts_xapian
 }}
 
 # ── Service config ─────────────────────────────────────────
 service imap {{
   process_limit = 256
   client_limit = 1
+}}
+
+# ── Full-text search (Xapian) ─────────────────────────────
+# dovecot-fts-xapian provides fast server-side search without a
+# separate Java/Solr stack. Index lives per-user under the maildir.
+plugin {{
+  fts = xapian
+  fts_xapian = verbose=0 compress=6 optimize_limit=10 attach=0 \
+    header=Subject:From:To:Cc:Date: \
+    index=body:maildir:/var/mail/%d/%n/xapian-index
+  # Index on delivery (LMTP/LDA) and on IMAP APPEND; no periodic
+  # full rescan needed.
 }}
 
 # ── Logging ────────────────────────────────────────────────
