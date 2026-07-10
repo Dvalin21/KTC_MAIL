@@ -122,12 +122,21 @@ Ground truth (this session, 2026-07-10):
 ## PHASE 2 — MEDIUM (reliability / observability / hygiene)
 ═══════════════════════════════════════════════════════════════
 
-- [ ] **M-2.1  MED-6 broad `except Exception:` sweep (DEFERRED).**
-  19 sites across admin_server/app/backup_manager/firewall_monitor/cli
-  swallow broadly. Not a runtime blocker (review confirmed no active
-  bug), but a broken window — masks future regressions. Verify
-  per-file: replace with specific `except (OSError, ValueError, ...)`
-  + `logger.exception` where the failure is real.
+- [x] **M-2.1  MED-6 broad `except Exception:` sweep — REVIEWED 2026-07-10, NO CHANGE WARRANTED.**
+  Re-read all 20 sites. Verdict: every site is a legitimate pattern,
+  NOT a silent swallow:
+  - `app.py` (6): multi-step setup wizard — each step catches, records
+    status, CONTINUES to the next step. Correct partial-failure design.
+  - `admin_server.py` (8 HTTP handlers + break-glass): route handlers
+    MUST catch to return a 302 error redirect instead of a 500;
+    break-glass audit "must not block issuance" → deliberate `pass`. Correct.
+  - `config_renderer.py` (1), `cli.py` (1), `firewall_monitor.py` (1):
+    CLI dispatcher guards — print clean error + exit code. Correct.
+  - `acme_manager.py` (2): one re-raises typed `AcmeError` (chaining),
+    one logs-then-reraises. Correct.
+  A mechanical "narrow them" sweep would turn correct 302-redirect
+  handlers into 500s, or just be churn. Closing as a false positive.
+  If a future regression appears, fix the specific site, not the pattern.
 
 - [ ] **M-2.2  Prometheus exporter is opt-in, not wired to node_exporter.**
   `ktc-mail-exporter.service` runs `ktc-mail metrics collect` to
@@ -165,8 +174,11 @@ Ground truth (this session, 2026-07-10):
 
 - [ ] **L-3.2  Duplicate email regex (3 locations).** Minor DRY.
 
-- [ ] **L-3.3  `detect_registrar` uses `whois` with no timeout.** Add
-  `subprocess` timeout (project standard is `SUBPROCESS_TIMEOUT`).
+- [x] **L-3.3  `detect_registrar` whois timeout — DONE (verified 2026-07-10).**
+  `config.py:1176` already calls `subprocess.run([\"whois\", domain], ...
+  timeout=10)` and catches `(TimeoutExpired, OSError, SubprocessError)` →
+  returns `\"\"`. No change needed. (Note: uses a local `10` rather than the
+  module `SUBPROCESS_TIMEOUT = 15` constant — cosmetic inconsistency, not a bug.)
 
 - [ ] **L-3.4  VPS relay / CrowdSec (revised-architecture.md).** Explicitly
   OUT of the original 8-phase vision. Wire only if you decide to.
@@ -194,5 +206,10 @@ Ground truth (this session, 2026-07-10):
   login limiter), Prometheus exporter, remote audit export (syslog/SIEM).
 - 14 unit tests passing.
 
-NEXT: start at C-0.1 (build + install the .deb in a throwaway VM).
-That is the only thing standing between "code works" and "server ships".
+NEXT: C-0.1 and C-0.2 are CLOSED + VM-verified (2026-07-10). The remaining
+real engineering task with no operator-input dependency is **M-2.3 AppArmor
+retarget** (the 3 profiles still attach to the dead `/usr/lib/ktc-mail/*.py`
+paths; units now run `/usr/bin/ktc-mail`, so the profiles confine nothing).
+Everything else is either an operator decision (C-0.3 backup dest, H-1.2 SIEM,
+H-1.3 DNS tokens, H-1.4 restore drill), a structural epic (D-5 multi-domain/SQL),
+or a heavy VM integration gate (H-1.1 smoke test). Pick the next track.
