@@ -1,0 +1,43 @@
+# KTC Mail — backup (restic, root)
+# Role: snapshot mail data via restic. Read-mostly; must not issue certs
+# or touch the firewall.
+#include <tunables/global>
+
+profile ktc-mail.backup {
+  #include <abstractions/base>
+  #include <abstractions/python>
+
+  /usr/bin/python3 ixr,
+  /usr/lib/python3/** r,
+  /usr/lib/python3/**/*.so mr,
+
+  /usr/lib/ktc-mail/ r,
+  /usr/bin/ktc-mail ixr,
+
+  /usr/lib/ktc-mail/** r,
+
+  /etc/ktc-mail/ r,
+  /etc/ktc-mail/** r,
+  /var/lib/ktc-mail/ r,
+  /var/lib/ktc-mail/** rw,
+
+  # restic binary (the actual mover); allow it to read backup sources
+  /usr/bin/restic ixr,
+  /usr/bin/python3 ixr,
+
+  # Backup reads mail stores + writes its own state. Keep writes to state dir.
+  /var/lib/ktc-mail/** rw,
+
+  network inet tcp,
+  network inet6 tcp,
+
+  /dev/log w,
+  /run/systemd/notify w,
+
+  # Backup must never issue certs or rewrite live mail config.
+  deny /usr/bin/certbot x,
+  deny /usr/sbin/nft x,
+  deny /etc/postfix/** rw,
+  deny /etc/dovecot/** rw,
+  deny /etc/nginx/** rw,
+}

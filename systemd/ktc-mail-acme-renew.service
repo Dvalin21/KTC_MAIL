@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=oneshot
 User=root
 ExecStart=/usr/bin/ktc-mail acme renew
+AppArmorProfile=ktc-mail.acme
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full

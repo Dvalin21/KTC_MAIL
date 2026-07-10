@@ -8,6 +8,7 @@ BindsTo=postfix.service
 [Service]
 Type=simple
 ExecStart=/usr/bin/ktc-mail rate-limit
+AppArmorProfile=ktc-mail.rate-limit
 User=ktc-mail
 Group=ktc-mail
 # Rate limiter state is in-memory — on restart counters reset.

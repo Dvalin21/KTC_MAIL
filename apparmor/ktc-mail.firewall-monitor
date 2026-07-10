@@ -1,0 +1,41 @@
+# KTC Mail — firewall monitor (nftables rule manager, root)
+# Role: owns nftables. Writes ONLY nftables rules + its own state.
+# Must never rewrite mail config or issue certs.
+#include <tunables/global>
+
+profile ktc-mail.firewall-monitor {
+  #include <abstractions/base>
+  #include <abstractions/python>
+
+  /usr/bin/python3 ixr,
+  /usr/lib/python3/** r,
+  /usr/lib/python3/**/*.so mr,
+
+  /usr/lib/ktc-mail/ r,
+  /usr/bin/ktc-mail ixr,
+
+  /usr/lib/ktc-mail/** r,
+
+  /etc/ktc-mail/ r,
+  /etc/ktc-mail/** r,
+  /var/lib/ktc-mail/ r,
+  /var/lib/ktc-mail/** rw,
+
+  # nftables is this role's sole purpose.
+  /usr/sbin/nft ixr,
+
+  network inet tcp,
+  network inet6 tcp,
+  network netlink raw,
+
+  /dev/log w,
+  /run/systemd/notify w,
+
+  # Firewall manager owns nft, not the mail-stack config or certs.
+  deny /usr/bin/certbot x,
+  deny /etc/postfix/** rw,
+  deny /etc/dovecot/** rw,
+  deny /etc/nginx/** rw,
+  deny /etc/letsencrypt/** rw,
+  deny /usr/bin/systemctl x,
+}

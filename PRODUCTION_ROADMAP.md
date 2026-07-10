@@ -145,12 +145,31 @@ Ground truth (this session, 2026-07-10):
   `node_exporter --collector.textfile.directory=/var/lib/ktc-mail`
   and `/metrics` exposes `ktc_mail_*` series.
 
-- [ ] **M-2.3  AppArmor profiles actually ENFORCED on target.**
-  postinst loads them (now logs failures instead of `|| true`). But
-  the 3 profiles (`rate_limiter`, `admin_server`, `firewall_monitor`)
-  must be `aa-enforce`d and survive `apparmor_parser -p`. Verify
-  on the install VM: `aa-status` shows them in enforce mode; a
-  denied syscall is logged, not silently breaking the daemon.
+- [x] **M-2.3  AppArmor profiles ENFORCED per-role — CLOSED + VM-VERIFIED (2026-07-10).**
+  Root cause: `cli.main()` dispatches in-process, so all 7 units run the ONE
+  binary `/usr/bin/ktc-mail <subcmd>`; the old 3 profiles targeted the dead
+  `/usr/lib/ktc-mail/*.py` paths and `aa-enforce`d successfully while
+  confining NOTHING (silent lie). Fixed:
+  - 8 named role profiles (setup/admin/firewall-monitor/acme/backup/
+    audit-export/exporter/rate-limit), each least-privilege with explicit
+    `deny` rules for high-value targets the role must never touch
+    (nft/certbot/restic/systemctl/mail-config).
+  - systemd `AppArmorProfile=<role>` on each unit (systemd 252 on Debian 12
+    transitions by profile NAME — no wrapper, no extra Depends).
+  - Added the MISSING `ktc-mail-admin.service` (FastAPI portal had no unit
+    before — a real confinement + supervision gap).
+  - `tmpfiles.d/ktc-mail.conf` for `/run/ktc-mail` (tmpfs, survives reboot).
+  - postinst rewritten: globs `ktc-mail.*` (was `usr.lib.ktc-mail.*` — would
+    have silently loaded ZERO profiles = fake-success), and now FAILS LOUDLY
+    if AppArmor is present but loads zero profiles.
+  VERIFIED in qemu/kvm Debian 12 VM (Python 3.11): build+install clean,
+  `aa-status` shows all 8 `ktc-mail.*` in enforce mode; live rate-limit daemon
+  (`/usr/bin/python3 /usr/bin/ktc-mail rate-limit`) reads
+  `ktc-mail.rate-limit (enforce)` from `/proc/self/attr/current` and binds
+  127.0.0.1:12345; `nft`/`certbot` under their denied roles return
+  "Permission denied". 5 profile defects found + fixed BY the VM run
+  (invalid deny qualifiers, dual-attachment collision, bad network peer=
+  syntax, missing binary exec perm, missing /run dir-write + tmpfiles).
 
 - [ ] **M-2.4  CSP / inline `onsubmit` handlers.**
   Templates use `onsubmit="return confirm(...)"` (inline event

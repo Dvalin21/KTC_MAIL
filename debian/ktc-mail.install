@@ -36,6 +36,7 @@ scripts/ktc-mail-open-ports.sh usr/sbin/
 
 # ── Systemd units ─────────────────────────────────────────────────
 systemd/ktc-mail-setup.service lib/systemd/system/
+systemd/ktc-mail-admin.service lib/systemd/system/
 systemd/ktc-mail-firewall-monitor.service lib/systemd/system/
 systemd/ktc-mail-firewall-monitor.timer lib/systemd/system/
 systemd/ktc-mail-acme-renew.timer lib/systemd/system/
@@ -48,10 +49,18 @@ systemd/ktc-mail-exporter.timer lib/systemd/system/
 systemd/ktc-mail-audit-export.service lib/systemd/system/
 systemd/ktc-mail-audit-export.timer lib/systemd/system/
 
-# ── AppArmor profiles ─────────────────────────────────────────
-apparmor/usr.lib.ktc-mail.rate_limiter etc/apparmor.d/
-apparmor/usr.lib.ktc-mail.admin_server etc/apparmor.d/
-apparmor/usr.lib.ktc-mail.firewall_monitor etc/apparmor.d/
+# ── AppArmor profiles (named roles; attached via systemd AppArmorProfile=) ─
+apparmor/ktc-mail.setup etc/apparmor.d/
+apparmor/ktc-mail.admin etc/apparmor.d/
+apparmor/ktc-mail.firewall-monitor etc/apparmor.d/
+apparmor/ktc-mail.acme etc/apparmor.d/
+apparmor/ktc-mail.backup etc/apparmor.d/
+apparmor/ktc-mail.audit-export etc/apparmor.d/
+apparmor/ktc-mail.exporter etc/apparmor.d/
+apparmor/ktc-mail.rate-limit etc/apparmor.d/
+
+# ── tmpfiles (runtime dir on tmpfs) ──────────────────────────
+packaging/etc/tmpfiles.d/ktc-mail.conf usr/lib/tmpfiles.d/
 
 # ── Logrotate ─────────────────────────────────────────────
 packaging/etc/logrotate.d/ktc-mail etc/logrotate.d/

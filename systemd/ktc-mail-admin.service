@@ -1,0 +1,33 @@
+[Unit]
+Description=KTC Mail admin web portal (FastAPI)
+Documentation=https://github.com/Dvalin21/KTC_MAIL
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/ktc-mail admin --host 127.0.0.1 --port 8081
+AppArmorProfile=ktc-mail.admin
+# Binds loopback only (post-C-0.2); remote access via rendered nginx reverse proxy.
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=3
+# Security hardening
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=full
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+# Admin portal is localhost-only; block all non-loopback bind attempts.
+IPAddressAllow=127.0.0.1
+IPAddressDeny=any
+ReadWritePaths=/etc/ktc-mail /var/lib/ktc-mail /etc/dovecot /etc/nginx /etc/ssl /etc/letsencrypt
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -8,6 +8,7 @@ Type=oneshot
 User=ktc-mail
 Group=ktc-mail
 ExecStart=/usr/bin/ktc-mail metrics collect
+AppArmorProfile=ktc-mail.exporter
 IOSchedulingClass=idle
 CPUSchedulingPolicy=idle
 StandardOutput=journal

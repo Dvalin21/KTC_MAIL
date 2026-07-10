@@ -1,0 +1,45 @@
+# KTC Mail — per-user outbound rate limiter (Postfix policy daemon, ktc-mail user)
+# Role: in-memory policy daemon on loopback. NO exec, NO mail-config writes,
+# NO firewall.
+#include <tunables/global>
+
+profile ktc-mail.rate-limit {
+  #include <abstractions/base>
+  #include <abstractions/python>
+
+  /usr/bin/python3 ixr,
+  /usr/lib/python3/** r,
+  /usr/lib/python3/**/*.so mr,
+
+  /usr/lib/ktc-mail/ r,
+  /usr/bin/ktc-mail ixr,
+
+  /usr/lib/ktc-mail/** r,
+
+  /etc/ktc-mail/ r,
+  /etc/ktc-mail/*.json r,
+
+  /var/lib/ktc-mail/ r,
+  /var/lib/ktc-mail/** rw,
+  /run/ktc-mail/ rw,
+  /run/ktc-mail/** rw,
+  /proc/*/attr/current r,
+
+  # Postfix policy daemon listens on loopback only (systemd IPAddressDeny=any
+  # enforces the address; AppArmor restricts the socket family).
+  network inet stream,
+  network inet6 stream,
+
+  /dev/log w,
+  /run/systemd/notify w,
+
+  # A policy daemon must never reconfigure the system.
+  deny /usr/sbin/nft x,
+  deny /usr/bin/certbot x,
+  deny /usr/bin/restic x,
+  deny /usr/bin/systemctl x,
+  deny /etc/postfix/** rw,
+  deny /etc/dovecot/** rw,
+  deny /etc/nginx/** rw,
+  deny /etc/letsencrypt/** rw,
+}

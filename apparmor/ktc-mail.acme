@@ -1,0 +1,45 @@
+# KTC Mail — ACME certificate renewal (root)
+# Role: issues/renews certs only. Must never rewrite mail-stack config.
+#include <tunables/global>
+
+profile ktc-mail.acme {
+  #include <abstractions/base>
+  #include <abstractions/python>
+  #include <abstractions/openssl>
+
+  /usr/bin/python3 ixr,
+  /usr/lib/python3/** r,
+  /usr/lib/python3/**/*.so mr,
+
+  /usr/lib/ktc-mail/ r,
+  /usr/bin/ktc-mail ixr,
+
+  /usr/lib/ktc-mail/** r,
+
+  /etc/ktc-mail/ r,
+  /etc/ktc-mail/** rw,
+  /var/lib/ktc-mail/ r,
+  /var/lib/ktc-mail/** rw,
+
+  /etc/letsencrypt/ r,
+  /etc/letsencrypt/** rw,
+  /etc/ssl/ r,
+  /etc/ssl/** rw,
+
+  /usr/bin/certbot ixr,
+  /usr/bin/openssl ixr,
+
+  network inet tcp,
+  network inet6 tcp,
+  network inet dgram,
+  network inet6 dgram,
+
+  /dev/log w,
+  /run/systemd/notify w,
+
+  # ACME must only touch certs — never the mail config it doesn't own.
+  deny /etc/postfix/** rw,
+  deny /etc/dovecot/** rw,
+  deny /etc/nginx/** rw,
+  deny /usr/sbin/nft x,
+}
