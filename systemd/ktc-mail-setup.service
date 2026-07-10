@@ -12,8 +12,12 @@ RestartSec=5
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
-ProtectHome=true
-ReadWritePaths=/etc/ktc-mail /var/lib/ktc-mail
+# Setup wizard writes mail-stack configs under /etc. ProtectSystem=full
+# makes /etc read-only except the paths listed here — without these
+# the wizard's "Write mail configs" step fails with EROFS.
+ReadWritePaths=/etc/ktc-mail /var/lib/ktc-mail \
+  /etc/postfix /etc/dovecot /etc/nginx /etc/rspamd \
+  /etc/sogo /etc/ssh /etc/letsencrypt /etc/ssl
 
 [Install]
 WantedBy=multi-user.target

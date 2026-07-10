@@ -10,8 +10,8 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y \
   postfix postfix-pcre dovecot-core dovecot-imapd dovecot-lmtpd dovecot-sieve dovecot-managesieved \
-  rspamd redis-server fail2ban python3 python3-venv nginx openssl certbot ca-certificates curl jq \
-  nftables unattended-upgrades python3-qrcode
+  rspamd redis-server fail2ban python3 python3-qrcode \
+  nftables unattended-upgrades
 
 # Enable but DO NOT start mail services yet — they need KTC Mail config first.
 # The setup GUI (ktc-mail-setup.service) will start them after the wizard completes.

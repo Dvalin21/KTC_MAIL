@@ -43,7 +43,11 @@ Then open `http://127.0.0.1:8080` and submit the initial domain setup form.
 
 ## What you are missing before production
 
-- DNS provider adapters: Cloudflare, Route53 (AWS), Hetzner, Namecheap, GoDaddy, Porkbun, and DigitalOcean are all implemented (plus a DryRun provider for `--dry-run`). Run `ktc-mail dns providers` for token requirements.
+- DNS provider adapters: Cloudflare, Route53 (AWS, needs boto3), Hetzner,
+  Porkbun, GoDaddy, and DigitalOcean are implemented (plus a DryRun provider
+  for `--dry-run`). Namecheap is NOT implemented (its API is XML-based and
+  needs reverse-engineering — `ktc-mail dns apply` raises a clear error if
+  selected). Run `ktc-mail dns providers` for the full list and token scopes.
 - ✅ Admin identity: local accounts, MFA (TOTP), RBAC (admin/operator/readonly), CSRF, secure cookies, recovery codes, and break-glass operator access are implemented. OIDC/LDAP remain optional future auth backends.
 - ✅ Backup: restic-based (init/run/restore/check/forget/snapshots) with configurable retention. Restore drill + destination selection still need your operational decision.
 - ✅ Observability: append-only audit log, Prometheus exporter (queue/DNS drift/cert expiry), and remote audit export (syslog/SIEM) are implemented. Alert destinations need wiring to your SIEM.

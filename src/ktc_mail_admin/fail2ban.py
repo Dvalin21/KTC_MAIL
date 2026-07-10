@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .config import CONFIG_DIR, SETUP_PATH, SUBPROCESS_TIMEOUT, SecurityPolicy, read_json
+from .config import CONFIG_DIR, SETUP_PATH, SUBPROCESS_TIMEOUT, SecurityPolicy, atomic_write_text, read_json
 
 # ── Paths ───────────────────────────────────────────────────────────────
 
@@ -282,10 +282,7 @@ def write_jail_config(
         return None
 
     FAIL2BAN_JAIL_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = FAIL2BAN_CONFIG_PATH.with_suffix(".tmp")
-    tmp.write_text(content, encoding="utf-8")
-    tmp.chmod(0o644)
-    tmp.rename(FAIL2BAN_CONFIG_PATH)
+    atomic_write_text(FAIL2BAN_CONFIG_PATH, content, mode=0o644)
     return FAIL2BAN_CONFIG_PATH
 
 
@@ -423,8 +420,7 @@ def cmd_crowdsec(args: argparse.Namespace) -> int:
     output = Path(args.output) if args.output else None
     if output:
         output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(script, encoding="utf-8")
-        output.chmod(0o755)
+        atomic_write_text(output, script, mode=0o755)
         print(f"wrote: {output}")
     else:
         print(script)

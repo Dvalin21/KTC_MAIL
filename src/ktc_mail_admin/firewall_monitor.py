@@ -38,6 +38,7 @@ from .config import (
     CONFIG_DIR,
     SETUP_PATH,
     SecurityPolicy,
+    atomic_write_text,
     read_json,
     SUBPROCESS_TIMEOUT,
 )
@@ -212,11 +213,8 @@ def enforce(required_ports: list[int]) -> None:
     saved_ruleset = _save_current_ruleset()
 
     NFT_RULESET_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = NFT_RULESET_PATH.with_suffix(".tmp")
-    tmp.write_text(ruleset, encoding="utf-8")
-    tmp.chmod(0o600)
-    tmp.rename(NFT_RULESET_PATH)  # atomic on same filesystem
-
+    atomic_write_text(NFT_RULESET_PATH, ruleset, mode=0o600)  # 0600: private ruleset
+    result = _run(["nft", "-f", str(NFT_RULESET_PATH)])
     result = _run(["nft", "-f", str(NFT_RULESET_PATH)])
     if result.returncode != 0:
         print(f"nftables: error applying ruleset: {result.stderr.strip()}",

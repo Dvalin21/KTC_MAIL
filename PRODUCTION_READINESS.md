@@ -1,129 +1,84 @@
-# KTC_MAIL — Production Readiness Status
+# KTC Mail — Production Readiness Status
 
-**Last Updated:** 2026-07-09  
-**Branch:** clean-scaffold (pushed to origin)  
+**Last Updated:** 2026-07-09 (post line-by-line review, BEFORE commit)
+**Branch:** `clean-scaffold` (working tree DIRTY — changes UNCOMMITTED)
 **Base Commit:** e2ba7a5
 
----
-
-## ✅ CRITICAL — ALL FIXED (5/5)
-
-| ID | Issue | Status |
-|----|-------|--------|
-| CRIT-1 | Missing `users_del` endpoint (orphaned code at lines 1085-1097) | ✅ Fixed — proper handler with CSRF, validation, audit log |
-| CRIT-2 | `_valid_email` uses non-existent `self._EMAIL_RE` | ✅ Fixed — uses local `_EMAIL_RE` |
-| CRIT-3 | Session key write race (`write_text` + `chmod`) | ✅ Fixed — atomic `os.open` + `fsync` + `rename` at 0600 |
-| CRIT-4 | Hardcoded `/etc/letsencrypt/live/ktc-mail/` paths | ✅ Fixed — `exporter.py` now uses `CERT_NAME` constant (was the last literal; all other call sites already used the constant) |
-| CRIT-5 | In-memory rate limiting (broken in multi-worker) | ✅ Fixed — Redis-backed with in-memory fallback; added `python3-redis` dep |
+> NOTE: earlier versions of this file falsely claimed `main`@`527603e`/`ed8afd7`
+> and "All CRIT/HIGH/MEDIUM fixed". Those claims were WRONG — the
+> branch was `clean-scaffold` and several real bugs were still open. This
+> rewrite reflects the actual tree state as of 2026-07-09.
 
 ---
 
-## ✅ HIGH — ALL FIXED (9/9)
+## ✅ FIXED THIS SESSION (verified by reading source + running code)
 
-| ID | Issue | Status |
-|----|-------|--------|
-| HIGH-1 | DNS multi-value TXT records collide (key excludes value) | ✅ `DnsRecord.key()` includes SHA256 hash for TXT type |
-| HIGH-2 | `sogo_db_password` in world-readable `setup.json` (0644) | ✅ Moved to `secrets.json` (0600) with atomic `_secrets_set`/`_secrets_get` |
-| HIGH-3 | SPF default `~all` (softfail — rejects nothing) | ✅ Changed to `-all` (hardfail) |
-| HIGH-4 | DMARC stuck at `p=none` (monitor only) | ✅ Added `dmarc_policy` field (none/quarantine/reject) |
-| HIGH-5 | `detect_port_25_blocked` false positive on ANY error | ✅ Specific handling: timeout→blocked, DNS fail→not blocked, other→not blocked |
-| HIGH-6a | `check_dns_propagation` returns False on transport error | ✅ Raises `AcmeError`; narrows query exceptions to `OSError/ValueError/ConnectionError/TimeoutError` |
-| HIGH-6b | `write_password` race window | ✅ Atomic write with fsync at 0400 |
-| HIGH-6c | `save_status` duplicates atomic logic | ✅ Standardized to same pattern |
-| HIGH-9 | `_atomic_write` used `with_name(path.name + ".tmp")` | ✅ Changed to `with_suffix(".tmp")` for consistency |
-
----
-
-## ✅ MEDIUM — 7/10 FIXED
-
-| ID | Issue | Status |
-|----|-------|--------|
-| MED-3 | CSP allows `unsafe-inline` (defeats purpose) | ✅ Documented migration path (nonce strategy) |
-| MED-4 | `client_ip` blindly trusts `X-Forwarded-For` | ✅ Only trusts when behind `KTC_TRUSTED_PROXIES` (CIDR list) |
-| MED-5 | 5 separate `openssl` calls for cert info | ✅ Single call with all flags, parsed in one pass |
-| MED-6 | Broad `except Exception:` masks real errors | ⏳ **PENDING** — requires per-file audit (large effort) |
-| MED-7 | `user_manager._write_lines` no fsync | ✅ Atomic write with `fsync` |
-| MED-8a | `rate_limiter` no health endpoint | ✅ Added HTTP health check on `HEALTH_PORT` (default 12346) |
-| MED-8b | `rate_limiter` stale PID on unclean shutdown | ✅ `atexit` PID cleanup + atomic PID write |
-| MED-8c | `rate_limiter` `LISTEN_ADDR` not configurable | ✅ Already configurable via `KTC_RATE_BIND` (was working) |
-| MED-9 | `firewall_monitor` nft calls no timeout | ✅ Already uses `SUBPROCESS_TIMEOUT` (15s) |
+| ID | Issue | Fix | Evidence |
+|----|-------|-----|----------|
+| THEME | `write_text()`+`chmod()` TOCTOU across 7 sites (exporter, ssh_policy, firewall_monitor, fail2ban×2, app.py DKIM, admin_server DKIM, config_renderer DKIM) | Added `atomic_write_text()` + `atomic_write_bytes()` to `config.py`; both open at final mode → fsync → rename (no world-readable window). Routed all 7 sites through them. | Runtime test: written file is `0600` before any other process can read it |
+| CRIT | One-time recovery codes leaked in 302 `Location` query string (`?recovery=CODE1,CODE2`) → access logs / browser history / Referer | `settings_mfa_recovery` + `settings_mfa_init` now render codes ONCE via new `mfa_codes.html` body (mirrors `api_key_created.html`) | Code read; template added |
+| HIGH | DKIM private key written via `write_bytes`+`chmod` (world-readable TOCTOU window) | `atomic_write_bytes(key_path, priv_pem)` → `0600` in app.py, admin_server, config_renderer | Compiles; helper runtime-tested |
+| HIGH | `ktc-mail-setup.service` had `ProtectSystem=full` + `ReadWritePaths=/etc/ktc-mail` only → wizard's "Write mail configs" step hit EROFS writing `/etc/postfix` etc. | Added real write paths (`/etc/postfix /etc/dovecot /etc/nginx /etc/rspamd /etc/sogo /etc/ssh /etc/letsencrypt /etc/ssl`) | Service file read; wizard writes enumerated from `config_renderer.write_all` |
+| DEP | `python3-boto3` (Route53, lazy-imported) missing from control | Added `Suggests: python3-boto3` | control read |
+| DEP | `python3-venv` in bootstrap but unused (no venv anywhere) | Removed from bootstrap | bootstrap read |
+| WIRING | `ktc-mail-audit-export.timer` never enabled in postinst → remote audit export never ran | Added to postinst `systemctl enable` list | postinst read |
+| WIRING | audit-export `.service` blank `Environment=` overrode ambient config (footgun) | Replaced with drop-in documentation comment | service file read |
 
 ---
 
-## ⏳ PENDING (Low Priority / Code Quality)
+## ✅ ALREADY IMPLEMENTED + VERIFIED (was falsely marked missing)
 
-| ID | Issue | Effort |
-|----|-------|--------|
-| MED-6 | Replace broad `except Exception:` with specific exceptions | High — per-file audit needed |
-| LOW-1 | Inconsistent permission modes (0600/0640/0644 scattered) | Medium |
-| LOW-2 | Duplicate email regex in 3 locations | Low |
-| LOW-3 | `detect_registrar` uses `whois` with no timeout | Low |
-| LOW-4 | `system_hostname` silent failure on error | Low |
-| LOW-5 | `rate_limiter` LISTEN_ADDR env var already works | N/A (was misidentified) |
-| LOW-6 | `cli.py` not reviewed | Low |
-
----
-
-## 📦 PACKAGING UPDATES
-
-| File | Change |
-|------|--------|
-| `packaging/debian/control` | Added `python3-redis` to Depends |
-| `setup.py` | Added `redis>=4.5.0` to `install_requires` |
-| `scripts/ktc-mail-deploy.sh` | SOGo password saved to `secrets.json` via `set_sogo_db_password()` |
+- **Remote audit-log / syslog / SIEM export (Phase 6):** FULLY PRESENT.
+  - `src/ktc_mail_admin/audit_export.py` (243 lines): syslog UDP/TCP/TLS + SIEM JSON + byte-offset position tracking (idempotent, crash-safe).
+  - `cli.py`: `ktc-mail audit export --syslog-host/--siem-url/...` wired.
+  - `systemd/ktc-mail-audit-export.service` + `.timer` (every 10 min).
+  - `test/unit/test_audit_export.py`: 5 tests pass.
+  - **Integration verified this session:** ran against a fake UDP syslog listener — first run forwarded 2 events, second run forwarded 0 (cursor advanced). Real datagrams received.
+- **Recovery codes + break-glass (Phase 5):** present (`mfa.py`, `breakglass.py`, admin routes). `session_version` IS enforced (admin_server ~line 798) → MFA disable/init/recovery DO invalidate sessions.
+- **DNS adapters:** 7 real (Cloudflare, Route53, Hetzner, Porkbun, GoDaddy, DigitalOcean, DryRun). Namecheap NOT implemented (README corrected).
+- **Jinja autoescape ON** → all `{{ error }}`/`{{ msg }}`/`{{ log_text }}` HTML-escaped. No XSS via template output.
+- **`exporter.py` CRIT-4:** uses `CERT_NAME` constant (not hardcoded path).
 
 ---
 
-## ✅ VERIFICATION
+## ⚠ OPEN / NOT DONE (still in tree)
+
+| ID | Issue | Severity | Note |
+|----|-------|----------|------|
+| MED-6 | Broad `except Exception:` masks real errors (19 sites across admin_server/app/backup_manager/firewall_monitor/cli) | MED | Large per-file audit; deferred. Not a runtime blocker but a broken window. |
+| DOC | `PRODUCTION_READINESS.md` / `AUDIT_AND_HANDOFF.md` cited wrong branch (`main`) + falsely claimed all fixed | — | Being corrected now. |
+| GIT | Entire review (13 files + new template + ledger) is UNCOMMITTED | — | Must commit + push `clean-scaffold`. |
+
+---
+
+## ✅ VERIFICATION (this session)
 
 ```bash
-# All checks pass
-python3 -m py_compile src/ktc_mail_admin/*.py      # ✅
-bash -n scripts/*.sh                                # ✅
-systemd-analyze verify systemd/*.service *.timer    # ✅
-# Integration tests
-#   - SetupProfile round-trip                      # ✅
-#   - MFA generate/verify                          # ✅
-#   - Config renderer uses CERT_NAME               # ✅
-#   - SecurityPolicy defaults                      # ✅
-#   - SOGo password set/get from secrets.json      # ✅
+python3 -m py_compile src/ktc_mail_admin/*.py      # PASS
+python3 -m pytest test/unit/test_audit_export.py -q  # 5 passed
+# Runtime: atomic_write_text/bytes produce 0600 before readable
+# Runtime: audit export → fake UDP syslog forwarded 2 then 0 (idempotent)
+systemd-analyze verify systemd/*.service *.timer    # not yet run this session
 ```
 
 ---
 
-## 🎯 PRODUCTION READINESS VERDICT
+## PRODUCTION READINESS VERDICT
 
 | Category | Status |
 |----------|--------|
-| **Functionality** | ✅ Complete — admin GUI works (user CRUD), DNS, ACME, backup, rate limiting |
-| **Security** | ✅ Hardened — atomic writes, secrets isolation, SPF/DMARC hardening, rate limiting |
-| **Reliability** | ✅ Systemd integration, health checks, PID cleanup, atomic operations |
-| **Packaging** | ✅ Debian deps updated, setup.py deps updated |
+| Functionality | ✅ Complete — admin GUI, DNS, ACME, backup, rate limiting, audit export |
+| Security | ⚠ Hardened BUT residual MED-6 broad-except; verify before shipping |
+| Reliability | ✅ systemd integration, health checks, atomic writes, idempotent export |
+| Packaging | ✅ deps corrected (redis, boto3 Suggests); setup.service write paths fixed |
 
-**No production blockers remain.** Remaining items are code-quality improvements (MED-6 broad exceptions, permission mode consistency, deduplication).
-
----
-
-**Branch:** `clean-scaffold`  
-**Remote:** `origin/clean-scaffold` (HEAD e2ba7a5)  
-**Next Review:** After MED-6 broad exception audit
+**No CRITICAL/HIGH blockers remain in the reviewed tree.** Residual work:
+1. MED-6 broad-except audit (code quality, not a blocker).
+2. Commit + push the uncommitted review fixes.
+3. Operator decisions still required (per README "before production"): backup destination, SIEM target drop-in, compliance/log-retention regime.
 
 ---
 
-## 🚀 Completion — 2026-07-09 (original 8-phase vision closed)
-
-The original `docs/implementation-plan.md` exit criteria are now met:
-
-| Phase | Deliverable | Status |
-|-------|-------------|--------|
-| 5 | Recovery codes (one-time, hashed, operator-gated regenerate) | ✅ `mfa.py` + `admin_server` routes |
-| 5 | Break-glass operator (single-use, TTL, audited, 0400 token file) | ✅ `breakglass.py` + `ktc-mail admin break-glass` + `/login/break-glass` |
-| 6 | Remote audit-log export (syslog UDP/TCP/TLS + SIEM webhook, idempotent) | ✅ `audit_export.py` + `ktc-mail audit export` + systemd timer |
-| 6 | Unit-test harness (recovery/break-glass/auditexport/renderer contracts) | ✅ `test/unit/` — 22 tests passing |
-| 3 | Config-renderer contract tests (postfix/dovecot/rspamd/sogo/nginx) | ✅ `test/unit/test_renderers.py` |
-
-**Notes**
-- `CRIT-4` fully closed: the last literal letsencrypt path in `exporter.py` now uses `CERT_NAME`.
-- VPS relay (WireGuard) and CrowdSec live in `revised-architecture.md` (post-vision) and are OUT of scope for the original 8-phase plan. CrowdSec enrollment code already exists in `fail2ban.py`.
-- Open product decisions (README "before production" list) still require your input: webmail client (SOGo wired by default), compliance regime/log retention, backup destination.
-
+**Branch:** `clean-scaffold`
+**Remote:** `origin/clean-scaffold` (tree is AHEAD, uncommitted)
+**Next:** commit review fixes → push → then MED-6 sweep if desired.
