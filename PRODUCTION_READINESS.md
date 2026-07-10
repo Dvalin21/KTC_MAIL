@@ -75,10 +75,11 @@ systemd-analyze verify systemd/*.service *.timer    # not yet run this session
 |----------|--------|
 | Functionality | ✅ Complete — admin GUI, DNS, ACME, backup, rate limiting, audit export |
 | Security | ⚠ Hardened BUT residual MED-6 broad-except; verify before shipping |
-| Reliability | ✅ systemd integration, health checks, atomic writes, idempotent export |
-| Packaging | ✅ deps corrected (redis, boto3 Suggests); setup.service write paths fixed |
+| Reliability | ✅ systemd units exec via `ktc-mail` CLI (runtime PROVEN in VM on Py3.11); health checks, atomic writes, idempotent export |
+| Packaging | ✅ .deb builds+installs+units run in qemu/kvm Debian 12 VM (Python 3.11.2); setup.service write paths fixed |
 
-**No CRITICAL/HIGH blockers remain in the reviewed tree.** Residual work:
+**No CRITICAL/HIGH blockers remain. C-0.1 (package) + C-0.2 (expose + dead
+runtime on target) both CLOSED and VM-verified. Residual work:**
 1. MED-6 broad-except audit (code quality, not a blocker).
 2. Operator decisions still required (per README "before production"):
    backup destination, SIEM target drop-in, compliance/log-retention regime.

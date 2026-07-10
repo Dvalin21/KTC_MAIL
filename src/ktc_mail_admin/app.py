@@ -16,6 +16,7 @@ import argparse
 import html
 import json
 import os
+import subprocess
 import sys
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -42,6 +43,7 @@ from .config import (
     detect_registrar,
     validate_domain,
     system_hostname,
+    SUBPROCESS_TIMEOUT,
     PROVIDER_CLOUDFLARE,
     PROVIDER_NAMEECHEAP,
     PROVIDER_GODADDY,
@@ -294,7 +296,9 @@ def _checkbox(name: str, label: str, checked: bool = False) -> str:
 
 def _select(name: str, label: str, options: list[tuple[str, str]], selected: str = "") -> str:
     opts = "".join(
-        f'<option value="{html.escape(v)}"{' selected' if v == selected else ""}>{html.escape(t)}</option>'
+        f'<option value="{html.escape(v)}"'
+        + (' selected' if v == selected else "")
+        + f'>{html.escape(t)}</option>'
         for v, t in options
     )
     return f'<label for="{name}">{html.escape(label)}</label><select id="{name}" name="{name}">{opts}</select>'
@@ -545,6 +549,19 @@ class KtcMailHandler(BaseHTTPRequestHandler):
             SESSION["executed"] = True
             SESSION["results"] = results
 
+            # First-run setup is done. This wizard is unauthenticated and runs
+            # as root with rights to rewrite the whole mail stack; it must not
+            # stay listening. Disable + stop the unit so it can't be restarted
+            # by a crash loop. Operator re-runs via `systemctl enable --now
+            # ktc-mail-setup` if they really need to.
+            try:
+                subprocess.run(
+                    ["systemctl", "disable", "--now", "ktc-mail-setup.service"],
+                    check=False, timeout=SUBPROCESS_TIMEOUT,
+                )
+            except Exception:
+                pass
+
             # Redirect to /plan (shows what was done)
             self.send_response(HTTPStatus.SEE_OTHER)
             self.send_header("Location", "/plan")
@@ -726,13 +743,26 @@ document.addEventListener('DOMContentLoaded', function() {{
                 '</div>'
             )
 
+        detect_card = (
+            '<div class="detection-item" style="border-bottom:2px solid var(--brand); font-weight:700">'
+            f'<span>Here\'s what I found about <strong>{html.escape(profile.domain)}</strong>:</span>'
+            '</div>\n'
+            f'{items}'
+        )
+
+        build_card = (
+            '<p>Review the plan. Click "Build my mail server" to write all configs,'
+            ' push DNS records, start services, issue a TLS certificate, and lock'
+            ' down the firewall.</p>'
+            '<form method="post" action="/execute">'
+            '  <button class="success" type="submit">Build my mail server</button>'
+            '  <button class="secondary" type="button" onclick="window.location=\'/\'"'
+            '          style="margin-top:0.5rem">Back and change</button>'
+            '</form>'
+        )
+
         return f"""
-{_card("Detection results", f"""
-<div class="detection-item" style="border-bottom:2px solid var(--brand); font-weight:700">
-  <span>Here's what I found about <strong>{html.escape(profile.domain)}</strong>:</span>
-</div>
-{items}
-""")}
+{_card("Detection results", detect_card)}
 
 {_card("Service hostnames", hostname_block)}
 
@@ -744,19 +774,9 @@ document.addEventListener('DOMContentLoaded', function() {{
 
 {_card("Reverse DNS (PTR)", f'<pre style="font-family:monospace;white-space:pre-wrap">{html.escape(ptr_advice)}</pre>')}
 
-{_card("Ready to build?", f"""
-<p>Review the plan. Click "Build my mail server" to write all configs,
-push DNS records, start services, issue a TLS certificate, and lock
-down the firewall.</p>
-<form method="post" action="/execute">
-  <button class="success" type="submit">Build my mail server</button>
-  <button class="secondary" type="button" onclick="window.location='/'"
-          style="margin-top:0.5rem">Back and change</button>
-</form>
-""")}
-"""
+{_card("Ready to build?", build_card)}
 
-    # ── Screen: DNS plan + execution result ──────────────────────────
+"""    # ── Screen: DNS plan + execution result ──────────────────────────
 
     def _screen_plan(self) -> str:
         profile: SetupProfile | None = SESSION.get("profile")
@@ -820,50 +840,57 @@ down the firewall.</p>
                     '</div>'
                 )
 
+        build_results_card = (
+            '<table style="width:100%;border-collapse:collapse;font-size:0.9rem">'
+            '<thead>'
+            '<tr style="border-bottom:2px solid #e2e8f0">'
+            '  <th style="padding:0.5rem 0.75rem;text-align:left">Step</th>'
+            '  <th style="padding:0.5rem 0.75rem;text-align:left">Status</th>'
+            '  <th style="padding:0.5rem 0.75rem;text-align:left">Detail</th>'
+            '</tr>'
+            '</thead>'
+            f'<tbody>{rows}</tbody>'
+            '</table>'
+        )
+
+        configured_card = (
+            '<ul style="margin-left:1.25rem;line-height:1.8">'
+            f'  <li>Domain: <strong>{html.escape(profile.domain)}</strong></li>'
+            f'  <li>Mail hostname: <strong>{html.escape(profile.hostname)}</strong></li>'
+            f'  <li>Admin hostname: <strong>{html.escape(profile.admin_host)}</strong></li>'
+            f'  <li>Webmail hostname: <strong>{html.escape(profile.webmail_host)}</strong></li>'
+            f'  <li>Certificate: <strong>{html.escape(profile.certificate_mode)}</strong></li>'
+            f'  <li>Open ports: {", ".join(str(p) for p in profile.security.actual_open_ports)}</li>'
+            f'  <li>SSH key-only: <strong>{"Yes" if profile.security.ssh_key_only else "No (passwords enabled)"}</strong></li>'
+            '</ul>'
+        )
+
+        next_steps_card = (
+            '<ul style="margin-left:1.25rem;line-height:1.8">'
+            f'  <li>Check your DNS: <code>dig +short MX {html.escape(profile.domain)}</code></li>'
+            f'  <li>Connect your IMAP client to <strong>{html.escape(profile.hostname)}</strong> on port 993 with TLS</li>'
+            f'  <li>Send mail through <strong>{html.escape(profile.hostname)}</strong> on port 587 with STARTTLS</li>'
+            '  <li>View logs: <code>journalctl -u postfix -f</code></li>'
+            '  <li>Manage users: <code>ktc-mail user add</code></li>'
+            '</ul>'
+        )
+
         return f"""
 <div class="card" style="border-left: 4px solid var(--ok)">
   <h1>KTC Mail setup complete</h1>
   <p>Your mail server is being configured. Results for each step are below.</p>
 </div>
 
-{_card("Build results", f"""
-<table style="width:100%;border-collapse:collapse;font-size:0.9rem">
-<thead>
-<tr style="border-bottom:2px solid #e2e8f0">
-  <th style="padding:0.5rem 0.75rem;text-align:left">Step</th>
-  <th style="padding:0.5rem 0.75rem;text-align:left">Status</th>
-  <th style="padding:0.5rem 0.75rem;text-align:left">Detail</th>
-</tr>
-</thead>
-<tbody>{rows}</tbody>
-</table>
-""")}
+{_card("Build results", build_results_card)}
 
 {notes}
 
 {_card("DNS records", dns_plan) if dns_plan else ""}
 
-{_card("What was configured", f"""
-<ul style="margin-left:1.25rem;line-height:1.8">
-  <li>Domain: <strong>{html.escape(profile.domain)}</strong></li>
-  <li>Mail hostname: <strong>{html.escape(profile.hostname)}</strong></li>
-  <li>Admin hostname: <strong>{html.escape(profile.admin_host)}</strong></li>
-  <li>Webmail hostname: <strong>{html.escape(profile.webmail_host)}</strong></li>
-  <li>Certificate: <strong>{html.escape(profile.certificate_mode)}</strong></li>
-  <li>Open ports: {', '.join(str(p) for p in profile.security.actual_open_ports)}</li>
-  <li>SSH key-only: <strong>{'Yes' if profile.security.ssh_key_only else 'No (passwords enabled)'}</strong></li>
-</ul>
-""")}
+{_card("What was configured", configured_card)}
 
-{_card("Where to go from here", f"""
-<ul style="margin-left:1.25rem;line-height:1.8">
-  <li>Check your DNS: <code>dig +short MX {html.escape(profile.domain)}</code></li>
-  <li>Connect your IMAP client to <strong>{html.escape(profile.hostname)}</strong> on port 993 with TLS</li>
-  <li>Send mail through <strong>{html.escape(profile.hostname)}</strong> on port 587 with STARTTLS</li>
-  <li>View logs: <code>journalctl -u postfix -f</code></li>
-  <li>Manage users: <code>ktc-mail user add</code></li>
-</ul>
-""")}
+{_card("Where to go from here", next_steps_card)}
+
 """
 
     def _render_dns_plan(self, dns_set, profile: SetupProfile) -> str:
@@ -937,17 +964,17 @@ def main() -> None:
     setup_logging()
     parser = argparse.ArgumentParser(description="KTC Mail setup GUI (caveman mode)")
     parser.add_argument("--host", default="127.0.0.1",
-                        help="Address to bind (default 127.0.0.1 for safety)")
+                        help="Address to bind (fixed at 127.0.0.1; use the "
+                             "rendered nginx reverse proxy for remote access)")
     parser.add_argument("--port", type=int, default=8080,
                         help="Port to bind")
-    parser.add_argument("--expose", action="store_true",
-                        help="Bind to 0.0.0.0 (DANGEROUS without firewall)")
     args = parser.parse_args()
 
-    host = "0.0.0.0" if args.expose else args.host
-    if host == "0.0.0.0":
-        print("WARNING: Listening on all interfaces. Ensure firewall is active.",
-              file=sys.stderr)
+    # Bind is ALWAYS loopback. The setup GUI is unauthenticated and rewrites
+    # the entire mail stack + firewall; exposing it on 0.0.0.0 is a remote
+    # takeover surface. Remote access goes through the rendered nginx proxy
+    # (ktc-mail-setup vhost) which terminates TLS. No --expose escape hatch.
+    host = "127.0.0.1"
 
     server = ThreadingHTTPServer((host, args.port), KtcMailHandler)
     print(f"KTC Mail setup: http://{host}:{args.port}")

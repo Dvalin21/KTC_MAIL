@@ -43,14 +43,12 @@ from .config import SETUP_PATH, SECRETS_PATH, STATE_DIR, setup_logging
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
-    """Start the first-run setup web GUI on :8080."""
+    """Start the first-run setup web GUI on :8080 (loopback only)."""
     from .app import main as app_main
 
-    # Forward relevant args
-    sys.argv = ["app.py"]
-    if args.expose:
-        sys.argv.append("--expose")
-    sys.argv.extend(["--host", args.host, "--port", str(args.port)])
+    # Setup GUI binds 127.0.0.1 only; remote access is via the rendered
+    # nginx proxy. No --expose forwarding.
+    sys.argv = ["app.py", "--host", args.host, "--port", str(args.port)]
     return app_main()
 
 
@@ -196,6 +194,12 @@ def cmd_ssh(args: argparse.Namespace) -> int:
         return 1
 
 
+def cmd_rate_limit(args: argparse.Namespace) -> int:
+    """Run the per-user outbound rate limiter (Postfix policy daemon)."""
+    from .rate_limiter import main as rl_main
+    return rl_main()
+
+
 def cmd_dkim(args: argparse.Namespace) -> int:
     """Generate DKIM keypair and write to disk."""
     from .config_renderer import dkim_write
@@ -293,7 +297,6 @@ def main() -> int:
     p_setup = sub.add_parser("setup", help="Start first-run setup GUI")
     p_setup.add_argument("--host", default="127.0.0.1")
     p_setup.add_argument("--port", type=int, default=8080)
-    p_setup.add_argument("--expose", action="store_true")
 
     # ── dns ────────────────────────────────────────────────────────────
     p_dns = sub.add_parser("dns", help="DNS record management")
@@ -318,6 +321,9 @@ def main() -> int:
     p_fw = sub.add_parser("firewall", help="Firewall policy management (nftables)")
     p_fw.add_argument("--enforce", action="store_true",
                        help="Recreate nftables rules before checking")
+
+    # ── rate-limit ────────────────────────────────────────────────────
+    sub.add_parser("rate-limit", help="Per-user outbound rate limiter (Postfix policy daemon)")
 
     # ── ssh ────────────────────────────────────────────────────────────
     p_ssh = sub.add_parser("ssh", help="SSH policy management")
@@ -406,6 +412,7 @@ def main() -> int:
         "dns": cmd_dns,
         "acme": cmd_acme,
         "firewall": cmd_firewall,
+        "rate-limit": cmd_rate_limit,
         "ssh": cmd_ssh,
         "config": cmd_config,
         "dkim": cmd_dkim,

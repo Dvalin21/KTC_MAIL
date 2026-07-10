@@ -19,7 +19,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .config import SSH_CONFIG_PATH, atomic_write_text
+from .config import SSH_CONFIG_PATH, atomic_write_text, SUBPROCESS_TIMEOUT
 
 # Drop-in config path (cleaner than editing main sshd_config)
 DROPIN_DIR = Path("/etc/ssh/sshd_config.d")

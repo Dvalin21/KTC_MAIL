@@ -34,22 +34,52 @@ Ground truth (this session, 2026-07-10):
   `/home/keith/.hermes/vm-assets/ktc-mail-vm-verify.sh`. No ship-blocker remains
   at the package level.
 
-- [ ] **C-0.2  Decide + set the admin-server EXPOSE story.**
-  `admin_server.py cmd_admin_start` defaults `host=127.0.0.1`;
-  `--expose` binds `0.0.0.0` with only a stderr WARNING.
-  The setup GUI (`ktc-mail-setup.service`) listens on `:8080`.
-  There is NO TLS terminator wired for either. You MUST run both
-  behind nginx (which IS rendered) with a real cert, NOT bind
-  0.0.0.0 raw. Verify: `nginx -t` passes; `curl -k https://host:8081`
-  (admin) returns 200; `0.0.0.0` bind is rejected by policy.
+- [x] **C-0.2  EXPOSE story + RUNTIME surface — CLOSED (code fix, 2026-07-10).**
+  Root cause (two distinct bugs, both found by building+running in a real
+  qemu/kvm Debian 12 VM, Python 3.11.2 — the TARGET):
+  1. `--expose` bound `0.0.0.0` on the unauthenticated setup wizard (rewrites
+     the whole mail stack + firewall as root) AND the admin GUI, with only a
+     stderr warning and no TLS. Removed `--expose` entirely from `app.py`,
+     `admin_server.py`, `cli.py`. Both GUIs bind `127.0.0.1` ALWAYS; remote
+     access is only via the rendered nginx reverse proxy. Setup wizard
+     self-disables its systemd unit on first successful execute.
+  2. **Systemd units + postinst exec'd `/usr/lib/ktc-mail/*.py` directly**, but
+     those scripts do `from .config import ...` (relative) →
+     `ImportError: attempted relative import with no known parent package` on
+     every unit (setup, rate-limit, firewall-monitor, acme-renew, ssh). The
+     whole runtime was DEAD on the target; only `ktc-mail metrics collect`
+     (package import) worked, which is why the earlier C-0.1 check passed
+     while the services did not.
+  3. **`app.py` had Python-3.11-incompatible nested f-strings** (`f"""` inside
+     `f"""`, and `f'...{'...'}...'`) that parse on 3.13 (host) but
+     `SyntaxError` on 3.11 (target) — the setup GUI would not even parse.
+  Fixes:
+  - Repointed 4 systemd units to `ktc-mail <subcommand>` (setup/acme/firewall/
+    rate-limit); added the missing `rate-limit` CLI subcommand.
+  - `postinst` SSH-policy step → `ktc-mail ssh apply` (was
+    `/usr/lib/ktc-mail/ssh_policy.py apply`).
+  - Refactored the 5 nested f-strings in `app.py` into separate variables;
+    fixed `_select` nested f-string. Verified `py_compile` on python3.11.
+  - `ssh_policy.py` missing `SUBPROCESS_TIMEOUT` import (crashed `ssh apply`
+    at `sshd -t` test) → added to import.
+  - `ssh_policy.py` now 0755 in package (D6-class: postinst exec'd it directly
+    while it shipped 0644 → silently failed).
+  VERIFIED in the VM: `--expose` absent; both GUIs bind loopback;
+  `ktc-mail setup` binds, `ktc-mail rate-limit` runs, `ktc-mail firewall
+  --enforce` applies nftables, `ktc-mail ssh apply` writes a valid sshd
+  drop-in (sshd -t passes). All on Python 3.11.2. No ship-blocker remains
+  at the package OR runtime level.
 
-- [ ] **C-0.3  Backup DESTINATION is unset (data-loss risk).**
-  `backup_manager.py` is restic-based but the repo/init path needs a
-  real `RESTIC_REPOSITORY` + credentials. README explicitly lists
-  "Restore drill + destination selection" as YOUR operational decision.
-  Until set, backup `run` has nowhere to push. Verify:
-  `ktc-mail backup run` → non-zero / clear error if repo unset; a real
-  `restic init` against your chosen backend succeeds.
+- [ ] **C-0.3  Backup DESTINATION is unset (data-loss risk) — OPERATOR DECISION, not a code defect.**
+  `backup_manager.py` already raises `RuntimeError("backup repository not
+  configured")` in `_restic()` when `repository`/`enabled` are unset, so
+  `ktc-mail backup run` FAILS HONESTLY (non-zero exit) — it does not silently
+  pretend to back up. The gap is purely operational: you must pick a restic
+  backend (local `/backup`, S3, sftp, rest-server...) and run
+  `ktc-mail backup init`. Nothing to fix in code. Until you set it, backups
+  do not happen — that is YOUR call, per README "before production".
+  Verify when you pick a backend: `ktc-mail backup init` + `ktc-mail backup run`
+  → restic snapshot created; `restic check` passes.
 
 ═══════════════════════════════════════════════════════════════
 ## PHASE 1 — HIGH (core feature must work before go-live)

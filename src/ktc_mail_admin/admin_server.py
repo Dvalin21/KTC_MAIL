@@ -2212,16 +2212,14 @@ def cmd_admin_start(args: argparse.Namespace) -> int:
         print("Run: ktc-mail admin init", file=sys.stderr)
         return 1
 
-    host = "0.0.0.0" if args.expose else args.host
+    # Bind is ALWAYS loopback. The admin GUI is authenticated but still must
+    # not bind 0.0.0.0 raw — there is no TLS terminator here. Remote access
+    # goes through the rendered nginx proxy (ktc-mail-admin vhost) which
+    # terminates TLS and enforces the CSP/HSTS headers. No --expose flag.
+    host = "127.0.0.1"
     port = args.port
 
     app = create_app()
-
-    if host == "0.0.0.0":
-        print(f"WARNING: Listening on all interfaces. Use a firewall.",
-              file=sys.stderr)
-        print(f"         If behind Nginx, bind to 127.0.0.1 instead.",
-              file=sys.stderr)
 
     print(f"KTC Mail admin: http://{host}:{port}")
     print(f"Login with admin credentials (set via 'ktc-mail admin init')")
@@ -2275,11 +2273,10 @@ def add_subparser(sub) -> None:
         help="REQUIRED: acknowledge this is a single-use audited credential",
     )
     p_admin.add_argument("--host", default="127.0.0.1",
-                         help="Bind address (default 127.0.0.1)")
+                         help="Bind address (fixed at 127.0.0.1; use the "
+                              "rendered nginx reverse proxy for remote access)")
     p_admin.add_argument("--port", type=int, default=8081,
                          help="Listen port (default 8081)")
-    p_admin.add_argument("--expose", action="store_true",
-                         help="Bind to 0.0.0.0 (behind reverse proxy)")
     p_admin.add_argument("--force", action="store_true",
                          help="Force re-initialization of admin password")
     p_admin.add_argument("--log-level", default=None,

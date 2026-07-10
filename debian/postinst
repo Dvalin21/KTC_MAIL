@@ -16,7 +16,7 @@ systemctl restart ktc-mail-setup.service
 
 # Apply default SSH policy (key-only) if no custom config exists
 if [[ ! -f /etc/ssh/sshd_config.d/ktc-mail.conf ]]; then
-  /usr/lib/ktc-mail/ssh_policy.py apply 2>/dev/null || true
+  /usr/bin/ktc-mail ssh apply 2>/dev/null || true
 fi
 
 # Load AppArmor profiles (conditional — AppArmor may not be present)
