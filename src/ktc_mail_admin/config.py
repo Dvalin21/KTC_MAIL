@@ -702,6 +702,18 @@ class SetupProfile:
     ldap_user_attr: str = "mail"
     ldap_email_attr: str = "mail"
 
+    # ── OIDC / SSO (webmail login via SOGo native OIDC) ───────
+    # oidc_enabled: emit SOGo OIDC config for webmail SSO.
+    #   Requires an external IdP (Keycloak, Authentik, ADFS, ...).
+    #   Scope is SOGo WEBMAIL login SSO only — Dovecot IMAP/OAuth2
+    #   passdb is NOT wired here (separate larger effort). IMAP
+    #   still uses password auth; this just adds SSO to the web UI.
+    oidc_enabled: bool = False
+    oidc_issuer: str = ""          # https://idp.example.com/realms/ktc
+    oidc_client_id: str = ""
+    oidc_client_secret: str = ""
+    oidc_scopes: str = "openid email profile"
+
     # ── Derived hostnames (read-only properties) ──────────────────────
 
     @property
