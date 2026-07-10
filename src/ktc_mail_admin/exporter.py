@@ -32,6 +32,7 @@ from .config import (
     CONFIG_DIR,
     STATE_DIR,
     SETUP_PATH,
+    atomic_write_text,
     TLS_STATE_PATH,
     DNS_STATE_PATH,
     read_json,
@@ -236,13 +237,7 @@ def write() -> None:
     """
     metrics = collect()
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    TMP_METRICS_PATH.write_text(metrics, encoding="utf-8")
-    TMP_METRICS_PATH.chmod(0o644)
-    fd = os.open(TMP_METRICS_PATH, os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+    atomic_write_text(TMP_METRICS_PATH, metrics, mode=0o644)
     TMP_METRICS_PATH.rename(METRICS_PATH)  # atomic on same filesystem
     print(f"ktc-mail exporter: wrote {len(metrics)} bytes to {METRICS_PATH}")
 

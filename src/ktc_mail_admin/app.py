@@ -30,6 +30,7 @@ from .config import (
     SETUP_PATH,
     SECRETS_PATH,
     SetupProfile,
+    atomic_write_text,
     SecurityPolicy,
     SmtpRelayConfig,
     DkimKeyPair,
@@ -475,8 +476,7 @@ class KtcMailHandler(BaseHTTPRequestHandler):
                 dkim_dir = CONFIG_DIR / "dkim"
                 dkim_dir.mkdir(parents=True, exist_ok=True)
                 dkim_path = dkim_dir / f"{profile.dkim.selector}.private"
-                dkim_path.write_text(profile.dkim.private_key_pem, encoding="utf-8")
-                dkim_path.chmod(0o600)
+                atomic_write_text(dkim_path, profile.dkim.private_key_pem, mode=0o600)
             results.append({"step": "Setup profile", "status": "done",
                             "detail": f"saved to {SETUP_PATH}"})
 

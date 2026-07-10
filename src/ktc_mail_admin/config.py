@@ -274,20 +274,34 @@ class DnsRecordSet:
     # ── Access ─────────────────────────────────────────────────────────
 
     def add(self, record: DnsRecord) -> None:
-        key = record.key()
-        if key in self._records:
-            # This is a replace, which changes the value.
-            # Immutable record means we create a new key entry.
-            pass
-        self._records[key] = record
+        # Immutable record: (type,name) key for non-TXT; TXT disambiguated by
+        # value hash so multiple TXT at the same name coexist (see key()).
+        self._records[record.key()] = record
 
     def remove(self, type: str, name: str) -> None:
         key = f"{type.upper()}:{name.rstrip('.')}."
-        self._records.pop(key, None)
+        # Exact match (non-TXT records store under type:name).
+        if key in self._records:
+            self._records.pop(key, None)
+            return
+        # TXT records store under type:name:sha(value); drop ALL TXT at name.
+        if type.upper() == "TXT":
+            prefix = key + ":"
+            for k in [k for k in self._records if k.startswith(prefix)]:
+                self._records.pop(k, None)
 
     def find(self, type: str, name: str) -> DnsRecord | None:
         key = f"{type.upper()}:{name.rstrip('.')}."
-        return self._records.get(key)
+        rec = self._records.get(key)
+        if rec is not None:
+            return rec
+        # TXT: return the first TXT stored at this name (type:name:sha prefix).
+        if type.upper() == "TXT":
+            prefix = key + ":"
+            for k in self._records:
+                if k.startswith(prefix):
+                    return self._records[k]
+        return None
 
     def all(self) -> list[DnsRecord]:
         return sorted(self._records.values(), key=lambda r: (r.type, r.name))
@@ -997,6 +1011,42 @@ def json_dumps(obj: Any) -> str:
     """Deterministic JSON for hashing."""
     import json
     return json.dumps(obj, sort_keys=True, separators=(",", ":"))
+
+
+def atomic_write_bytes(path: Path | str, data: bytes, *, mode: int = 0o600) -> None:
+	"""Write *data* (bytes) to *path* with *mode*, race-free and fsync'd.
+
+	For binary secrets (private keys).  Opens at the final mode so no
+	world-readable TOCTOU window exists.  Renames over target.
+	"""
+	path = Path(path)
+	tmp = path.with_suffix(path.suffix + ".tmp")
+	fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+	try:
+		os.write(fd, data)
+		os.fsync(fd)
+	finally:
+		os.close(fd)
+	tmp.rename(path)
+
+
+def atomic_write_text(path: Path | str, content: str, *, mode: int = 0o640) -> None:
+	"""Write *content* to *path* with *mode*, race-free and fsync'd.
+
+	Opens with O_CREAT|O_TRUNC at the final mode (no world-readable
+	TOCTOU window), writes, fsyncs, closes, then renames over the
+	target.  Mirrors save_json_private but for raw text (configs, rules,
+	keys, metrics).  Use this instead of write_text()+chmod().
+	"""
+	path = Path(path)
+	tmp = path.with_suffix(path.suffix + ".tmp")
+	fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+	try:
+		os.write(fd, content.encode("utf-8"))
+		os.fsync(fd)
+	finally:
+		os.close(fd)
+	tmp.rename(path)
 
 
 def save_json_private(path: Path | str, payload: dict[str, Any]) -> None:

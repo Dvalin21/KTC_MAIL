@@ -49,6 +49,7 @@ from .config import (
     SecurityPolicy,
     read_json,
     get_sogo_db_password,
+    atomic_write_bytes,
 )
 
 
@@ -956,12 +957,7 @@ def dkim_write(args: argparse.Namespace) -> int:
 
     path = DKIM_DIR / f"{selector}.private"
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        os.write(fd, priv_pem)
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+    atomic_write_bytes(path, priv_pem)
 
     print(f"wrote: {path}")
     print()
@@ -1005,32 +1001,16 @@ def validate(profile: SetupProfile, dest: Path = Path("/etc")) -> int:
         rendered = render_all(profile)
 
         # Write configs to temp dir in the same structure they'd have under /etc
+        for relpath, content in rendered.items():
+            # RENDERED_FILES keys use "/", e.g. "postfix/main.cf" → etc/postfix/main.cf
+            target = tmp / "etc" / relpath
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _atomic_write(target, content)
+
+        # Configs now live under tmp/etc/<relpath>; derive the dirs the
+        # postfix/nginx validators expect.
         postfix_dir = tmp / "etc" / "postfix"
         nginx_dir = tmp / "etc" / "nginx"
-        for relpath, content in rendered.items():
-            parts = relpath.split("/")
-            if len(parts) > 1:
-                # e.g. "postfix_main.cf" → no subdir; "nginx/webmail.conf" → subdir
-                pass
-            # Map rendered keys to temp paths
-            target = None
-            if relpath == "postfix_main.cf":
-                postfix_dir.mkdir(parents=True, exist_ok=True)
-                target = postfix_dir / "main.cf"
-            elif relpath == "postfix_master.cf":
-                postfix_dir.mkdir(parents=True, exist_ok=True)
-                target = postfix_dir / "master.cf"
-            elif relpath.startswith("nginx_"):
-                nginx_dir.mkdir(parents=True, exist_ok=True)
-                base = relpath.removeprefix("nginx_")
-                target = nginx_dir / base
-            elif relpath == "dovecot_dovecot.conf":
-                dovecot_dir = tmp / "etc" / "dovecot"
-                dovecot_dir.mkdir(parents=True, exist_ok=True)
-                target = dovecot_dir / "dovecot.conf"
-
-            if target:
-                _atomic_write(target, content)
 
         errors = 0
 

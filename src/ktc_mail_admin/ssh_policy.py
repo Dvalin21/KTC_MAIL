@@ -19,7 +19,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .config import SSH_CONFIG_PATH
+from .config import SSH_CONFIG_PATH, atomic_write_text
 
 # Drop-in config path (cleaner than editing main sshd_config)
 DROPIN_DIR = Path("/etc/ssh/sshd_config.d")
@@ -93,10 +93,9 @@ def write_config(
         print(config)
         return
 
-    # Write drop-in config
+    # Write drop-in config (race-free, 0644)
     DROPIN_DIR.mkdir(parents=True, exist_ok=True)
-    DROPIN_PATH.write_text(config, encoding="utf-8")
-    DROPIN_PATH.chmod(0o644)
+    atomic_write_text(DROPIN_PATH, config, mode=0o644)
 
     # Test config before reloading
     test = subprocess.run(

@@ -64,6 +64,7 @@ from .config import (
     CERT_NAME,
     read_json,
     save_json_private,
+    atomic_write_bytes,
     setup_logging,
     SetupProfile,
     _EMAIL_RE,
@@ -1446,10 +1447,16 @@ def create_app() -> FastAPI:
             "mfa_recovery_regen", actor_email(request),
             f"{len(plain)} recovery codes regenerated", client_ip(request),
         )
-        return RedirectResponse(
-            url="/settings?msg=Recovery+codes+regenerated.+Store+these+now:"
-                 "&recovery=" + ",".join(plain),
-            status_code=302,
+        # Show plaintext codes ONCE in the response body — never in the URL
+        # (a query string would leak them into access logs / history / Referer).
+        return templates.TemplateResponse(
+            request, "mfa_codes.html",
+            {
+                "request": request,
+                "title": "Recovery Codes",
+                "intro": "Recovery codes regenerated.",
+                "codes": "\n".join(plain),
+            },
         )
 
     @app.post("/settings/mfa/init")
@@ -1482,10 +1489,16 @@ def create_app() -> FastAPI:
             "mfa_init", actor_email(request),
             "MFA secret generated", client_ip(request),
         )
-        return RedirectResponse(
-            url="/settings?msg=MFA+secret+generated.+Scan+the+QR+code+and+verify"
-                 "&recovery=" + ",".join(plain),
-            status_code=302,
+        # Show plaintext recovery codes ONCE in the response body — never in
+        # the URL (would leak into access logs / history / Referer).
+        return templates.TemplateResponse(
+            request, "mfa_codes.html",
+            {
+                "request": request,
+                "title": "MFA Initialized",
+                "intro": "Scan the QR code on Settings, then verify. Recovery codes:",
+                "codes": "\n".join(plain),
+            },
         )
 
     # ── DKIM management ────────────────────────────────────────────────
@@ -1543,8 +1556,7 @@ def create_app() -> FastAPI:
             priv_pem, _dns_record = _dkim_gen(profile.domain, selector)
             key_path = DKIM_DIR / f"{selector}.private"
             key_path.parent.mkdir(parents=True, exist_ok=True)
-            key_path.write_bytes(priv_pem)
-            key_path.chmod(0o600)
+            atomic_write_bytes(key_path, priv_pem)
             audit_log(
                 "dkim_generate", actor_email(request),
                 f"selector={selector}", client_ip(request),

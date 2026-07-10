@@ -7,13 +7,16 @@ After=network-online.target
 Type=oneshot
 User=ktc-mail
 Group=ktc-mail
-# Targets are read from the environment (set in the unit drop-in or
-# by the packaging postinst). Example:
-#   KTC_SYSLOG_HOST=logs.example.com
-#   KTC_SYSLOG_PORT=514
-#   KTC_SYSLOG_TCP=1
-#   KTC_SIEM_URL=https://siem.example.com/ingest
-Environment=KTC_SYSLOG_HOST= KTC_SYSLOG_PORT=514 KTC_SYSLOG_TCP=0 KTC_SIEM_URL=
+# Targets are supplied by the operator via a drop-in (do NOT set blank
+# defaults here — they would override ambient config).  Create e.g.
+#   /etc/systemd/system/ktc-mail-audit-export.service.d/10-target.conf
+#   [Service]
+#   Environment=KTC_SYSLOG_HOST=logs.example.com
+#   Environment=KTC_SYSLOG_PORT=514
+#   Environment=KTC_SYSLOG_TCP=1
+#   Environment=KTC_SIEM_URL=https://siem.example.com/ingest
+# With no targets set the unit is a safe no-op (forwards nothing).
+# Environment=KTC_SYSLOG_HOST= KTC_SYSLOG_PORT=514 KTC_SYSLOG_TCP=0 KTC_SIEM_URL=
 ExecStart=/usr/bin/ktc-mail audit export \
     --syslog-host ${KTC_SYSLOG_HOST} \
     --syslog-port ${KTC_SYSLOG_PORT} \

@@ -10,7 +10,7 @@ install -d -m 0750 -o root -g ktc-mail /etc/ktc-mail /var/lib/ktc-mail /etc/ktc-
 # Setup GUI and admin server need root to write Postfix/Dovecot configs;
 # rate-limiter and exporter use ktc-mail user.
 systemctl daemon-reload
-systemctl enable ktc-mail-setup.service ktc-mail-firewall-monitor.timer ktc-mail-acme-renew.timer ktc-mail-backup.timer ktc-mail-exporter.timer ktc-mail-rate-limit.service
+systemctl enable ktc-mail-setup.service ktc-mail-firewall-monitor.timer ktc-mail-acme-renew.timer ktc-mail-backup.timer ktc-mail-exporter.timer ktc-mail-rate-limit.service ktc-mail-audit-export.timer
 systemctl restart ktc-mail-setup.service
 
 # Apply default SSH policy (key-only) if no custom config exists

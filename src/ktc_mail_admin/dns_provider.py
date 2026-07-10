@@ -286,8 +286,9 @@ class Route53Provider:
         records: list[DnsRecord] = []
         for value in rset.get("ResourceRecords", []):
             content = value["Value"]
-            if rtype in ("MX", "SRV"):
-                content = content.replace(" ", "\t")  # normalize sep
+            # Canonical separator is SPACE (matches Cloudflare/Hetzner/Porkbun/
+            # GoDaddy/DigitalOcean and our DnsRecord form). Route53 itself
+            # accepts either; normalize to space so diff() doesn't churn.
             records.append(DnsRecord(type=rtype, name=name, value=content, ttl=ttl))
         # Alias records (e.g. A/AAAA for ELB/CloudFront) have AliasTarget instead
         if not records and "AliasTarget" in rset:
