@@ -28,6 +28,7 @@ src/ktc_mail_admin/templates/certs.html usr/lib/ktc-mail/templates/
 src/ktc_mail_admin/templates/queue.html usr/lib/ktc-mail/templates/
 src/ktc_mail_admin/templates/settings.html usr/lib/ktc-mail/templates/
 src/ktc_mail_admin/templates/backup.html usr/lib/ktc-mail/templates/
+src/ktc_mail_admin/templates/mfa_codes.html usr/lib/ktc-mail/templates/
 
 # ── Scripts ───────────────────────────────────────────────────────
 scripts/bootstrap-mail-stack.sh usr/lib/ktc-mail/
@@ -44,6 +45,8 @@ systemd/ktc-mail-backup.timer lib/systemd/system/
 systemd/ktc-mail-rate-limit.service lib/systemd/system/
 systemd/ktc-mail-exporter.service lib/systemd/system/
 systemd/ktc-mail-exporter.timer lib/systemd/system/
+systemd/ktc-mail-audit-export.service lib/systemd/system/
+systemd/ktc-mail-audit-export.timer lib/systemd/system/
 
 # ── AppArmor profiles ─────────────────────────────────────────
 apparmor/usr.lib.ktc-mail.rate_limiter etc/apparmor.d/

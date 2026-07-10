@@ -1,14 +1,15 @@
 # KTC Mail — Production Readiness Status
 
-**Last Updated:** 2026-07-10 (post ClamAV + FTS parity work)
-**Branch:** `clean-scaffold-v2` (banned-name-free history)
-**Base Commit:** ab1de47
+**Last Updated:** 2026-07-10 (C-0.1 .deb build+install VERIFIED in qemu/kvm VM)
+**Branch:** `clean-scaffold-v2` (local) = `origin/clean-scaffold-v3` (pushed), same commit `d70d0f9`
+**Base Commit:** d70d0f9 (LDAP + ClamAV + fts-xapian + .deb packaging D1-D6)
 
-> NOTE: this project bans the reference project's name from code/docs/commits/GitHub.
+> NOTE: this project bans the reference suite's name from code/docs/commits/GitHub.
 > Docs use "the reference Docker Compose mail suite". The original
 > `clean-scaffold` branch still has a historical commit with the banned
-> word; it could not be force-pushed (GitHub branch protection). Work
-> continues on `clean-scaffold-v2`.
+> word; force-push is blocked by GitHub branch protection. `clean-scaffold-v2`
+> (local) and `clean-scaffold-v3` (remote) are the SAME commit under two
+> names — no divergence. Clean history is already on v3.
 
 ---
 
@@ -193,7 +194,6 @@ maturity gap is the dominant fact — do NOT expect feature parity.
 
 ---
 
-**Branch:** `clean-scaffold-v3` (clean history; see NOTE)
-**Remote:** `origin/clean-scaffold-v3` (committed at `5c7e797`, pushed)
+**Branch:** `clean-scaffold-v2` (local) = `origin/clean-scaffold-v3` (pushed), commit `d70d0f9`
 **Next:** D-5 multi-domain/SQL (or BX observability/API docs — owner's call);
 then MED-6 sweep if desired.

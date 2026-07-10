@@ -1,32 +1,38 @@
 # KTC Mail — Production Readiness Roadmap (Critical → Low)
 
-Branch: `clean-scaffold` @ `237debd` (clean tree, 14/14 unit tests pass,
-full tree compiles). 100% line-by-line code review is DONE
-(prior session; see `REVIEW_LEDGER.md` + `references/ktc-mail-review-pitfalls.md`).
-This file is the REMAINING work to get it production-functional — not a
-code review. Phases are severity-ordered. Each item is verifiable.
+Branch: `clean-scaffold-v2` (local, clean) = pushed `origin/clean-scaffold-v3`
+@ `d70d0f9` (0 ahead / 0 behind — in sync). 100% line-by-line code review
+is DONE (prior session; see `REVIEW_LEDGER.md`). This file is the REMAINING
+work to get it production-functional — not a code review. Phases are
+severity-ordered. Each item is verifiable.
 
-Ground truth (this session):
+Ground truth (this session, 2026-07-10):
 - `git status` clean; `python3 -m py_compile src/ktc_mail_admin/*.py` OK
-- `pytest test/` → 14 passed
 - Code-level CRIT/HIGH from the review are FIXED (atomic writes, DKIM
   TOCTOU, recovery-code URL leak, setup.service EROFS, audit-export
-  enable). Residual is operational + one deferred code-quality sweep.
+  enable, .deb packaging D1-D6).
+- **C-0.1 VERIFIED in a real qemu/kvm Debian 12 VM** (not just claimed):
+  `dpkg-buildpackage` produced `ktc-mail 1.0.0`; `apt-get install ./ktc-mail*.deb`
+  resolved the full runtime Depends from Debian repos and installed clean;
+  postinst created the `ktc-mail` user, enabled all 7 units; `/usr/bin/ktc-mail`
+  resolves; `ktc-mail metrics collect` runs AS the ktc-mail user; **12 systemd
+  units shipped** (proves the audit-export units ARE in the install file —
+  the prior "D4: units omitted" note was itself doc rot).
+  Re-runnable: `/home/keith/.hermes/vm-assets/ktc-mail-vm-verify.sh`.
+- Residual is operational (operator decisions) + deferred code-quality sweep.
 
 ═══════════════════════════════════════════════════════════════
 ## PHASE 0 — CRITICAL (blocks any production deploy)
 ═══════════════════════════════════════════════════════════════
 
-- [ ] **C-0.1  Actually BUILD + INSTALL the .deb.** Never exercised.
-  `systemd-analyze verify` reported `/usr/bin/ktc-mail` and
-  `/usr/lib/ktc-mail/*.py` "not executable" — because the package
-  was never built/installed. Until `dpkg -i` is run on a clean
-  Debian/Ubuntu, NONE of the systemd units, postinst AppArmor
-  load, or ktc-mail CLI exist. This is the #1 ship-blocker:
-  the code is proven but the PACKAGE is unproven.
-  Verify: `dpkg-buildpackage` (or `dpkg -b` from a staged tree) →
-  `dpkg -i` in a throwaway VM → all 7 units `systemctl status`
-  show `active`/`enabled`, `which ktc-mail` resolves.
+- [x] **C-0.1  BUILD + INSTALL the .deb — VERIFIED 2026-07-10.**
+  Proven in a real qemu/kvm Debian 12 VM: `dpkg-buildpackage` → `ktc-mail 1.0.0`;
+  `apt-get install ./ktc-mail*.deb` resolved the full runtime Depends from
+  Debian repos and installed clean; postinst created `ktc-mail` user, enabled
+  all 7 units; `/usr/bin/ktc-mail` resolves; `ktc-mail metrics collect` runs
+  AS the ktc-mail user; 12 systemd units shipped. Re-runnable:
+  `/home/keith/.hermes/vm-assets/ktc-mail-vm-verify.sh`. No ship-blocker remains
+  at the package level.
 
 - [ ] **C-0.2  Decide + set the admin-server EXPOSE story.**
   `admin_server.py cmd_admin_start` defaults `host=127.0.0.1`;

@@ -2,19 +2,15 @@
 # Single source of truth for production-readiness state.
 
 # ── Current repo state ─────────────────────────────────────────────
-Tree:      CLEAN (LDAP auth committed + pushed)
-Branch:    clean-scaffold-v2   (local, clean)
-Remote:    origin/clean-scaffold-v3  (5c7e797 — see NOTE; force-push
-          of the original branches is blocked by GitHub branch protection)
-
-> NOTE: the banned project name is forbidden from this project (code, docs,
-> commits, GitHub) per owner directive. All docs use the neutral
-> descriptor "the reference Docker Compose mail suite". The original
-> `clean-scaffold` + `clean-scaffold-v2` branches retain a historical
-> commit whose message has the forbidden name; force-push is blocked by
-> GitHub branch protection. The clean history lives on `clean-scaffold-v3`
-> (pushed as a new branch, no force needed). Delete the two stale branches
-> and rename `v3` -> `v2` when convenient.
+Tree:      CLEAN (LDAP + ClamAV + fts-xapian + .deb packaging fixes committed)
+Branch:    clean-scaffold-v2   (local, clean, @ d70d0f9)
+Remote:    origin/clean-scaffold-v3  (d70d0f9 — 0 ahead / 0 behind, in sync)
+Note:      local `clean-scaffold-v2` IS the pushed `origin/clean-scaffold-v3`.
+          They are the same commit under two names; no divergence. The two
+          stale `clean-scaffold` + `clean-scaffold-v2` refs retain a historical
+          commit whose message has the banned word; force-push is blocked by
+          GitHub branch protection. Clean history is already on v3. Delete the
+          two stale refs + rename v3 -> v2 when convenient (owner call).
 
 # ── Verified fixes (this review cycle) ─────────────────────────────
 THEME   config.py                 atomic_write_text/bytes() (open final mode
