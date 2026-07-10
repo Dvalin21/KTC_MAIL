@@ -6,6 +6,12 @@ adduser --system --group --no-create-home --quiet ktc-mail 2>/dev/null || true
 # Allow reading Let's Encrypt TLS certs (genuinely optional — ssl-cert group may not exist)
 adduser ktc-mail ssl-cert 2>/dev/null || true
 
+# Mail store owner. Dovecot's rendered config runs its mail processes as
+# 'vmail' (maildir at /var/mail/%d/%n). The package MUST create this user
+# or Dovecot fails to start ("User doesn't exist: vmail").
+adduser --system --group --home /var/mail --quiet vmail 2>/dev/null || true
+adduser vmail ktc-mail 2>/dev/null || true
+
 install -d -m 0750 -o root -g ktc-mail /etc/ktc-mail /etc/ktc-mail/dkim
 install -d -m 0770 -o root -g ktc-mail /var/lib/ktc-mail
 # Runtime dir on tmpfs (recreated at boot via tmpfiles.d/ktc-mail.conf)
