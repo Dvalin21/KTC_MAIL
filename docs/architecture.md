@@ -1,6 +1,6 @@
 # KTC Mail bare-metal architecture
 
-KTC Mail follows the Mailcow-style separation of responsibilities while using Debian/Ubuntu packages and systemd services instead of Docker containers.
+KTC Mail follows the Dockerized reference suite's separation of responsibilities while using Debian/Ubuntu packages and systemd services instead of Docker containers.
 
 ## Service map
 

@@ -8,7 +8,7 @@ This is the build order. Each phase must leave the product safer and more testab
 
 **Deliverables:**
 
-- Mailcow feature inventory mapped to Debian/Ubuntu packages and systemd units.
+- Reference Docker Compose mail suite feature inventory mapped to Debian/Ubuntu packages and systemd units.
 - Threat model for SMTP abuse, mailbox takeover, DNS API compromise, cert/key theft, web admin compromise, and backup leakage.
 - Root-only secret storage rules, token scope rules, and audit log requirements.
 - Supported OS matrix for Debian stable and Ubuntu LTS.

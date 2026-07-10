@@ -77,33 +77,33 @@ systemd-analyze verify systemd/*.service *.timer    # not yet run this session
 2. Operator decisions still required (per README "before production"):
    backup destination, SIEM target drop-in, compliance/log-retention regime.
 3. See Production Roadmap (PRODUCTION_ROADMAP.md) for the full
-   Critical→Low phased list + the mailcow comparison below.
+   Critical→Low phased list + the reference Docker Compose suite comparison below.
 
 ---
 
-## KTC Mail vs mailcow (brutally honest)
+## KTC Mail vs the reference Docker Compose mail suite (brutally honest)
 
-> mailcow data pulled 2026-07-09 from github.com/mailcow/mailcow-dockerized:
+> Reference suite data pulled 2026-07-09 from its public repository:
 > 13,076 stars / 1,735 forks / created 2016-12 / last push 2026-07-09 /
 > 506 open issues / GPL-3.0 / JavaScript+Docker / commercially backed
-> by Servercow GmbH (paid support contracts). It is a 10-year-old,
+> by a GmbH (paid support contracts). It is a 10-year-old,
 > battle-hardened, widely-deployed product.
 
 KTC Mail is a ~2026 single-author bare-metal Python suite. The
 maturity gap is the dominant fact — do NOT expect feature parity.
 
 ### Deployment model
-- mailcow: Docker Compose. `docker compose up` on any host.
+- Reference suite: Docker Compose. `docker compose up` on any host.
   Isolation, reproducible builds, one-command undo. Targets people
   who do NOT want to admin a mail server by hand.
 - KTC Mail: bare-metal Debian/Ubuntu. `dpkg -i` + systemd
   units + nginx reverse proxy you configure. Targets people who
   WANT a reproducible, auditable, non-containerized control plane.
-- Verdict: different audiences. mailcow wins on "up in 10 min".
+- Verdict: different audiences. The reference suite wins on "up in 10 min".
   KTC wins on "I can read every line + no container daemon".
 
 ### Feature comparison (grounded in source, not marketing)
-| Capability | KTC Mail | mailcow |
+| Capability | KTC Mail | Reference suite |
 |-----------|-----------|----------|
 | MTA (Postfix) | yes (rendered) | yes |
 | IMAP/POP3 (Dovecot) | yes | yes |
@@ -127,26 +127,27 @@ maturity gap is the dominant fact — do NOT expect feature parity.
 | Multiple domains / mailbox UI | **partial** (single-domain profile; user CRUD present) | yes (full multi-domain + SQL mailbox DB) |
 | Web admin GUI | yes (FastAPI + Jinja) | yes (PHP/Symfony) |
 | Mobile/ActiveSync | **NO** | yes (SOGo ActiveSync) |
-| Greylisting | **NO** | yes |
+| Greylisting | **NO** (now wired via Rspamd) | yes |
 | Full-text search | **NO** (Dovecot solr/elasticsearch not wired) | yes (Solr/ES) |
 | Containerization | **NO** (by design) | yes (core product) |
 
-### Functional gaps KTC Mail MUST close before it is "mailcow-class"
+### Functional gaps KTC Mail MUST close before it is "reference-suite-class"
 1. **ClamAV Antivirus** — KTC renders no AV hook into Postfix/
-   Rspamd. mailcow ships ClamAV. For a public-facing MX this
+   Rspamd. The reference suite ships ClamAV. For a public-facing MX this
    is a real gap (malware attachment defense).
 2. **Multi-domain + SQL mailbox store** — KTC is single-domain
-   profile-driven; users live in a passwd file. mailcow runs a
+   profile-driven; users live in a passwd file. The reference suite runs a
    MariaDB-backed multi-domain tenant model. KTC's user_manager is
    real but flat.
-3. **OIDC/LDAP** — KTC says "future auth backend". mailcow
-   has it now.
+3. **OIDC/LDAP** — KTC says "future auth backend". The reference
+   suite has it now.
 4. **ActiveSync / mobile** — KTC wires SOGo but not SOGo's
    ActiveSync; no EAS.
-5. **Greylisting + full-text search** — both absent in KTC.
+5. **Greylisting + full-text search** — greylisting now wired via
+   Rspamd; full-text search still absent in KTC.
 
 ### Performance (honest: not measured, only architectural)
-- Neither has published benchmarks. mailcow's 10 years of
+- Neither has published benchmarks. The reference suite's 10 years of
   production tuning (Rspamd worker counts, Postfix queue
   parallelism, Dovecot imap process model) is real, earned maturity
   KTC cannot claim.
@@ -160,7 +161,7 @@ maturity gap is the dominant fact — do NOT expect feature parity.
     (fine to ~thousands of users, not millions).
   - One setup-wizard process, one admin API — no horizontal scale.
 - Verdict: KTC is correct + safe for SOHO / single-org /
-  self-hosted personal. It is NOT a mailcow replacement for
+  self-hosted personal. It is NOT a replacement for
   multi-tenant hosting. Do not market it as one.
 
 ### Security posture (both)
@@ -169,20 +170,20 @@ maturity gap is the dominant fact — do NOT expect feature parity.
   session-invalidation via session_version, CSP/HSTS headers,
   AppArmor profiles (enforced in postinst), secrets in 0600
   files isolated from setup.json. Code review 100% done.
-- mailcow: long CVE history (some serious — e.g. past XSS /
+- Reference suite: long CVE history (some serious — e.g. past XSS /
   RCE in the PHP admin, now patched), but a large attack surface
   (PHP + many containers). Commercial support means fast CVE turnaround.
 - Verdict: KTC's smaller surface + auditable Python is a
-  SECURITY ADVANTAGE for someone who reads code. mailcow's
-  advantage is "someone else fixes the CVEs fast".
+  SECURITY ADVANTAGE for someone who reads code. The reference
+  suite's advantage is "someone else fixes the CVEs fast".
 
 ### Bottom line
-- Want "mail server that just works, I don't care how": **mailcow**.
+- Want "mail server that just works, I don't care how": **the reference suite**.
 - Want "auditable, bare-metal, no containers, I control every line":
   **KTC Mail** — once the Phase 0 Critical items in
   PRODUCTION_ROADMAP.md are done (build+install the .deb, set the
   expose/TLS story, set a backup destination).
-- KTC is NOT feature-complete vs mailcow. The missing
+- KTC is NOT feature-complete vs the reference suite. The missing
   ClamAV / multi-domain / OIDC / ActiveSync / greylisting /
   FTS are the honest gaps. Closing them is future work, not
   "finish the review".

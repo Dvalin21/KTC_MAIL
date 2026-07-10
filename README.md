@@ -1,6 +1,6 @@
 # KTC Mail
 
-KTC Mail is a bare-metal Debian/Ubuntu mail server suite scaffold. The goal is a Mailcow-style operational structure without Docker: mature open-source mail components, a friendly web GUI, guided DNS/TLS setup, and strict firewall/security defaults.
+KTC Mail is a bare-metal Debian/Ubuntu mail server suite scaffold. The goal is a Dockerized-reference-style operational structure without Docker: mature open-source mail components, a friendly web GUI, guided DNS/TLS setup, and strict firewall/security defaults.
 
 ## Current scope
 

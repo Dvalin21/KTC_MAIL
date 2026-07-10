@@ -48,7 +48,7 @@ WARNING  systemd/ktc-mail-audit-export.service  removed footgun blank
 2. Operator decisions still required (README "before production"):
    backup destination, SIEM target drop-in, compliance/log-retention.
 3. See PRODUCTION_READINESS.md "Production Roadmap" for the full
-   Critical→Low phased list + the mailcow comparison.
+   Critical→Low phased list + the reference Docker Compose suite comparison.
 
 # ── Next actions (in priority order) ──────────────────────────────
 1. Build + install the .deb in a throwaway VM (C-0.1) — the only
