@@ -34,4 +34,7 @@ setup(
     extras_require={
         "dev": [],
     },
+    entry_points={
+        "console_scripts": ["ktc-mail = ktc_mail_admin.cli:main"],
+    },
 )
