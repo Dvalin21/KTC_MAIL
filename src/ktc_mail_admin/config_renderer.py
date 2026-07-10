@@ -796,13 +796,18 @@ server {{
 
     # ActiveSync (EAS) endpoint — proxies to SOGo EAS handler on :20000.
     # Without this block EAS is configured (SOGoEASProtocol) but UNREACHABLE.
+    # proxy_request_buffering off + http 1.1 keepalive: EAS push streams
+    # large WBXML payloads; buffering them to disk stalls push.
     location /Microsoft-Server-ActiveSync {{
         proxy_pass http://127.0.0.1:20000;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_read_timeout 86400s;
+        proxy_request_buffering off;
         client_max_body_size 0;
     }}
 }}
