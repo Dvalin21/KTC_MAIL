@@ -2,18 +2,19 @@
 # Single source of truth for production-readiness state.
 
 # ── Current repo state ─────────────────────────────────────────────
-Tree:      CLEAN (all review + parity work committed + pushed)
-Branch:    clean-scaffold-v2   (banned-name-free history; see NOTE)
-HEAD:      ab1de47
-Remote:    origin/clean-scaffold-v2 (ab1de47 present)
+Tree:      CLEAN (LDAP auth committed + pushed)
+Branch:    clean-scaffold-v2   (local, clean)
+Remote:    origin/clean-scaffold-v3  (5c7e797 — see NOTE; force-push
+          of the original branches is blocked by GitHub branch protection)
 
 > NOTE: the banned project name is forbidden from this project (code, docs,
 > commits, GitHub) per owner directive. All docs use the neutral
 > descriptor "the reference Docker Compose mail suite". The original
-> `clean-scaffold` branch still contains a historical commit whose
-> message has the forbidden name; it could not be force-pushed (GitHub
-> branch protection blocked it). `clean-scaffold-v2` is the clean
-> replacement. Delete `clean-scaffold` + rename `v2` when convenient.
+> `clean-scaffold` + `clean-scaffold-v2` branches retain a historical
+> commit whose message has the forbidden name; force-push is blocked by
+> GitHub branch protection. The clean history lives on `clean-scaffold-v3`
+> (pushed as a new branch, no force needed). Delete the two stale branches
+> and rename `v3` -> `v2` when convenient.
 
 # ── Verified fixes (this review cycle) ─────────────────────────────
 THEME   config.py                 atomic_write_text/bytes() (open final mode
@@ -47,6 +48,14 @@ A-1  ClamAV        config_renderer: rspamd antivirus module -> clamd socket.
 A-2  Greylisting   already wired (rspamd milter { greylisting=true } + redis).
 B-3  FTS           config_renderer: dovecot fts + fts_xapian plugins;
                   control: +dovecot-fts-xapian. VERIFIED in VM.
+C-4  LDAP          config.py: SetupProfile.auth_backend toggle ('passwd_file'|
+                  'ldap') + LDAP fields + load_profile(); config_renderer:
+                  _dovecot_passdb() selects passdb driver + emits
+                  dovecot-ldap.conf.ext (LDAP mode only); user_manager skips
+                  passwd-file write under LDAP; control: +dovecot-ldap.
+                  VERIFIED in VM (LDAP passdb + conf emitted; build+install OK).
+                  OIDC: DEFERRED — Dovecot has no native OIDC; needs external
+                  IdP (Keycloak) + OAuth2 proxy. Documented, not stubbed.
 
 # ── Already implemented + verified (was falsely marked missing) ──
 - Remote audit export: audit_export.py + cli + systemd + 5 unit tests.
@@ -59,16 +68,16 @@ B-3  FTS           config_renderer: dovecot fts + fts_xapian plugins;
 1. MED-6 broad `except Exception:` (19 sites) — deferred, not a blocker.
 2. Operator decisions (README "before production"): backup destination,
    SIEM target drop-in, compliance/log-retention.
-3. C-4 OIDC/LDAP auth backend — NOT done.
+3. C-4 OIDC — deferred (external IdP required; not Dovecot-native).
 4. D-5 Multi-domain + SQL mailbox store — structural epic, needs green-light.
 5. BX Prometheus alert rules + Grafana dashboard + OpenAPI — NOT done.
 6. See PRODUCTION_ROADMAP.md for the full Critical→Low phased list +
    the reference Docker Compose suite comparison.
 
 # ── Next actions (priority order) ─────────────────────────────────
-1. C-4 OIDC/LDAP (or D-5 multi-domain/SQL — owner's call).
+1. D-5 multi-domain/SQL (or BX observability/API docs — owner's call).
 2. (optional) MED-6 broad-except sweep.
-3. Resolve clean-scaffold vs clean-scaffold-v2 branch naming on GitHub.
+3. Resolve GitHub branch naming: delete clean-scaffold + v2, rename v3 -> v2.
 
 # ── Philosophy notes ────────────────────────────────────────────
 - "Talk is cheap. Show me the code." Only what was read + run is listed.
