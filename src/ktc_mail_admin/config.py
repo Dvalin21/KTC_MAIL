@@ -680,6 +680,20 @@ class SetupProfile:
 
     dmarc_policy: str = "none"  # none | quarantine | reject
 
+    # ── Auth backend ─────────────────────────────────────────────
+    # "passwd_file" (default): Dovecot reads /etc/dovecot/passwd.
+    # "ldap": Dovecot queries an LDAP directory (passdb driver=ldap).
+    #   OIDC is NOT Dovecot-native — requires an external IdP (Keycloak)
+    #   + OAuth2 proxy and is out of scope for this pass.
+    auth_backend: str = "passwd_file"
+    ldap_uri: str = ""            # ldap://ldap.example.com:389
+    ldap_bind_dn: str = ""        # cn=ktc-mail,ou=services,dc=example,dc=com
+    ldap_bind_password: str = ""
+    ldap_search_base: str = ""    # ou=mail,dc=example,dc=com
+    ldap_user_filter: str = "(mail=%u)"
+    ldap_user_attr: str = "mail"
+    ldap_email_attr: str = "mail"
+
     # ── Derived hostnames (read-only properties) ──────────────────────
 
     @property
@@ -1195,3 +1209,19 @@ def system_hostname() -> str:
     except (subprocess.TimeoutExpired, OSError, subprocess.SubprocessError) as exc:
         logger.debug("getting hostname: %s", exc)
         return ""
+
+
+def load_profile(path: Path | None = None) -> SetupProfile | None:
+    """Load the active SetupProfile from setup.json.
+
+    Returns None if no setup has been completed yet.
+    """
+    p = path or SETUP_PATH
+    if not p.exists():
+        return None
+    try:
+        data = read_json(p)
+        return SetupProfile.from_dict(data)
+    except (OSError, ValueError) as exc:
+        logger.debug("load_profile: %s", exc)
+        return None

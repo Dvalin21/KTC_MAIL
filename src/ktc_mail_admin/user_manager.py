@@ -23,6 +23,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .config import load_profile
+
 PASSWD_FILE = Path("/etc/dovecot/passwd")
 ALIAS_FILE = Path("/etc/postfix/virtual_alias")
 MBX_FILE = Path("/etc/postfix/virtual_mbx")
@@ -164,10 +166,14 @@ def user_add(
 
     hash_str = _hash_password(password)
 
-    # Append to passwd file
-    line = _format_line(sanitized, hash_str, quota) + "\n"
-    existing.append(line)
-    _write_lines(PASSWD_FILE, existing)
+    # Append to passwd file — only when using the local passwd-file
+    # backend. Under LDAP, Dovecot authenticates against the directory
+    # and this file is not the auth store (postfix maps below still apply).
+    profile = load_profile()
+    if profile is None or profile.auth_backend != "ldap":
+        line = _format_line(sanitized, hash_str, quota) + "\n"
+        existing.append(line)
+        _write_lines(PASSWD_FILE, existing)
 
     # Update Postfix alias map (user@domain → same for local delivery)
     alias_lines = _read_lines(ALIAS_FILE)
