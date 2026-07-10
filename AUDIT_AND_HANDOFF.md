@@ -2,64 +2,76 @@
 # Single source of truth for production-readiness state.
 
 # ── Current repo state ─────────────────────────────────────────────
-Tree:      CLEAN (committed at 237debd; pushed to origin/clean-scaffold)
-Branch:    clean-scaffold
-HEAD:      237debd
-Remote:    origin/clean-scaffold (237debd present)
+Tree:      CLEAN (all review + parity work committed + pushed)
+Branch:    clean-scaffold-v2   (mailcow-free history; see NOTE)
+HEAD:      ab1de47
+Remote:    origin/clean-scaffold-v2 (ab1de47 present)
 
-> NOTE: a prior version of this file claimed DIRTY / UNCOMMITTED
-> and cited `main`@527603e / `ed8afd7`. Both WRONG. The tree
-> was committed + pushed at `237debd` this session. This rewrite is
-> accurate as of 2026-07-09 (post commit).
+> NOTE: the word "mailcow" is banned from this project (code, docs,
+> commits, GitHub) per owner directive. All docs use the neutral
+> descriptor "the reference Docker Compose mail suite". The original
+> `clean-scaffold` branch still contains a historical commit whose
+> message has the banned word; it could not be force-pushed (GitHub
+> branch protection blocked it). `clean-scaffold-v2` is the clean
+> replacement. Delete `clean-scaffold` + rename `v2` when convenient.
 
-# ── Verified fixes (committed at 237debd) ───────────────────
-THEME  config.py                  added atomic_write_text() + atomic_write_bytes()
-                                   (open at final mode -> fsync -> rename, no
-                                    world-readable TOCTOU window). Routed 7
-                                    write_text+chmod sites through them.
-CRIT    admin_server.py              recovery codes no longer in 302 Location
-                                   query string; rendered once via mfa_codes.html.
-HIGH    admin_server/app.py/         DKIM private key written atomic 0600
-        config_renderer.py          (was write_bytes+chmod race).
+# ── Verified fixes (this review cycle) ─────────────────────────────
+THEME   config.py                 atomic_write_text/bytes() (open final mode
+                                 -> fsync -> rename, no TOCTOU window).
+                                 urs: 7 write_text+chmod sites routed through.
+CRIT    admin_server.py           recovery codes no longer in 302 Location;
+                                 rendered once via mfa_codes.html.
+HIGH    admin_server/app.py/       DKIM key written atomic 0600.
+        config_renderer.py
 HIGH    systemd/ktc-mail-setup.service  ProtectSystem=full ReadWritePaths
-                                   now lists real mail-config dirs
-                                   (/etc/postfix /etc/dovecot /etc/nginx
-                                    /etc/rspamd /etc/sogo /etc/ssh
-                                    /etc/letsencrypt /etc/ssl) — wizard
-                                   was EROFS-ing at "Write mail configs".
-DEP     packaging/debian/control    Suggests: python3-boto3 (Route53 lazy-import).
-DEP     scripts/bootstrap-mail-stack.sh  dropped unused python3-venv.
-WARNING  packaging/debian/postinst   ktc-mail-audit-export.timer now enabled.
-WARNING  systemd/ktc-mail-audit-export.service  removed footgun blank
-                                   Environment= line; documents drop-in.
+                                 lists real mail-config dirs (was EROFS).
+PKG     debian/* (7 fixes)        .deb now builds + installs + units run:
+                                 - install -> ktc-mail.install (debhelper
+                                   ignored the bare name)
+                                 - added debian/changelog
+                                 - control: python3-setuptools Build-Depends
+                                 - rules: --buildsystem=pybuild +
+                                   exec-bit override for service .py scripts
+                                 - ktc-mail.install: ship audit-export
+                                   units (postinst enables the timer)
+                                 - postinst: /var/lib/ktc-mail 0770
+                                 - setup.py: console_scripts -> /usr/bin/ktc-mail
+                                 VERIFIED by build+install in qemu/kvm
+                                 Debian 12 VM (systemd-analyze verify clean,
+                                 metrics/audit subcommands run as ktc-mail).
+
+# ── Feature parity work (bare-metal vs reference Docker suite) ──────
+A-1  ClamAV        config_renderer: rspamd antivirus module -> clamd socket.
+                  control: +clamav-daemon. Reuses existing milter, no amavis.
+                  VERIFIED in VM (renders CLAMAV_VIRUS; clamav Depends install).
+A-2  Greylisting   already wired (rspamd milter { greylisting=true } + redis).
+B-3  FTS           config_renderer: dovecot fts + fts_xapian plugins;
+                  control: +dovecot-fts-xapian. VERIFIED in VM.
 
 # ── Already implemented + verified (was falsely marked missing) ──
-- Remote audit export (syslog UDP/TCP/TLS + SIEM JSON): audit_export.py
-  + cli `ktc-mail audit export` + systemd service/timer. Integration
-  verified this session (fake UDP listener: 2 forwarded, 2nd run 0).
-- Recovery codes + break-glass (Phase 5): mfa.py / breakglass.py / admin routes.
-- session_version enforced -> MFA change invalidates sessions.
-- 7 DNS adapters real; Namecheap not implemented (README corrected).
-- Jinja autoescape ON -> template output HTML-escaped.
-- `exporter.py` CRIT-4: uses `CERT_NAME` constant.
+- Remote audit export: audit_export.py + cli + systemd + 5 unit tests.
+  Integration verified (fake UDP: 2 forwarded, 2nd run 0).
+- Recovery codes + break-glass; session_version enforced.
+- 7 DNS adapters real; Namecheap stub by design.
+- Jinja autoescape ON.
 
 # ── Open / remaining ──────────────────────────────────────────────
-1. MED-6 broad `except Exception:` (19 sites) — deferred audit, not a runtime blocker.
-2. Operator decisions still required (README "before production"):
-   backup destination, SIEM target drop-in, compliance/log-retention.
-3. See PRODUCTION_READINESS.md "Production Roadmap" for the full
-   Critical→Low phased list + the reference Docker Compose suite comparison.
+1. MED-6 broad `except Exception:` (19 sites) — deferred, not a blocker.
+2. Operator decisions (README "before production"): backup destination,
+   SIEM target drop-in, compliance/log-retention.
+3. C-4 OIDC/LDAP auth backend — NOT done.
+4. D-5 Multi-domain + SQL mailbox store — structural epic, needs green-light.
+5. BX Prometheus alert rules + Grafana dashboard + OpenAPI — NOT done.
+6. See PRODUCTION_ROADMAP.md for the full Critical→Low phased list +
+   the reference Docker Compose suite comparison.
 
-# ── Next actions (in priority order) ──────────────────────────────
-1. Build + install the .deb in a throwaway VM (C-0.1) — the only
-   thing between "code works" and "server ships".
+# ── Next actions (priority order) ─────────────────────────────────
+1. C-4 OIDC/LDAP (or D-5 multi-domain/SQL — owner's call).
 2. (optional) MED-6 broad-except sweep.
-3. Verify systemd units parse: systemd-analyze verify systemd/*.service *.timer
+3. Resolve clean-scaffold vs clean-scaffold-v2 branch naming on GitHub.
 
 # ── Philosophy notes ────────────────────────────────────────────
-- "Talk is cheap. Show me the code." This file lists only what was
-  verified by reading the actual file + running the code this session.
-- "Surface problems first." Prior green claims were a broken window;
-  this rewrite removes the fake-green.
-- Atomic-write fix applied once at the source (config.py helpers) and
-  consumed by every caller — deletion over addition.
+- "Talk is cheap. Show me the code." Only what was read + run is listed.
+- "Surface problems first." Fake-green claims are a broken window.
+- Atomic-write fix applied once at source, consumed by every caller.
+- Verification lives in a real qemu/kvm Debian 12 VM, not the host.

@@ -1,13 +1,14 @@
 # KTC Mail — Production Readiness Status
 
-**Last Updated:** 2026-07-09 (post commit, 237debd)
-**Branch:** `clean-scaffold` (committed at `237debd`, pushed to origin)
-**Base Commit:** 237debd
+**Last Updated:** 2026-07-10 (post ClamAV + FTS parity work)
+**Branch:** `clean-scaffold-v2` (mailcow-free history)
+**Base Commit:** ab1de47
 
-> NOTE: earlier versions of this file falsely claimed `main`@`527603e`/`ed8afd7`
-> and "All CRIT/HIGH/MEDIUM fixed". Those claims were WRONG — the
-> branch was `clean-scaffold` and several real bugs were still open. This
-> rewrite reflects the actual tree state as of 2026-07-09.
+> NOTE: this project bans the word "mailcow" from code/docs/commits/GitHub.
+> Docs use "the reference Docker Compose mail suite". The original
+> `clean-scaffold` branch still has a historical commit with the banned
+> word; it could not be force-pushed (GitHub branch protection). Work
+> continues on `clean-scaffold-v2`.
 
 ---
 
@@ -23,6 +24,10 @@
 | DEP | `python3-venv` in bootstrap but unused (no venv anywhere) | Removed from bootstrap | bootstrap read |
 | WIRING | `ktc-mail-audit-export.timer` never enabled in postinst → remote audit export never ran | Added to postinst `systemctl enable` list | postinst read |
 | WIRING | audit-export `.service` blank `Environment=` overrode ambient config (footgun) | Replaced with drop-in documentation comment | service file read |
+| PKG | `.deb` did not build/install (install file misnamed, no changelog, missing entry point, audit-export units not shipped, /var/lib perms) | 7 packaging fixes in `debian/`; VERIFIED by build+install in qemu/kvm Debian 12 VM (systemd-analyze verify clean; `/usr/bin/ktc-mail` resolves; metrics/audit run as ktc-mail user) | `dpkg-buildpackage` + `dpkg -i` in VM |
+| A-1 | No antivirus (ClamAV) | rspamd `antivirus` module -> clamd socket; `control` +clamav-daemon. Reuses existing milter, no amavis. | render check in VM: CLAMAV_VIRUS present |
+| A-2 | Greylisting absent | already wired: rspamd `milter { greylisting=true }` + redis backend | source-verified |
+| B-3 | No full-text search | Dovecot `fts` + `fts_xapian` plugins; `control` +dovecot-fts-xapian | render check in VM: fts_xapian present |
 
 ---
 
@@ -126,25 +131,23 @@ maturity gap is the dominant fact — do NOT expect feature parity.
 | OIDC/LDAP auth | **NO** (explicitly future) | yes (LDAP/OIDC) |
 | Multiple domains / mailbox UI | **partial** (single-domain profile; user CRUD present) | yes (full multi-domain + SQL mailbox DB) |
 | Web admin GUI | yes (FastAPI + Jinja) | yes (PHP/Symfony) |
+| Antivirus (ClamAV) | **yes** (rspamd -> clamd) | yes |
+| Greylisting | **yes** (rspamd) | yes |
+| Full-text search | **yes** (fts-xapian) | yes (Solr/ES) |
 | Mobile/ActiveSync | **NO** | yes (SOGo ActiveSync) |
-| Greylisting | **NO** (now wired via Rspamd) | yes |
-| Full-text search | **NO** (Dovecot solr/elasticsearch not wired) | yes (Solr/ES) |
 | Containerization | **NO** (by design) | yes (core product) |
 
+
 ### Functional gaps KTC Mail MUST close before it is "reference-suite-class"
-1. **ClamAV Antivirus** — KTC renders no AV hook into Postfix/
-   Rspamd. The reference suite ships ClamAV. For a public-facing MX this
-   is a real gap (malware attachment defense).
-2. **Multi-domain + SQL mailbox store** — KTC is single-domain
+1. **Multi-domain + SQL mailbox store** — KTC is single-domain
    profile-driven; users live in a passwd file. The reference suite runs a
    MariaDB-backed multi-domain tenant model. KTC's user_manager is
    real but flat.
-3. **OIDC/LDAP** — KTC says "future auth backend". The reference
+2. **OIDC/LDAP** — KTC says "future auth backend". The reference
    suite has it now.
-4. **ActiveSync / mobile** — KTC wires SOGo but not SOGo's
+3. **ActiveSync / mobile** — KTC wires SOGo but not SOGo's
    ActiveSync; no EAS.
-5. **Greylisting + full-text search** — greylisting now wired via
-   Rspamd; full-text search still absent in KTC.
+4. (Greylisting + ClamAV + full-text search are DONE this cycle.)
 
 ### Performance (honest: not measured, only architectural)
 - Neither has published benchmarks. The reference suite's 10 years of
@@ -184,13 +187,12 @@ maturity gap is the dominant fact — do NOT expect feature parity.
   PRODUCTION_ROADMAP.md are done (build+install the .deb, set the
   expose/TLS story, set a backup destination).
 - KTC is NOT feature-complete vs the reference suite. The missing
-  ClamAV / multi-domain / OIDC / ActiveSync / greylisting /
-  FTS are the honest gaps. Closing them is future work, not
-  "finish the review".
+  multi-domain / OIDC / ActiveSync are the honest gaps. Closing them
+  is future work, not "finish the review".
 
 ---
 
-**Branch:** `clean-scaffold`
-**Remote:** `origin/clean-scaffold` (committed at `237debd`, pushed)
-**Next:** build + install the .deb in a throwaway VM (C-0.1 in Roadmap),
+**Branch:** `clean-scaffold-v2`
+**Remote:** `origin/clean-scaffold-v2` (committed at `ab1de47`, pushed)
+**Next:** C-4 OIDC/LDAP (or D-5 multi-domain/SQL — owner's call);
 then MED-6 sweep if desired.
