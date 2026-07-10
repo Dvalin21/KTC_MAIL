@@ -1,0 +1,11 @@
+ktc-mail (1.0.0) unstable; urgency=medium
+
+  * Fix packaging so the .deb installs and units run:
+    - rename debian/install to debian/ktc-mail.install (debhelper ignored bare name)
+    - add audit-export.service/.timer to install file (postinst enables them)
+    - add console_scripts entry point (ktc-mail launcher was missing)
+    - make service .py scripts executable via override_dh_fixperms
+    - /var/lib/ktc-mail now 0770 (ktc-mail user must write state)
+    - add debian/changelog + python3-setuptools Build-Depends
+
+ -- KTC Mail Maintainers <admin@example.com>  Fri, 10 Jul 2026 00:00:00 +0000

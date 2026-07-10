@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# M-08: Create ktc-mail system user (no login, no home)
+adduser --system --group --no-create-home --quiet ktc-mail 2>/dev/null || true
+# Allow reading Let's Encrypt TLS certs (genuinely optional — ssl-cert group may not exist)
+adduser ktc-mail ssl-cert 2>/dev/null || true
+
+install -d -m 0750 -o root -g ktc-mail /etc/ktc-mail /etc/ktc-mail/dkim
+install -d -m 0770 -o root -g ktc-mail /var/lib/ktc-mail
+# Setup GUI and admin server need root to write Postfix/Dovecot configs;
+# rate-limiter and exporter use ktc-mail user.
+systemctl daemon-reload
+systemctl enable ktc-mail-setup.service ktc-mail-firewall-monitor.timer ktc-mail-acme-renew.timer ktc-mail-backup.timer ktc-mail-exporter.timer ktc-mail-rate-limit.service ktc-mail-audit-export.timer
+systemctl restart ktc-mail-setup.service
+
+# Apply default SSH policy (key-only) if no custom config exists
+if [[ ! -f /etc/ssh/sshd_config.d/ktc-mail.conf ]]; then
+  /usr/lib/ktc-mail/ssh_policy.py apply 2>/dev/null || true
+fi
+
+# Load AppArmor profiles (conditional — AppArmor may not be present)
+if command -v aa-enforce &>/dev/null; then
+    for prof in /etc/apparmor.d/usr.lib.ktc-mail.*; do
+        if [[ -f "$prof" ]]; then
+            name="$(basename "$prof")"
+            if ! apparmor_parser -r "$prof" 2>&1; then
+                echo "ERROR: apparmor_parser failed for $name" >&2
+                exit 1
+            fi
+            if ! aa-enforce "$name" 2>&1; then
+                echo "ERROR: aa-enforce $name failed — profile not enforcing" >&2
+                exit 1
+            fi
+            echo "AppArmor: $name enforced"
+        fi
+    done
+elif command -v aa-complain &>/dev/null; then
+    # If only complain mode tools are available, load in complain mode
+    for prof in /etc/apparmor.d/usr.lib.ktc-mail.*; do
+        if [[ -f "$prof" ]]; then
+            if ! apparmor_parser -r "$prof" 2>&1; then
+                echo "ERROR: apparmor_parser failed for $(basename "$prof")" >&2
+                exit 1
+            fi
+        fi
+    done
+fi
+
+# Recommend unattended-upgrades package
+if ! dpkg -l unattended-upgrades &>/dev/null 2>&1; then
+    echo ""
+    echo "  Recommendation: Install unattended-upgrades for automatic security updates."
+    echo "    apt-get install unattended-upgrades"
+    echo "  KTC Mail provides a config at /etc/apt/apt.conf.d/50ktc-mail-unattended-upgrades"
+    echo ""
+fi
+
+cat <<'MSG'
+
+╔═════════════════════════════════════════════════════════╗
+║  KTC Mail setup GUI is available at                    ║
+║                                                         ║
+║     http://SERVER_IP:8080                                ║
+║                                                         ║
+║  Complete the DNS and TLS wizard before enabling         ║
+║  production mail flow.                                   ║
+║                                                         ║
+║  Three things you need:                                  ║
+║    1. Your domain (e.g. example.com)                     ║
+║    2. Your DNS provider API key                          ║
+║    3. Your admin email address                           ║
+║                                                         ║
+║  Everything else is auto-detected.                       ║
+╚═════════════════════════════════════════════════════════╝
+MSG
