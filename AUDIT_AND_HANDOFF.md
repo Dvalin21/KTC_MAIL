@@ -3,15 +3,15 @@
 
 # ── Current repo state ─────────────────────────────────────────────
 Tree:      CLEAN (all review + parity work committed + pushed)
-Branch:    clean-scaffold-v2   (mailcow-free history; see NOTE)
+Branch:    clean-scaffold-v2   (banned-name-free history; see NOTE)
 HEAD:      ab1de47
 Remote:    origin/clean-scaffold-v2 (ab1de47 present)
 
-> NOTE: the word "mailcow" is banned from this project (code, docs,
+> NOTE: the banned project name is forbidden from this project (code, docs,
 > commits, GitHub) per owner directive. All docs use the neutral
 > descriptor "the reference Docker Compose mail suite". The original
 > `clean-scaffold` branch still contains a historical commit whose
-> message has the banned word; it could not be force-pushed (GitHub
+> message has the forbidden name; it could not be force-pushed (GitHub
 > branch protection blocked it). `clean-scaffold-v2` is the clean
 > replacement. Delete `clean-scaffold` + rename `v2` when convenient.
 
