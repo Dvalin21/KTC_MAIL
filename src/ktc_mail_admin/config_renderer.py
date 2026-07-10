@@ -502,8 +502,26 @@ milter {{
   header = true;
   greylisting = true;
 }}
-"""
 
+# ── Antivirus (ClamAV via rspamd) ────────────────────────
+# Reuses the existing rspamd milter — no separate amavis/milter
+# needed. rspamd queries clamd over its unix socket and rejects
+# messages that scan as infected. If clamd is down, rspamd
+# soft-fails (passes mail) rather than blocking the queue.
+antivirus {{
+  clamav {{
+    symbol = "CLAMAV_VIRUS";
+    type = "clamav";
+    servers = "unix:/run/clamav/clamd.ctl";
+    patterns = ["*.zip", "*.jar", "*.exe", "*.js", "*.doc", "*.docx",
+                "*.xls", "*.xlsx", "*.ppt", "*.pptx", "*.pdf", "*.html"];
+    max_size = 20971520;
+    log_clean = true;
+    action = "reject";
+  }}
+}}
+
+"""
 
 def render_rspamd_dkim_signing_conf(profile: SetupProfile) -> str:
     """Generate /etc/rspamd/local.d/dkim_signing.conf."""
