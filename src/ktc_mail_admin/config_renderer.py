@@ -266,11 +266,12 @@ def _dovecot_passdb(profile: SetupProfile) -> str:
     passwd_file (default): read /etc/dovecot/passwd.
     ldap: query an external directory via dovecot-ldap.conf.ext.
     oauth2: OIDC bearer-token auth for IMAP (parity with SOGo webmail
-      SSO). Requires dovecot-auth-oauth2 + an external IdP. Dovecot
-      validates the presented OAuth2 token against the IdP introspection
-      endpoint. If oidc_issuer is empty the rendered block points at a
-      blank URL and Dovecot fails to start — a real operator error,
-      surfaced, not hidden.
+      SSO). Requires the dovecot oauth2 driver, which ships in
+      dovecot-core on Debian 13 trixie (NOT available on Debian 12).
+      Dovecot validates the presented OAuth2 token against the IdP
+      introspection endpoint. If oidc_issuer is empty the rendered
+      block points at a blank URL and Dovecot fails to start — a real
+      operator error, surfaced, not hidden.
     """
     if profile.auth_backend == "ldap":
         return (
