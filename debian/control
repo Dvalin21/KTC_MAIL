@@ -2,7 +2,7 @@ Source: ktc-mail
 Section: mail
 Priority: optional
 Maintainer: KTC Mail Maintainers <admin@example.com>
-Standards-Version: 4.6.2
+Standards-Version: 4.7.2
 Build-Depends: debhelper-compat (= 13), dh-python, python3, python3-setuptools
 Rules-Requires-Root: no
 
@@ -12,7 +12,7 @@ Depends: ${misc:Depends}, ${python3:Depends}, python3,
  python3-fastapi, python3-uvicorn, python3-jinja2, python3-itsdangerous,
  python3-qrcode, python3-starlette, python3-redis,
  postfix, dovecot-core, dovecot-imapd, dovecot-lmtpd, dovecot-sieve,
- dovecot-managesieved, rspamd, clamav-daemon, dovecot-fts-xapian, dovecot-ldap, redis-server, fail2ban, nginx, nftables, sogo, dovecot-auth-oauth2,
+ dovecot-managesieved, rspamd, clamav-daemon, dovecot-fts-xapian, dovecot-ldap, redis-server, fail2ban, nginx, nftables, sogo,
  ca-certificates, curl, jq, certbot, openssl, unattended-upgrades
 Suggests: python3-boto3
 Recommends: python3-boto3
