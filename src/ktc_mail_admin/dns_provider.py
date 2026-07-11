@@ -1038,11 +1038,36 @@ def sync_records(
     transport: DnsTransport,
     domain: str,
     dry_run: bool = False,
+    managed: set[str] | None = None,
+    owned_keys: set[str] | None = None,
 ) -> list[str]:
     """Sync local DNS records to the provider via diff+apply.
 
     Returns list of action descriptions for logging/display.
+
+    managed: when non-None, only records whose FQDN is in this
+      set are touched. Remote records NOT in `managed` are left
+      alone (user-maintained) — never deleted, never overwritten.
+      An empty `managed` list means "manage nothing"; pass None
+      (the default) to manage everything (original behaviour).
+
+    owned_keys: set of record keys (type:name[:hash]) that KTC
+      previously pushed (from dns-state.json). A remote record is
+      only DELETED if its key is in owned_keys — so a record the
+      operator added by hand at the registrar survives every sync.
+      Pass None to fall back to deleting any remote-not-local
+      (original behaviour; not recommended).
     """
+    # Normalise: strip trailing dots so comparisons are tolerant.
+    mset = None
+    if managed is not None:
+        mset = {n.rstrip(".") for n in managed}
+
+    def _is_managed(rec: DnsRecord) -> bool:
+        if mset is None:
+            return True
+        return rec.name.rstrip(".") in mset
+
     remote_records = transport.list_all(domain)
     remote_set = DnsRecordSet(domain)
     for rec in remote_records:
@@ -1051,17 +1076,33 @@ def sync_records(
     diff = local.diff(remote_set)
     actions: list[str] = []
 
+    # Never delete a record the operator manages themselves, and never
+    # delete a record KTC did not previously own (hand-added survives).
     for record in diff.to_delete:
+        if not _is_managed(record):
+            continue
+        if owned_keys is not None and record.key() not in owned_keys:
+            actions.append(
+                f"keep (unowned): {record.type} {record.name}")
+            continue
         if not dry_run:
             transport.delete(record)
         actions.append(f"delete: {record.type} {record.name}")
 
     for record in diff.to_create:
+        if not _is_managed(record):
+            actions.append(
+                f"skip (unmanaged): {record.type} {record.name}")
+            continue
         if not dry_run:
             transport.create(record)
         actions.append(f"create: {record.type} {record.name} {record.value}")
 
     for old, new in diff.to_update:
+        if not _is_managed(new):
+            actions.append(
+                f"skip (unmanaged): {new.type} {new.name}")
+            continue
         if not dry_run:
             transport.update(old, new)
         actions.append(f"update: {new.type} {new.name} → {new.value}")
