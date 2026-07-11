@@ -247,64 +247,37 @@ def deploy_hook_certonly(profile: SetupProfile, dry_run: bool = False) -> int:
 
     # Only update TLSA if configured
     if profile.update_tlsa_on_renewal:
-        tlsa_failures = 0
-        tlsa_records = generate_tlsa_records(profile, cert_path)
-        if dry_run:
-            for rec in tlsa_records:
-                print(f"dry-run: TLSA {rec.name} → {rec.value}")
-        else:
-            # Update the setup profile's DNS records with new TLSA values
-            setup_data = read_json(SETUP_PATH)
-            dns_records = setup_data.get("dns_records", [])
-
-            # Update existing TLSA records in setup profile
-            for tlsa in tlsa_records:
-                found = False
-                for existing in dns_records:
-                    if (existing.get("type") == "TLSA" and
-                            existing.get("name") == tlsa.name):
-                        existing["value"] = tlsa.value
-                        found = True
-                        break
-                if not found:
-                    dns_records.append({
-                        "type": "TLSA",
-                        "name": tlsa.name,
-                        "value": tlsa.value,
-                        "purpose": tlsa.purpose,
-                    })
-
-            setup_data["dns_records"] = dns_records
-            save_json_private(SETUP_PATH, setup_data)
-
-            # Push TLSA updates via DNS provider
-            tlsa_failures = 0
+        from . import dns_provider as dns_mod
+        from .config import read_json, DNS_STATE_PATH
+        setup_data = read_json(SETUP_PATH)
+        secrets_path = CONFIG_DIR / "secrets.json"
+        secrets = read_json(secrets_path) if secrets_path.exists() else {}
+        transport = dns_mod.provider_from_config(
+            setup_data, secrets, dry_run=False,
+        )
+        local = profile.generate_dns_records(include_tlsa=True)
+        # owned_keys: only TLSA KTC previously pushed may be
+        # deleted on rollover; never touch operator-added records.
+        owned_keys: set[str] = set()
+        if DNS_STATE_PATH.exists():
             try:
-                from . import dns_provider as dns_mod
-                secrets_path = CONFIG_DIR / "secrets.json"
-                secrets = read_json(secrets_path) if secrets_path.exists() else {}
-                transport = dns_mod.provider_from_config(
-                    setup_data, secrets, dry_run=False,
-                )
-                for tlsa in tlsa_records:
-                    print(f"dns: updating TLSA {tlsa.name}")
-                    # Try to find existing record first
-                    existing = None
-                    for rec in transport.list_all(profile.domain):
-                        if rec.type == "TLSA" and rec.name == tlsa.name:
-                            existing = rec
-                            break
-                    if existing:
-                        transport.update(existing, tlsa)
-                    else:
-                        transport.create(tlsa)
-            except (OSError, ValueError, ConnectionError, TimeoutError) as exc:
-                print(f"dns ERROR: TLSA update failed: {exc}", file=sys.stderr)
-                tlsa_failures += 1
-            except Exception as exc:
-                print(f"dns ERROR: unexpected TLSA failure: {exc}", file=sys.stderr)
-                tlsa_failures += 1
-                raise
+                st = read_json(DNS_STATE_PATH)
+                for rec in st.get("records", []):
+                    owned_keys.add(
+                        f"{str(rec.get('type','')).upper()}:"
+                        f"{str(rec.get('name','')).rstrip('.')}")
+            except (ValueError, OSError):
+                pass
+        actions = dns_mod.sync_records(
+            local, transport, profile.domain,
+            dry_run=dry_run, owned_keys=owned_keys,
+        )
+        tlsa_failures = sum(
+            1 for a in actions if a.startswith("delete:")
+            and "TLSA" not in a and "keep" not in a)
+        for a in actions:
+            if "TLSA" in a or a.startswith("update:") or a.startswith("create:"):
+                print(f"dns: {a}")
         if tlsa_failures:
             print("deploy-hook abort: TLSA update failed; not reloading services",
                   file=sys.stderr)

@@ -688,6 +688,16 @@ class SetupProfile:
 
     dmarc_policy: str = "none"  # none | quarantine | reject
 
+    # ── DNS automation scope ──────────────────────────────
+    # Empty = KTC manages EVERY record it computes (the default: full
+    # auto-populate). Non-empty = only these FQDNs are touched by
+    # `ktc-mail dns apply`; any record at the registrar whose name
+    # is NOT in this set is left alone (user-managed, never deleted
+    # or overwritten). Example: ["mail.example.com."] keeps the
+    # root/SPF/DMARC/MX under your manual control while KTC
+    # still manages the rest.
+    dns_managed: list[str] = field(default_factory=list)
+
     # ── Auth backend ─────────────────────────────────────────────
     # "passwd_file" (default): Dovecot reads /etc/dovecot/passwd.
     # "ldap": Dovecot queries an LDAP directory (passdb driver=ldap).
@@ -794,11 +804,19 @@ class SetupProfile:
 
     # ── DNS record generation ─────────────────────────────────────────
 
-    def generate_dns_records(self) -> DnsRecordSet:
+    def generate_dns_records(self, include_tlsa: bool = False) -> DnsRecordSet:
         """Produce the complete DNS record set from this profile.
 
         Calling this generates a FRESH set. It does NOT modify any
         stored state. The caller decides whether to push it.
+
+        include_tlsa: when True, append TLSA records (3 1 1) for
+          every mail service endpoint. Requires a live certificate at
+          certificate_path(); if absent, TLSA is silently skipped so
+          the FIRST `dns apply` (before any cert exists) does not fail.
+          On every later run (renewal etc.) the digest is recomputed
+          and sync_records() upserts it by name — so TLSA tracks
+          the cert automatically, no manual touch.
         """
         rs = DnsRecordSet(self.domain)
 
@@ -918,6 +936,16 @@ class SetupProfile:
             purpose="MTA-STS policy advertisement",
         ))
 
+        # TLSA (DANE) — only when a certificate exists. Appended
+        # here (not in acme_manager) so a single sync_records()
+        # call publishes + renews TLSA alongside everything else.
+        if include_tlsa:
+            from . import acme_manager
+            cert_path = acme_manager.certificate_path()
+            if cert_path.exists():
+                for rec in acme_manager.generate_tlsa_records(self, cert_path):
+                    rs.add(rec)
+
         return rs
 
     def generate_dns_plan(self) -> str:
@@ -962,6 +990,7 @@ class SetupProfile:
             "open_ports": self.security.actual_open_ports,
             "cert_san_names": self.cert_san_names,
             "dmarc_policy": self.dmarc_policy,
+            "dns_managed": list(self.dns_managed),
             "domains": list(self.domains),
             "mailbox_store": self.mailbox_store,
         }
@@ -1016,6 +1045,10 @@ class SetupProfile:
             reload_services=tuple(data.get("reload_services", ["postfix", "dovecot", "nginx"])),
             update_tlsa_on_renewal=bool(data.get("update_tlsa_on_renewal", True)),
             dmarc_policy=data.get("dmarc_policy", "none"),
+            dns_managed=[
+                d for d in data.get("dns_managed", [])
+                if isinstance(d, str) and d
+            ],
             domains=[
                 d for d in data.get("domains", [])
                 if isinstance(d, str) and _valid_domain(d)

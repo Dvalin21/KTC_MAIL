@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import replace as dataclass_replace
 from pathlib import Path
 
 from .config import SETUP_PATH, SECRETS_PATH, STATE_DIR, setup_logging
@@ -71,40 +72,61 @@ def cmd_dns(args: argparse.Namespace) -> int:
     profile = SetupProfile.from_dict(setup)
     secrets = {} if args.dry_run else read_json(args.secrets)
     transport = provider_from_config(setup, secrets, dry_run=args.dry_run)
+    # None => manage everything (default). Non-empty => only these FQDNs.
+    managed = None if not profile.dns_managed else set(profile.dns_managed)
+    # TLSA is appended whenever a cert already exists; on the first
+    # `dns apply` (no cert yet) it is skipped, not failed.
+    include_tlsa = not args.dry_run or True  # include when cert present
+    plan_only = args.dns_cmd == "plan"
+    verify_only = args.dns_cmd == "verify"
 
-    if args.dns_cmd == "plan":
-        print(profile.generate_dns_plan())
-        print()
-        print(ptr_report(profile))
-        return 0
+    rc = 0
+    for domain in profile.all_domains():
+        # Rebind the profile's primary domain so generate_dns_records()
+        # builds the correct FQDNs for this (alias) domain.
+        p = dataclass_replace(profile, domain=domain) if domain != profile.domain else profile
+        if plan_only:
+            print(p.generate_dns_plan())
+            print()
+            print(ptr_report(p))
+            continue
+        local = p.generate_dns_records(include_tlsa=include_tlsa)
+        if verify_only:
+            issues = verify_records(local, transport, domain)
+            if issues:
+                for issue in issues:
+                    print(f"DRIFT: {issue}", file=sys.stderr)
+                rc = 1
+            else:
+                print(f"DNS verification [{domain}]: all records match provider state.")
+            continue
+        # Records KTC previously pushed (from dns-state.json). A remote
+        # record NOT in this set is operator-added and survives sync.
+        owned_keys: set[str] = set()
+        if DNS_STATE_PATH.exists():
+            try:
+                st = read_json(DNS_STATE_PATH)
+                for rec in st.get("records", []):
+                    owned_keys.add(
+                        f"{rec.get('type','').upper()}:"
+                        f"{str(rec.get('name','')).rstrip('.')}")
+            except (ValueError, OSError):
+                pass
 
-    if args.dns_cmd == "apply":
-        local = profile.generate_dns_records()
-        actions = sync_records(local, transport, profile.domain, args.dry_run)
+        # apply
+        actions = sync_records(
+            local, transport, domain, args.dry_run, managed, owned_keys)
         for action in actions:
-            print(action)
+            print(f"[{domain}] {action}")
         if not args.dry_run:
             state = {
-                "domain": profile.domain,
+                "domain": domain,
                 "records": [r.to_dict() for r in local],
-                "hash": local.content_hash(),
                 "updated_at": int(time.time()),
                 "actions": actions,
             }
             save_json_private(DNS_STATE_PATH, state)
-        return 0
-
-    if args.dns_cmd == "verify":
-        local = profile.generate_dns_records()
-        issues = verify_records(local, transport, profile.domain)
-        if issues:
-            for issue in issues:
-                print(f"DRIFT: {issue}", file=sys.stderr)
-            return 1
-        print("DNS verification: all records match provider state.")
-        return 0
-
-    return 1
+    return rc
 
 
 def cmd_dns_providers(args: argparse.Namespace) -> int:
