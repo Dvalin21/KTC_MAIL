@@ -691,8 +691,12 @@ class SetupProfile:
     # ── Auth backend ─────────────────────────────────────────────
     # "passwd_file" (default): Dovecot reads /etc/dovecot/passwd.
     # "ldap": Dovecot queries an LDAP directory (passdb driver=ldap).
-    #   OIDC is NOT Dovecot-native — requires an external IdP (Keycloak)
-    #   + OAuth2 proxy and is out of scope for this pass.
+    # OIDC scope is SOGo WEBMAIL SSO ONLY (sogo ships native OIDC).
+    #   IMAP/OAuth2 (passdb driver=oauth2) is NOT available on stock
+    #   Debian 12 bookworm — the dovecot oauth2 plugin is not packaged
+    #   (verified: apt has no dovecot-auth-oauth2; apt-get install of a
+    #   .deb declaring that Depends fails). IMAP keeps password/LDAP
+    #   auth. Don't add a dovecot oauth2 passdb on this target.
     auth_backend: str = "passwd_file"
     ldap_uri: str = ""            # ldap://ldap.example.com:389
     ldap_bind_dn: str = ""        # cn=ktc-mail,ou=services,dc=example,dc=com
