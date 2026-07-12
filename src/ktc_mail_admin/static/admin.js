@@ -18,3 +18,17 @@ function showPasswordForm(email) {
 function hidePasswordForm() {
   document.getElementById("password-dialog").style.display = "none";
 }
+
+// Backup destination selector: show credential fields only for env-backed
+// targets (s3/b2). Local + SFTP need none.
+document.addEventListener("DOMContentLoaded", function () {
+  var sel = document.getElementById("backend");
+  var cred = document.getElementById("cred-fields");
+  if (!sel || !cred) return;
+  function toggle() {
+    cred.style.display = (sel.value === "s3" || sel.value === "b2")
+      ? "block" : "none";
+  }
+  sel.addEventListener("change", toggle);
+  toggle();
+});

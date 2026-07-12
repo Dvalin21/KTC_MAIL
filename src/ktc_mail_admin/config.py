@@ -57,6 +57,9 @@ SUBPROCESS_TIMEOUT = 15
 BACKUP_CONFIG_PATH = CONFIG_DIR / "backup.json"
 BACKUP_STATE_PATH = STATE_DIR / "backup-state.json"
 RESTIC_PASSWORD_PATH = CONFIG_DIR / "restic-password"
+# Timer env drop-in: backend creds (AWS_*/B2_*) exported to restic by the
+# systemd unit. 0600; mode is never world-readable.
+BACKUP_ENV_PATH = CONFIG_DIR / "backup-env"
 
 # Default backup source paths (mailbox data first — that's the important one)
 BACKUP_DEFAULT_PATHS: tuple[str, ...] = (
