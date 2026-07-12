@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .config import load_profile
+from .config import atomic_write_text, load_profile
 
 PASSWD_FILE = Path("/etc/dovecot/passwd")
 ALIAS_FILE = Path("/etc/postfix/virtual_alias")
@@ -105,15 +105,8 @@ def _read_lines(path: Path) -> list[str]:
 
 
 def _write_lines(path: Path, lines: list[str]) -> None:
-    """Write lines to file atomically with fsync."""
-    tmp = path.with_suffix(".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
-    try:
-        os.write(fd, "".join(lines).encode("utf-8"))
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    tmp.rename(path)
+    """Write lines to file atomically with fsync (central helper)."""
+    atomic_write_text(path, "".join(lines), mode=0o640)
 
 
 def _dovecot_reload() -> None:

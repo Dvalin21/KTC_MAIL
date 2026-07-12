@@ -33,7 +33,7 @@
   <div class="card" style="display:flex;align-items:center;justify-content:center">
     <div>
       <form method="post" action="/queue/flush" style="display:inline"
-            onsubmit="return confirm('Flush entire queue?')">
+            data-confirm="Flush entire queue?">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <button type="submit" class="secondary">Flush all</button>
       </form>
@@ -63,7 +63,7 @@
         </td>
         <td style="text-align:right">
           <form method="post" action="/queue/del" style="display:inline"
-                onsubmit="return confirm('Delete {{ entry.queue_id }}?')">
+                data-confirm="Delete {{ entry.queue_id }}?">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="queue_id" value="{{ entry.queue_id }}">
             <button type="submit" class="danger small">Delete</button>

@@ -45,9 +45,11 @@ from typing import Any
 import uvicorn
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from jinja2 import Environment, FileSystemLoader
 from starlette.middleware.sessions import SessionMiddleware
+from pathlib import Path as _Path
 
 from . import user_manager as um
 from . import mfa as mfa_mod
@@ -65,6 +67,7 @@ from .config import (
     read_json,
     save_json_private,
     atomic_write_bytes,
+    atomic_write_text,
     setup_logging,
     SetupProfile,
     _EMAIL_RE,
@@ -641,6 +644,11 @@ def _login_rate_clear(ip: str) -> None:
 def create_app() -> FastAPI:
     """Create and configure the FastAPI admin application."""
     app = FastAPI(title="KTC Mail Admin")
+    app.mount(
+        "/static",
+        StaticFiles(directory=str(_Path(__file__).resolve().parent / "static")),
+        name="static",
+    )
 
     # ── Session key ───────────────────────────────────────────────────
     # Generate a random key on first start, persist it so sessions
@@ -658,12 +666,7 @@ def create_app() -> FastAPI:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         try:
             # Atomic write with fsync to avoid race window
-            fd = os.open(sk_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            try:
-                os.write(fd, session_key.encode("utf-8"))
-                os.fsync(fd)
-            finally:
-                os.close(fd)
+            atomic_write_text(sk_path, session_key, mode=0o600)
         except OSError:
             logger.exception("writing session key to %s", sk_path)
 
@@ -690,21 +693,16 @@ def create_app() -> FastAPI:
     # Defense-in-depth: limits what resources can load even if an XSS
     # vulnerability exists.
     #
-    # CURRENT STATE: 'unsafe-inline' is used for scripts and styles because:
-    #   - Templates use `onsubmit=` attribute handlers (e.g., login.html, users.html)
-    #   - Inline `<style>` blocks for quick theming
-    #   - No external JS bundles yet
+    # Scripts: 'unsafe-inline' removed — all JS is the external /static/admin.js
+    # bundle (confirm dialogs via addEventListener, no inline handlers).
+    # Styles: 'unsafe-inline' kept — theming uses inline <style> blocks; no
+    # user-controlled CSS is injected, so the risk is low. Tighten to a
+    # hashed/nonced stylesheet only if external CSS is ever introduced.
     #
-    # MIGRATION PATH (when removing 'unsafe-inline'):
-    #   1. Move all `onsubmit=` → `add_event_listener('submit', ...)` in external JS bundle
-    #   2. Move inline `<style>` → external CSS or <link rel="stylesheet">
-    #   3. Add CSP nonce: generate nonce per-request, pass to templates, use `script-src 'self' 'nonce-{{ nonce }}'`
-    #   4. Test with CSP report-only mode first: `Content-Security-Policy-Report-Only`
-    #
-    # Target CSP after migration:
+    # Target CSP (scripts already here):
     #   default-src 'self'
     #   script-src 'self'
-    #   style-src 'self'
+    #   style-src 'self' 'unsafe-inline'
     #   img-src 'self' data:
     #   frame-ancestors 'none'
     #   form-action 'self'
@@ -715,7 +713,7 @@ def create_app() -> FastAPI:
         if response.media_type and "text/html" in response.media_type:
             response.headers["Content-Security-Policy"] = (
                 "default-src 'self'; "
-                "script-src 'self' 'unsafe-inline'; "
+                "script-src 'self'; "
                 "style-src 'self' 'unsafe-inline'; "
                 "img-src 'self' data:; "
                 "frame-ancestors 'none'; "

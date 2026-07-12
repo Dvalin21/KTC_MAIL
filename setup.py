@@ -19,7 +19,7 @@ setup(
     packages=find_packages(where="src"),
     package_dir={"": "src"},
     package_data={
-        "ktc_mail_admin": ["templates/*.html"],
+        "ktc_mail_admin": ["templates/*.html", "static/*.js"],
     },
     include_package_data=True,
     python_requires=">=3.10",

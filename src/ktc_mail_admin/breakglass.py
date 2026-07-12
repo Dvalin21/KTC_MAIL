@@ -27,6 +27,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .config import atomic_write_text
+
 # Token parity with mfa.py recovery codes: 5 random bytes -> base32.
 _TOKEN_BYTES = 5
 _DEFAULT_TTL = 900  # 15 minutes
@@ -69,14 +71,7 @@ def _write_stored(record: dict[str, Any]) -> None:
     """Atomically write the token record (0400)."""
     import json
 
-    tmp = _BREAKGLASS_PATH.with_suffix(".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o400)
-    try:
-        os.write(fd, json.dumps(record, indent=2).encode("utf-8"))
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    tmp.rename(_BREAKGLASS_PATH)
+    atomic_write_text(_BREAKGLASS_PATH, json.dumps(record, indent=2), mode=0o400)
 
 
 def issue(

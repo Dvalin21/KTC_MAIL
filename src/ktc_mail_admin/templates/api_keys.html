@@ -40,7 +40,7 @@
         <td>{{ key.created_at|datetime_from_ts }}</td>
         <td>{{ key.last_used_at|datetime_from_ts if key.last_used_at else 'never' }}</td>
         <td>
-          <form method="post" action="/api/keys/revoke" onsubmit="return confirm('Revoke this key?')">
+          <form method="post" action="/api/keys/revoke" data-confirm="Revoke this key?">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="id" value="{{ key.id }}">
             <button type="submit" class="danger">Revoke</button>

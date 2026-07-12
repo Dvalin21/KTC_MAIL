@@ -54,7 +54,7 @@
         <td><span class="badge badge-ok">{{ user.quota }}</span></td>
         <td style="text-align:right">
           <form method="post" action="/users/del" style="display:inline"
-                onsubmit="return confirm('Remove {{ user.email }}?')">
+                data-confirm="Remove {{ user.email }}?">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="email" value="{{ user.email }}">
             <button type="submit" class="danger small">Delete</button>
@@ -88,17 +88,5 @@
     </form>
   </div>
 </div>
-
-<script>
-function showPasswordForm(email) {
-  document.getElementById('pw-email').value = email;
-  document.getElementById('pw-input').value = '';
-  var dlg = document.getElementById('password-dialog');
-  dlg.style.display = 'flex';
-}
-function hidePasswordForm() {
-  document.getElementById('password-dialog').style.display = 'none';
-}
-</script>
 
 {% endblock %}

@@ -38,6 +38,8 @@ from .config import (
     CONFIG_DIR,
     RESTIC_PASSWORD_PATH,
     SUBPROCESS_TIMEOUT,
+    atomic_write_bytes,
+    atomic_write_text,
     read_json,
     save_json_private,
 )
@@ -207,24 +209,9 @@ def load_status() -> BackupStatus:
 
 
 def save_status(status: BackupStatus) -> None:
-    """Write backup status atomically. Called after every backup run."""
-    BACKUP_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    # Stored as 0640 so the admin GUI (running as a different user) can
-    # read it. The restic-password file stays 0400.
-    # Use save_json_private for consistent atomic write with fsync.
-    # save_json_private uses 0600, so we need to temporarily use a custom impl
-    # or accept 0600 for status (it's world-readable anyway via API).
-    # For consistency, use the same atomic write pattern.
-    import os
+    """Write backup status atomically via central helper (0640)."""
     payload = json.dumps(status.to_dict(), indent=2) + "\n"
-    tmp = BACKUP_STATE_PATH.with_suffix(".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
-    try:
-        os.write(fd, payload.encode("utf-8"))
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    tmp.rename(BACKUP_STATE_PATH)
+    atomic_write_text(BACKUP_STATE_PATH, payload, mode=0o640)
 
 
 # ── Restic wrapper ──────────────────────────────────────────────────────────
@@ -346,14 +333,7 @@ def write_password(password: str) -> None:
     Uses atomic write with fsync to avoid race window.
     """
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = RESTIC_PASSWORD_PATH.with_suffix(".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o400)
-    try:
-        os.write(fd, (password.strip() + "\n").encode("utf-8"))
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    tmp.rename(RESTIC_PASSWORD_PATH)
+    atomic_write_text(RESTIC_PASSWORD_PATH, password.strip() + "\n", mode=0o400)
 
 
 def password_exists() -> bool:

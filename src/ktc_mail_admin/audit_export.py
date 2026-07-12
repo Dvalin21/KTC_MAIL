@@ -23,6 +23,8 @@ logger = logging.getLogger("ktc-mail.audit")
 import json
 import os
 import socket
+
+from .config import atomic_write_text
 import ssl
 import time
 from dataclasses import dataclass
@@ -123,15 +125,7 @@ def _load_pos(state_path: Path) -> int:
 
 
 def _save_pos(state_path: Path, pos: int) -> None:
-    state_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = state_path.with_suffix(state_path.suffix + ".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
-    try:
-        os.write(fd, str(pos).encode("utf-8"))
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    tmp.rename(state_path)
+    atomic_write_text(state_path, str(pos), mode=0o640)
 
 
 def send_syslog(

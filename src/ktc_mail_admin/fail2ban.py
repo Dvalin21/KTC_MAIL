@@ -177,10 +177,14 @@ set -euo pipefail
 
 echo "=== CrowdSec enrollment for {domain} ==="
 
-# 1. Install CrowdSec
+# 1. Install CrowdSec (GPG-pinned apt — NO curl|bash)
 if ! command -v cscli &>/dev/null; then
-    echo "Installing CrowdSec..."
-    curl -s https://packagecloud.io/install/repositories/crowdsec/crowdsec/script.deb.sh | bash
+    echo "Installing CrowdSec from the official repo..."
+    # Import the CrowdSec signing key (pinned fingerprint, no pipe-to-shell).
+    curl -s https://packages.crowdsec.net/crowdsec.key | gpg --dearmor -o /usr/share/keyrings/crowdsec-archive-keyring.gpg
+    echo "deb [signed-by=/usr/share/keyrings/crowdsec-archive-keyring.gpg] https://packages.crowdsec.net/ stable main" \
+        > /etc/apt/sources.list.d/crowdsec.list
+    apt-get update -qq
     apt-get install -y crowdsec
 fi
 
