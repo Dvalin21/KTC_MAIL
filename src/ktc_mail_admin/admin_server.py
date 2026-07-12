@@ -1058,14 +1058,25 @@ def create_app() -> FastAPI:
         if not validate_csrf(request, csrf_token):
             return RedirectResponse(
                 url="/login?error=Invalid+session+token", status_code=302)
+        # Rate-limit break-glass attempts too — the token is short (~25 bits)
+        # and online-guessable if unthrottled. Mirror the /login pool.
+        ip = client_ip(request)
+        if _login_rate_check(ip):
+            logger.warning("Break-glass rate limit hit: ip=%s", ip)
+            return RedirectResponse(
+                url="/login?error=Too+many+failed+attempts.+Try+again+in+60+seconds",
+                status_code=429,
+            )
         if not token:
             return RedirectResponse(
                 url="/login?error=Break-glass+token+required", status_code=302)
+
 
         from .breakglass import consume as breakglass_consume
         ok, operator = breakglass_consume(token)
         if not ok:
             logger.warning("Failed break-glass login (bad/expired/used token)")
+            _login_rate_record(ip)
             return RedirectResponse(
                 url="/login?error=Invalid+or+expired+break-glass+token",
                 status_code=302)
@@ -1078,6 +1089,7 @@ def create_app() -> FastAPI:
         request.session["break_glass"] = True
         audit_log("login", operator, "login (break-glass)", client_ip(request))
         return RedirectResponse(url="/", status_code=302)
+    @app.get("/logout")
     async def logout(request: Request):
         request.session.clear()
         return RedirectResponse(url="/login", status_code=302)
