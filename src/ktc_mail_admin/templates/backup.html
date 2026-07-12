@@ -91,12 +91,62 @@
 
     {% if not config.repository %}
     <span style="font-size:0.8rem;color:var(--muted);padding:0.5rem 0">
-      Configure backup via the command line:
-      <code style="background:#f1f5f9;padding:0.1rem 0.3rem;border-radius:0.25rem">
-        ktc-mail backup init &lt;repository-url&gt;
-      </code>
+      Configure backup below — no CLI needed.
     </span>
     {% endif %}
+  </div>
+
+  {# ── Configure destination card ── #}
+  <div class="card" style="margin-bottom:1.5rem">
+    <h2>Configure Destination</h2>
+    <form method="post" action="/backup/configure">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label style="display:block;margin:0.75rem 0 0.25rem;font-size:0.85rem">
+        Backend
+      </label>
+      <select name="backend" id="backend" style="width:100%;padding:0.5rem">
+        <option value="local">Local disk</option>
+        <option value="sftp">Network (SFTP / SSH)</option>
+        <option value="s3">S3-compatible (AWS, MinIO, Wasabi…)</option>
+        <option value="b2">Cloud (Backblaze B2)</option>
+      </select>
+
+      <label style="display:block;margin:0.75rem 0 0.25rem;font-size:0.85rem">
+        Repository URL / path
+      </label>
+      <input type="text" name="repository" placeholder="/backup  |  sftp:user@host:/path  |  s3:https://…/bucket  |  b2:bucket:/path"
+             style="width:100%;padding:0.5rem;font-family:monospace" required>
+
+      <label style="display:block;margin:0.75rem 0 0.25rem;font-size:0.85rem">
+        Repository password (encryption key)
+      </label>
+      <input type="password" name="password" placeholder="leave blank to auto-generate"
+             style="width:100%;padding:0.5rem">
+
+      <div id="cred-fields" style="display:none">
+        <label style="display:block;margin:0.75rem 0 0.25rem;font-size:0.85rem">
+          Access key ID
+        </label>
+        <input type="text" name="access_id" autocomplete="off"
+               style="width:100%;padding:0.5rem">
+        <label style="display:block;margin:0.75rem 0 0.25rem;font-size:0.85rem">
+          Secret access key
+        </label>
+        <input type="password" name="access_key" autocomplete="off"
+               style="width:100%;padding:0.5rem">
+      </div>
+
+      <label style="display:flex;align-items:center;gap:0.5rem;margin:1rem 0 0.5rem;font-size:0.85rem">
+        <input type="checkbox" name="enable" value="1" checked>
+        Enable scheduled backups (daily 03:00)
+      </label>
+
+      <button type="submit" class="success" data-confirm="Initialize this backup repository? Existing snapshots on the target are preserved.">
+        Save &amp; initialize
+      </button>
+    </form>
+  </div>
+
 
     {% if not restic_installed %}
     <span style="font-size:0.8rem;color:var(--red);padding:0.5rem 0">

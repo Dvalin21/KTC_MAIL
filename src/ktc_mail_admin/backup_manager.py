@@ -35,14 +35,28 @@ from .config import (
     BACKUP_CONFIG_PATH,
     BACKUP_STATE_PATH,
     BACKUP_DEFAULT_PATHS,
+    BACKUP_ENV_PATH,
     CONFIG_DIR,
     RESTIC_PASSWORD_PATH,
+    SECRETS_PATH,
     SUBPROCESS_TIMEOUT,
     atomic_write_bytes,
     atomic_write_text,
     read_json,
     save_json_private,
 )
+
+# Backend creds that must NOT live in config JSON (which itself gets
+# backed up) or in argv (visible via ps). Stored in the encrypted
+# secrets.json (0600) and injected into the backup timer as
+# environment overrides so the systemd unit can export them to restic.
+# ponytail: minimum viable set — only the two env-var backends the GUI
+# exposes (S3 + B2). SFTP auth is via SSH keys (already on disk); local
+# needs no creds. rclone/gcs/azure stay CLI-only (YAGNI for the menu).
+_BACKEND_ENV = {
+    "s3": ("RESTIC_REPOSITORY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
+    "b2": ("RESTIC_REPOSITORY", "B2_ACCOUNT_ID", "B2_ACCOUNT_KEY"),
+}
 
 logger = logging.getLogger("ktc-mail.backup")
 
@@ -418,6 +432,104 @@ def init_repository(repository: str, password: str,
     print(f"backup repository initialized: {repository}")
     print(f"password stored: {RESTIC_PASSWORD_PATH}")
     print("run 'ktc-mail backup now' to create the first snapshot")
+    return 0
+
+
+def _restic_env() -> dict[str, str]:
+    """Build restic env overrides from stored backend creds (secrets.json).
+
+    Only S3 (AWS_*) and B2 (B2_*) backends carry env creds; SFTP and local
+    use SSH keys / no creds. The repository URL is taken from the env form
+    (RESTIC_REPOSITORY) when present, else falls back to the config URL.
+    Returns a dict suitable for ``os.environ`` updates — empty if no
+    backend creds are stored.
+    """
+    if not SECRETS_PATH.exists():
+        return {}
+    try:
+        secrets = read_json(SECRETS_PATH)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+    backend = secrets.get("backup_backend")
+    if backend not in _BACKEND_ENV:
+        return {}
+    repo_env, id_env, key_env = _BACKEND_ENV[backend]
+    env = {}
+    if secrets.get("backup_repository"):
+        env[repo_env] = secrets["backup_repository"]
+    if secrets.get("backup_access_id"):
+        env[id_env] = secrets["backup_access_id"]
+    if secrets.get("backup_access_key"):
+        env[key_env] = secrets["backup_access_key"]
+    return env
+
+
+def init_repo(repository: str, password: str, backend: str,
+              access_id: str, access_key: str,
+              enable: bool, dry_run: bool = False) -> int:
+    """GUI entry point: configure a backup destination + (S3/B2) creds.
+
+    Saves backend creds to secrets.json (0600) and writes the timer env
+    drop-in so the systemd unit can export them to restic. Local + SFTP
+    need no creds. Returns 0 on success, 1 on failure.
+
+    ponytail: creds are stored once here and read back by the timer via
+    ``_restic_env`` — no argv leakage, no plaintext in backup.json.
+    """
+    repo_url = repository.strip()
+    if not repo_url:
+        print("error: repository URL/path is required", file=sys.stderr)
+        return 1
+
+    if backend in _BACKEND_ENV:
+        if not access_id or not access_key:
+            print("error: access key ID and secret are required for "
+                  f"{backend} backends", file=sys.stderr)
+            return 1
+        # Validate the URL scheme matches the chosen backend so we don't
+        # silently mislabel an s3:// bucket as B2.
+        if backend == "s3" and not repo_url.startswith("s3:"):
+            print("error: s3 backend requires an s3: repository URL "
+                  "(e.g. s3:https://s3.../bucket)", file=sys.stderr)
+            return 1
+        if backend == "b2" and not repo_url.startswith("b2:"):
+            print("error: b2 backend requires a b2: repository URL "
+                  "(e.g. b2:bucket:/path)", file=sys.stderr)
+            return 1
+
+    if dry_run:
+        print(f"dry-run: configure backup -> {repo_url} (backend={backend})")
+        return 0
+
+    # Persist backend creds in the encrypted secrets store.
+    secrets = read_json(SECRETS_PATH) if SECRETS_PATH.exists() else {}
+    secrets["backup_backend"] = backend
+    if backend in _BACKEND_ENV:
+        secrets["backup_repository"] = repo_url
+        secrets["backup_access_id"] = access_id
+        secrets["backup_access_key"] = access_key
+    else:
+        secrets.pop("backup_repository", None)
+        secrets.pop("backup_access_id", None)
+        secrets.pop("backup_access_key", None)
+    save_json_private(SECRETS_PATH, secrets)
+
+    # Write the timer env drop-in so the systemd unit exports creds.
+    env = _restic_env()
+    env_lines = "".join(f"{k}={v}\n" for k, v in env.items())
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(BACKUP_ENV_PATH, env_lines, mode=0o600)
+
+    # Initialize via the existing path; it writes the password file (0400),
+    # init_repository sets repository + enabled=True internally.
+    rc = init_repository(repo_url, password)
+    if rc != 0:
+        return rc
+    if not enable:
+        # Operator chose to stage the destination without arming the timer.
+        config = load_config()
+        config.enabled = False
+        save_config(config)
     return 0
 
 

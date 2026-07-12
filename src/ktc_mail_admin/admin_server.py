@@ -2017,6 +2017,59 @@ def create_app() -> FastAPI:
                 status_code=302,
             )
 
+    # ── Backup destination configuration (GUI) ───────────────────────
+
+    @app.post("/backup/configure")
+    async def backup_configure(request: Request):
+        if not require_role(request, "admin"):
+            return login_redirect()
+
+        form = await request.form()
+        csrf_token = form.get("csrf_token", "")
+        if not validate_csrf(request, csrf_token):
+            return RedirectResponse(
+                url="/backup?error=Invalid+session+token",
+                status_code=302,
+            )
+
+        backend = form.get("backend", "local").strip()
+        repository = form.get("repository", "").strip()
+        password = form.get("password", "")
+        access_id = form.get("access_id", "").strip()
+        access_key = form.get("access_key", "")
+        enable = form.get("enable", "") == "1"
+
+        from .backup_manager import init_repo
+
+        try:
+            rc = init_repo(
+                repository=repository,
+                password=password,
+                backend=backend,
+                access_id=access_id,
+                access_key=access_key,
+                enable=enable,
+            )
+        except Exception as exc:  # real error surfaced, not swallowed
+            logger.exception("backup configure failed")
+            return RedirectResponse(
+                url="/backup?error=" + str(exc).replace(" ", "+"),
+                status_code=302,
+            )
+
+        if rc == 0:
+            audit_log("backup_configure", actor_email(request),
+                      f"backup destination set: {backend} ({repository})",
+                      client_ip(request))
+            return RedirectResponse(
+                url="/backup?msg=Backup+destination+configured",
+                status_code=302,
+            )
+        return RedirectResponse(
+            url="/backup?error=Backup+configuration+failed+(see+server+logs)",
+            status_code=302,
+        )
+
     # ── JSON health endpoint ───────────────────────────────────────────
 
     # ── API key management ─────────────────────────────────────────

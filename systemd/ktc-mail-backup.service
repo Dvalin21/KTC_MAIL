@@ -7,8 +7,15 @@ After=network.target
 Type=oneshot
 ExecStart=/usr/bin/ktc-mail backup now
 AppArmorProfile=ktc-mail.backup
+# Backend creds (AWS_*/B2_*) for S3/cloud targets, written 0600 by the GUI.
+EnvironmentFile=-/etc/ktc-mail/backup-env
 User=root
 Group=root
+# Local + SFTP repos may need to write outside the state dir; permit a
+# configurable local store. SFTP writes via SSH keys (no extra path needed).
+# ponytail: operator sets BackupLocalDir=/srv/backups via an override if
+# they use local-path repos; default stays locked to state dir.
+ReadWritePaths=/etc/ktc-mail /var/lib/ktc-mail
 TimeoutStartSec=7200
 RemainAfterExit=yes
 Restart=on-failure
