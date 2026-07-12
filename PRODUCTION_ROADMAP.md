@@ -1,7 +1,7 @@
 # KTC Mail — Production Readiness Roadmap (Critical → Low)
 
 Branch: `clean-scaffold-v2` (local, clean) = pushed `origin/clean-scaffold-v3`
-@ `11298c5` (0 ahead / 0 behind — in sync). 100% line-by-line code review
+@ `30be79d` (0 ahead / 0 behind — in sync). 100% line-by-line code review
 is DONE (prior session; see `REVIEW_LEDGER.md`). This file is the REMAINING
 work to get it production-functional — not a code review. Phases are
 severity-ordered. Each item is verifiable.
@@ -258,7 +258,7 @@ Ground truth (re-verified 2026-07-11):
   (gated behind explicit subcommand + "REVIEW BEFORE RUNNING").
 
 - [x] **L-3.5  Docs cross-check — DONE (2026-07-11).** Re-verified branch/
-  HEAD against `git` (clean @ `11298c5`, in sync with `origin/clean-scaffold-v3`)
+  HEAD against `git` (clean @ `30be79d`, in sync with `origin/clean-scaffold-v3`)
   and corrected the stale "Debian 12 / Python 3.11" claims to the real
   target (Debian 13 trixie / Python 3.13). See Ground-truth block above.
 

@@ -1,23 +1,41 @@
-# HANDOFF — KTC Mail (2026-07-11)
+# HANDOFF — KTC Mail (2026-07-12)
 
 ## State
-- Branch `clean-scaffold-v2` (local) = `origin/clean-scaffold-v3` (pushed), commit **`966c831`** (feat(dns-01)). Tree CLEAN.
-- **OS retargeted Debian 12 → 13 (trixie)** (commit `b8acafa`). Target = **Python 3.13** (trixie's interpreter; host is also 3.13.5, so the old host≠target parse-gap is moot). All VM verification now runs on real Debian 13 qemu/kvm via `ktc-mail-vm-verify.sh`. Standards-Version 4.7.2.
+- Branch `clean-scaffold-v2` (local) = `origin/clean-scaffold-v3` (pushed), commit **`30be79d`**. Tree CLEAN.
+- **OS retargeted Debian 12 → 13 (trixie)** (commit `b8acafa`). Target = **Python 3.13** (trixie's interpreter; host is also 3.13.5). All VM verification runs on real Debian 13 qemu/kvm via `ktc-mail-vm-verify.sh`. Standards-Version 4.7.2.
 - No CRITICAL/HIGH blockers. Remaining work = OPERATOR INPUT only (tokens, domain, IdP creds) — not code-blocked.
 
 ## Verified this cycle (real Debian 13 VM, not host)
-- `.deb` builds + installs on trixie; sogo 5.12.1, dovecot-core 2.4.1 (ships oauth2 driver).
-- DNS-01 feature (966c831): `ktc-mail dns apply` auto-populates the FULL record set (A/AAAA, MX, SPF, DKIM, DMARC, MTA-STS, 6 CNAMEs, 6 SRVs, + TLSA when cert exists) via provider API. User-added registrar records are NEVER deleted (owned-keys delete-protection); `dns_managed` allowlist scopes touch. TLSA recomputed + upserted on every cert issue/renew via single `sync_records(include_tlsa=True)` path (shared by `dns apply` + certbot deploy hook).
-- Wildcard cert: `cert_san_names` = `*.domain` + all 7 service URLs (mail/smtp/imap/autoconfig/autodiscover/admin/email). One cert covers every service URL. Verified via probe.
-- ActiveSync: nginx EAS proxy wired + tuned (keepalive, no request buffering) (04dd031); SOGo 5.12.1.
-- IMAP: password + LDAP auth WORK. OIDC IMAP-OAuth2 available on trixie (dovecot-core ships the oauth2 driver) — no third-party repo.
+- `.deb` builds (`dpkg-buildpackage` → `ktc-mail_1.0.0_all.deb`) + installs on trixie via `apt` (Depends resolve from Debian repos). sogo 5.12.1, dovecot-core 2.4.1 (ships oauth2 driver).
+- DNS-01 feature (`966c831`): `ktc-mail dns apply` auto-populates the FULL record set (A/AAAA, MX, SPF, DKIM, DMARC, MTA-STS, 6 CNAMEs, 6 SRVs, + TLSA when cert exists) via provider API. User-added registrar records are NEVER deleted (owned-keys delete-protection); `dns_managed` allowlist scopes touch. TLSA recomputed + upserted on every cert issue/renew via single `sync_records(include_tlsa=True)` path.
+- Wildcard cert: `cert_san_names` = `*.domain` + all 7 service URLs. One cert covers every service URL.
+- ActiveSync: nginx EAS proxy wired + tuned (04dd031); SOGo 5.12.1.
+- IMAP: password + LDAP auth WORK. OIDC IMAP-OAuth2 available on trixie (dovecot-core ships the oauth2 driver).
+
+## Full line-by-line security review (Linus + Ponytail, 2026-07-12)
+Re-audited the security-critical surface in full (mfa.py, breakglass.py, admin_server.py auth/RBAC/CSRF + 20+ POST routes, user_manager.py, config.py secret storage, app.py setup wizard). Found and FIXED:
+- **HIGH: `/logout` route was never registered.** Handler existed but lacked `@app.get("/logout")` — dead orphan function. base.html linked to it → 404 on every logout; sessions never cleared via UI. Doc/code broken window. FIXED (registered route).
+- **MEDIUM: break-glass login unthrottled.** `/login/break-glass` had no rate limiting (unlike `/login` + `/login/mfa`). Token ~25 bits → online-guessable unthrottled. FIXED (`_login_rate_check` on entry + `_login_rate_record` on failure).
+- **MINOR: `settings_mfa_disable` left stale `mfa_recovery_codes` hashes.** Purged on disable.
+- **MINOR: `_verify_api_key` rewrote the whole key file on every authenticated request** (concurrency race on `last_used_at`). Dropped the mutate-and-save; `last_used_at` stays at creation time.
+
+Verified SOUND (no change): scrypt password hashing (per-hash salt, const-time compare), TOTP RFC-6238 + recovery codes, RBAC + per-session CSRF on all POST routes, api-key SHA-256 + show-once, app.py wizard (no `shell=True`, `html.escape` everywhere, self-disables after run), atomic_write helpers (open at final mode, no TOCTOU).
+
+## VM re-verify (2026-07-12, post-bugfix) — ALL GREEN
+`ktc-mail-vm-verify.sh` result (0 FAIL):
+- OK: `/usr/bin/ktc-mail` resolves; `ktc-mail` user exists; `metrics collect` runs as ktc-mail.
+- OK: no `--expose` in setup/admin; `app.py` + `admin_server.py` bind loopback (C-0.2 regression).
+- OK: `ssh_policy.py` 0755/executable (postinst path); setup GUI bound; rate-limiter running; firewall --enforce ran (no ImportError).
+- `.deb` = `ktc-mail_1.0.0_all.deb` (120 KB), Depends resolve via apt.
+
+NOTE: the verify script previously self-killed at `pkill -9 -f ktc-verify` (matched its own bash argv). Fixed to `pkill -f 'qemu-system-x86_64.*ktc-verify'` + pidfile cleanup. Re-run passed.
 
 ## Key gotchas (don't re-learn)
-- Host is Python 3.13; **TARGET is 3.13 (trixie)** — the VM verify boots `debian-13-nocloud-amd64.qcow2`. (Pre-retarget docs citing "3.11 / Debian 12" are stale; trixie ships 3.13, same as host, so the old f-string parse-gap is moot on target.) Always `py_compile` with the target interpreter if you still support bookworm back-deploys.
+- Host is Python 3.13; **TARGET is 3.13 (trixie)** — VM verify boots `debian-13-nocloud-amd64.qcow2`.
 - Two-tree landmine: `debian/` is build source of truth; `packaging/debian/` is CI mirror. Edit root→mirror. NEVER `rm -rf debian && cp packaging/debian`.
 - VM approval gate trips on BUNDLED commands (systemctl+apparmor_parser+pgrep in one SSH). Split into one single-purpose call each.
-- VM reusable script: `/home/keith/.hermes/vm-assets/ktc-mail-vm-verify.sh`. It: downloads trixie nocloud if missing, virt-customize the disk (mask systemd-firstboot, install openssh-server, inject pubkey, enable ssh), boots, runs full `.deb` build+install+service dry-starts, leaves VM at pidfile `/home/keith/.hermes/vm-assets/qemu.pid`. Kill: `kill $(cat /home/keith/.hermes/vm-assets/qemu.pid)`.
-- trixie nocloud image gotcha: minimal — NO openssh-server, NO cloud-init provisioning, blocks on interactive systemd-firstboot. The verify script handles this via virt-customize (cloud-init seed.iso does NOT run on this image). Don't re-add seed.iso.
+- VM reusable script: `/home/keith/.hermes/vm-assets/ktc-mail-vm-verify.sh`. Boots trixie, virt-customize (mask firstboot, install openssh-server, inject pubkey, enable ssh), builds+installs `.deb`, runs assertions, leaves VM at pidfile `/home/keith/.hermes/vm-assets/qemu.pid`. Kill: `kill $(cat /home/keith/.hermes/vm-assets/qemu.pid)`. Disk is freshly created from the nocloud base each run (never reuse stale).
+- trixie nocloud image gotcha: minimal — NO openssh-server, NO cloud-init, blocks on interactive systemd-firstboot. Script handles via virt-customize. Don't re-add seed.iso.
 - SSH port 2223 for the verify VM (2222 is a different unrelated VM).
 
 ## Operator / deep work NOT done (honest, not faked)
@@ -26,8 +44,8 @@
 - OPERATOR: OIDC webmail SSO end-to-end needs IdP creds (render gated, ready).
 - DEEP: multi-domain SQL mailbox store (profile/renderer layer done; Dovecot SQL passdb/db + schema remain).
 
-## Authoritative docs (match `966c831`)
-- `PRODUCTION_READINESS.md` — verdict + reference-suite comparison (updated).
+## Authoritative docs (match `30be79d`)
+- `PRODUCTION_READINESS.md` — verdict + reference-suite comparison.
 - `PRODUCTION_ROADMAP.md` — all items closed + evidence.
 - `AUDIT_AND_HANDOFF.md` — fix ledger + open items.
 - `REVIEW_LEDGER.md` — 100% line-by-line review record.
