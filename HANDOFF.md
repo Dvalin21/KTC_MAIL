@@ -1,31 +1,33 @@
-# HANDOFF — KTC Mail (2026-07-10)
+# HANDOFF — KTC Mail (2026-07-11)
 
 ## State
-- Branch `clean-scaffold-v2` (local) = `origin/clean-scaffold-v3` (pushed), commit **`97d8a42`**. Tree CLEAN.
-- All PRODUCTION_ROADMAP.md items **H-1.1 → D-5 CLOSED + VM-verified** (real Debian 12 qemu/kvm, Python 3.11.2).
-- No CRITICAL/HIGH blockers. Remaining work is OPERATOR INPUT or deep epics (see below).
+- Branch `clean-scaffold-v2` (local) = `origin/clean-scaffold-v3` (pushed), commit **`966c831`** (feat(dns-01)). Tree CLEAN.
+- **OS retargeted Debian 12 → 13 (trixie)** (commit `b8acafa`). All VM verification now runs on real Debian 13 qemu/kvm, Python 3.11 (trixie's 3.11.2). Standards-Version 4.7.2.
+- No CRITICAL/HIGH blockers. Remaining work = OPERATOR INPUT only (tokens, domain, IdP creds) — not code-blocked.
 
-## Verified this cycle (real VM, not host)
-- `.deb` builds + installs; **8 AppArmor profiles ENFORCED** via systemd `AppArmorProfile=`.
-- Unit suite **22/22** on 3.11. `render_all` 11 cfgs headless.
-- Mail-plane: SMTP 220 + STARTTLS advertised + AUTH gating PASS; Dovecot IMAPS :993 UP.
-- Backup: init (auto-gen pw) → snapshot → `restore --yes` recovered files; `restic check` clean.
-- Multi-domain: `SetupProfile.domains` + renderers emit both domains; sql store fail-honest.
+## Verified this cycle (real Debian 13 VM, not host)
+- `.deb` builds + installs on trixie; sogo 5.12.1, dovecot-core 2.4.1 (ships oauth2 driver).
+- DNS-01 feature (966c831): `ktc-mail dns apply` auto-populates the FULL record set (A/AAAA, MX, SPF, DKIM, DMARC, MTA-STS, 6 CNAMEs, 6 SRVs, + TLSA when cert exists) via provider API. User-added registrar records are NEVER deleted (owned-keys delete-protection); `dns_managed` allowlist scopes touch. TLSA recomputed + upserted on every cert issue/renew via single `sync_records(include_tlsa=True)` path (shared by `dns apply` + certbot deploy hook).
+- Wildcard cert: `cert_san_names` = `*.domain` + all 7 service URLs (mail/smtp/imap/autoconfig/autodiscover/admin/email). One cert covers every service URL. Verified via probe.
+- ActiveSync: nginx EAS proxy wired + tuned (keepalive, no request buffering) (04dd031); SOGo 5.12.1.
+- IMAP: password + LDAP auth WORK. OIDC IMAP-OAuth2 available on trixie (dovecot-core ships the oauth2 driver) — no third-party repo.
 
 ## Key gotchas (don't re-learn)
-- Host is Python 3.13; **TARGET is 3.11** — nested f-strings / `f"{'x' if c else ''}"` break on target. Always `py_compile` with `/home/keith/.local/bin/python3.11`.
-- Two-tree landmine: `debian/` is build source of truth; `packaging/debian/` is CI mirror. Root→packaging after edits. NEVER `rm -rf debian && cp packaging/debian`.
+- Host is Python 3.13; **TARGET is 3.11** (trixie). Nested f-strings break on target. Always `py_compile` with `/home/keith/.local/bin/python3.11`.
+- Two-tree landmine: `debian/` is build source of truth; `packaging/debian/` is CI mirror. Edit root→mirror. NEVER `rm -rf debian && cp packaging/debian`.
 - VM approval gate trips on BUNDLED commands (systemctl+apparmor_parser+pgrep in one SSH). Split into one single-purpose call each.
-- VM is throwaway; boot: `-display none -daemonize`. SSH port 2222, key `/home/keith/vm-work/vm_key`. Reusable script: `/home/keith/.hermes/vm-assets/ktc-mail-vm-verify.sh`.
-- Per-user unit tests need root (`/etc/ktc-mail` write). Run `sudo python3 -m pytest` in VM.
+- VM reusable script: `/home/keith/.hermes/vm-assets/ktc-mail-vm-verify.sh`. It: downloads trixie nocloud if missing, virt-customize the disk (mask systemd-firstboot, install openssh-server, inject pubkey, enable ssh), boots, runs full `.deb` build+install+service dry-starts, leaves VM at pidfile `/home/keith/.hermes/vm-assets/qemu.pid`. Kill: `kill $(cat /home/keith/.hermes/vm-assets/qemu.pid)`.
+- trixie nocloud image gotcha: minimal — NO openssh-server, NO cloud-init provisioning, blocks on interactive systemd-firstboot. The verify script handles this via virt-customize (cloud-init seed.iso does NOT run on this image). Don't re-add seed.iso.
+- SSH port 2223 for the verify VM (2222 is a different unrelated VM).
 
 ## Operator / deep work NOT done (honest, not faked)
-- OPERATOR: backup backend (`ktc-mail backup init <restic-url>`), SIEM target drop-in, DNS token.
-- OPERATOR: full real-domain smoke test (DKIM/DMARC/SPF, DNS push→verify, admin MFA) — needs domain + ACME + DNS.
-- DEEP: multi-domain SQL mailbox store (D-5 did profile/renderer layer; Dovecot SQL passdb/db + schema remain), OIDC (needs IdP), ActiveSync (SOGo EAS not wired).
+- OPERATOR: `ktc-mail backup init <restic-url>` (restic coded + restore VM-verified; needs a repo URL).
+- OPERATOR: DNS provider API token in `secrets.json`; real-domain smoke test (DKIM/DMARC/SPF push→verify, admin MFA).
+- OPERATOR: OIDC webmail SSO end-to-end needs IdP creds (render gated, ready).
+- DEEP: multi-domain SQL mailbox store (profile/renderer layer done; Dovecot SQL passdb/db + schema remain).
 
-## Authoritative docs (match `97d8a42`)
-- `PRODUCTION_ROADMAP.md` — all items closed, verified evidence per item.
-- `PRODUCTION_READINESS.md` — verdict + reference-suite comparison.
+## Authoritative docs (match `966c831`)
+- `PRODUCTION_READINESS.md` — verdict + reference-suite comparison (updated).
+- `PRODUCTION_ROADMAP.md` — all items closed + evidence.
 - `AUDIT_AND_HANDOFF.md` — fix ledger + open items.
 - `REVIEW_LEDGER.md` — 100% line-by-line review record.

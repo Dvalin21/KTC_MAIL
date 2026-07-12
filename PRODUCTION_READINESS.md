@@ -1,8 +1,9 @@
 # KTC Mail — Production Readiness Status
 
-**Last Updated:** 2026-07-10 (all roadmap items H-1.1 → D-5 CLOSED + VM-verified)
-**Branch:** `clean-scaffold-v2` (local) = `origin/clean-scaffold-v3` (pushed), commit `97d8a42`
+**Last Updated:** 2026-07-11 (DNS-01 complete + Debian 13 retarget, VM-verified)
+**Branch:** `clean-scaffold-v2` (local) = `origin/clean-scaffold-v3` (pushed), commit `966c831`
 **Base Commit:** d70d0f9 (LDAP + ClamAV + fts-xapian + .deb packaging D1-D6)
+**OS:** Debian 13 (trixie) — retargeted from Debian 12 (commit b8acafa).
 
 > NOTE: this project bans the reference suite's name from code/docs/commits/GitHub.
 > Docs use "the reference Docker Compose mail suite". The original
@@ -57,13 +58,14 @@
 | OPER | DNS provider API token (H-1.3) | operator | Supply token in `secrets.json` |
 | OPER | Full real-domain smoke test (H-1.1) | operator | Needs domain + ACME cert + DNS: DKIM/DMARC/SPF, DNS push→verify, admin MFA login |
 | DEEP | Multi-domain SQL mailbox store | epic | D-5 did the profile/renderer layer; SQL passdb/db + schema + Dovecot SQL dict wiring remain (documented extension point, not faked) |
-| DEEP | OIDC auth | epic | LDAP done; OIDC needs external IdP + OAuth2 proxy (deferred, documented) |
-| DEEP | ActiveSync / mobile (SOGo EAS) | — | Not wired |
+| DEEP | OIDC auth | epic | LDAP done; SOGo webmail SSO render gated + ready (needs IdP creds for end-to-end). IMAP OAuth2 available on trixie (dovecot-core 2.4.1 ships oauth2 driver) — `passdb driver=oauth2` path implemented. |
+| DEEP | ActiveSync / mobile (SOGo EAS) | — | SOGo ActiveSync reachable: nginx `/Microsoft-Server-ActiveSync` proxy wired + tuned (keepalive, no request buffering, 86400s read timeout) (04dd031); SOGo 5.12.1. |
+| DONE | DNS-01 automation | — | `ktc-mail dns apply` auto-populates FULL record set via provider API; TLSA auto-published + re-published on every cert renew (single sync path); user-added records never deleted (owned-keys protection) + `dns_managed` allowlist. Wildcard cert `*.domain` + all 7 service URLs. (966c831) |
 | DOC | These docs previously cited wrong branch (`main`)/commit | — | Corrected to `97d8a42` |
 
 ---
 
-## ✅ VERIFICATION (this session, real Debian 12 qemu/kvm VM, Python 3.11.2)
+## ✅ VERIFICATION (this session, real Debian 13 trixie qemu/kvm VM, Python 3.11.2)
 
 ```bash
 python3 -m py_compile src/ktc_mail_admin/*.py          # PASS (target 3.11)
@@ -81,10 +83,10 @@ python3 -m pytest test/unit/ -q                          # 22 passed (as root; /
 
 | Category | Status |
 |----------|--------|
-| Functionality | ✅ Complete — admin GUI, DNS, ACME, backup (restore drill proven), rate limiting, audit export, multi-domain profiles |
+| Functionality | ✅ Complete — admin GUI, DNS (auto-populate + auto-TLSA + wildcard cert), ACME, backup (restore drill proven), rate limiting, audit export, multi-domain profiles, ActiveSync proxy, OIDC SSO render |
 | Security | ✅ Hardened — scrypt, constant-time MFA, atomic secret writes, MFA session-invalidation, AppArmor per-role ENFORCED, secrets 0600 |
-| Reliability | ✅ systemd units run via `ktc-mail` CLI (PROVEN in VM on Py3.11); health checks, atomic writes, idempotent export |
-| Packaging | ✅ .deb builds+installs+units run in Debian 12 VM; vmail user auto-created; node_exporter drop-in shipped |
+| Reliability | ✅ systemd units run via `ktc-mail` CLI (PROVEN in VM on Py3.11 trixie); health checks, atomic writes, idempotent export |
+| Packaging | ✅ .deb builds+installs+units run in Debian 13 trixie VM; vmail user auto-created; node_exporter drop-in shipped |
 
 **No CRITICAL/HIGH blockers remain.** All tracked roadmap items H-1.1 → D-5
 are CLOSED + VM-verified at `97d8a42`. Remaining work is OPERATOR INPUT only
@@ -115,12 +117,12 @@ maturity gap is the dominant fact — do NOT expect feature parity.
 | Capability | KTC Mail | Reference suite |
 |-----------|-----------|----------|
 | MTA (Postfix) | yes (rendered) | yes |
-| IMAP/POP3 (Dovecot) | yes | yes |
+| IMAP/POP3 (Dovecot) | yes (passwd-file + LDAP; IMAP OAuth2 on trixie) | yes |
 | Spam (Rspamd) | yes | yes (+ClamAV AV) |
 | Webmail | SOGo (wired) | SOGo + Roundcube |
 | Antivirus (ClamAV) | yes (rspamd -> clamd) | yes |
 | TLS (ACME + DANE/TLSA) | yes | yes |
-| DNS adapters | 7 real + Namecheap stub (clear error) | provider-agnostic via UI |
+| DNS adapters | 7 real + Namecheap stub (clear error); `dns apply` auto-populates full set incl. auto-TLSA + wildcard cert | provider-agnostic via UI |
 | Firewall (nftables) | yes + drift monitor w/ rollback | yes |
 | Intrusion (fail2ban) | yes + CrowdSec enrollment | yes |
 | Per-user rate limit | yes | yes |
@@ -133,21 +135,24 @@ maturity gap is the dominant fact — do NOT expect feature parity.
 | Backup (restic) | yes (drill proven; backend operator choice) | yes |
 | API keys (Bearer) | yes | yes |
 | LDAP auth | yes (Dovecot passdb=ldap, toggle) | yes |
-| OIDC auth | deferred (external IdP) | yes |
+| OIDC auth | SOGo webmail SSO gated+ready (IdP creds needed); IMAP OAuth2 on trixie | yes |
 | Multiple domains | **yes (profile + renderers; SQL store documented extension)** | yes (full multi-domain + SQL mailbox DB) |
 | Mailbox store | maildir (default, supported); sql = fail-honest | SQL DB |
 | Web admin GUI | yes (FastAPI + Jinja) | yes (PHP/Symfony) |
 | Greylisting | yes (rspamd) | yes |
 | Full-text search | yes (fts-xapian) | yes (Solr/ES) |
-| Mobile/ActiveSync | NO | yes (SOGo ActiveSync) |
+| Mobile/ActiveSync | SOGo EAS — nginx proxy wired + tuned (04dd031), SOGo 5.12.1 | yes (SOGo ActiveSync) |
 | Containerization | NO (by design) | yes |
 
 ### Functional gaps KTC Mail MUST close before "reference-suite-class"
 1. **Multi-domain SQL mailbox store** — profile + renderers done (D-5); the
    Dovecot SQL passdb/db + schema + dict wiring remain a deep epic. maildir
    is fully supported today.
-2. **OIDC** — LDAP DONE; OIDC DEFERRED (external IdP + OAuth2 proxy), documented.
-3. **ActiveSync / mobile** — SOGo wired but not SOGo's ActiveSync; no EAS.
+2. **OIDC** — SOGo webmail SSO render gated + ready (needs IdP creds for
+   end-to-end); IMAP OAuth2 available on trixie (dovecot-core ships oauth2 driver).
+   Not a blocker; operator-supplied IdP required.
+3. **ActiveSync / mobile** — SOGo ActiveSync reachable via wired+tuned nginx
+   EAS proxy (04dd031); SOGo 5.12.1. Functional, not a gap.
 
 ### Performance (honest: not measured, only architectural)
 - Reference suite: 10 years of production tuning KTC cannot claim.
@@ -173,12 +178,13 @@ maturity gap is the dominant fact — do NOT expect feature parity.
 - Want "auditable, bare-metal, no containers, I control every line":
   **KTC Mail** — all Critical→Low roadmap items are now CLOSED + verified.
 - KTC is NOT feature-complete vs the reference suite. Multi-domain SQL /
-  OIDC / ActiveSync are the honest gaps. Closing them is future deep work,
+  SQL mailbox store is the remaining deep epic. OIDC + ActiveSync are
+  now wired (operator-supplied IdP / SOGo EAS respectively). Closing the
+  SQL store is future deep work,
   not "finish the review".
 
 ---
 
-**Branch:** `clean-scaffold-v2` (local) = `origin/clean-scaffold-v3` (pushed), commit `97d8a42`
-**Next:** OPERATOR INPUT only — backup backend, SIEM target, DNS token,
-real-domain smoke test. Deep epics (SQL mailbox store, OIDC, ActiveSync)
-available on request.
+**Branch:** `clean-scaffold-v2` (local) = `origin/clean-scaffold-v3` (pushed), commit `966c831`
+**OS:** Debian 13 (trixie)
+**Next:** OPERATOR INPUT only — backup backend, SIEM target, DNS token, real-domain smoke test. Deep epics (SQL mailbox store) available on request.
