@@ -2,7 +2,7 @@
 
 ## State
 - Branch `clean-scaffold-v2` (local) = `origin/clean-scaffold-v3` (pushed), commit **`966c831`** (feat(dns-01)). Tree CLEAN.
-- **OS retargeted Debian 12 → 13 (trixie)** (commit `b8acafa`). All VM verification now runs on real Debian 13 qemu/kvm, Python 3.11 (trixie's 3.11.2). Standards-Version 4.7.2.
+- **OS retargeted Debian 12 → 13 (trixie)** (commit `b8acafa`). Target = **Python 3.13** (trixie's interpreter; host is also 3.13.5, so the old host≠target parse-gap is moot). All VM verification now runs on real Debian 13 qemu/kvm via `ktc-mail-vm-verify.sh`. Standards-Version 4.7.2.
 - No CRITICAL/HIGH blockers. Remaining work = OPERATOR INPUT only (tokens, domain, IdP creds) — not code-blocked.
 
 ## Verified this cycle (real Debian 13 VM, not host)
@@ -13,7 +13,7 @@
 - IMAP: password + LDAP auth WORK. OIDC IMAP-OAuth2 available on trixie (dovecot-core ships the oauth2 driver) — no third-party repo.
 
 ## Key gotchas (don't re-learn)
-- Host is Python 3.13; **TARGET is 3.11** (trixie). Nested f-strings break on target. Always `py_compile` with `/home/keith/.local/bin/python3.11`.
+- Host is Python 3.13; **TARGET is 3.13 (trixie)** — the VM verify boots `debian-13-nocloud-amd64.qcow2`. (Pre-retarget docs citing "3.11 / Debian 12" are stale; trixie ships 3.13, same as host, so the old f-string parse-gap is moot on target.) Always `py_compile` with the target interpreter if you still support bookworm back-deploys.
 - Two-tree landmine: `debian/` is build source of truth; `packaging/debian/` is CI mirror. Edit root→mirror. NEVER `rm -rf debian && cp packaging/debian`.
 - VM approval gate trips on BUNDLED commands (systemctl+apparmor_parser+pgrep in one SSH). Split into one single-purpose call each.
 - VM reusable script: `/home/keith/.hermes/vm-assets/ktc-mail-vm-verify.sh`. It: downloads trixie nocloud if missing, virt-customize the disk (mask systemd-firstboot, install openssh-server, inject pubkey, enable ssh), boots, runs full `.deb` build+install+service dry-starts, leaves VM at pidfile `/home/keith/.hermes/vm-assets/qemu.pid`. Kill: `kill $(cat /home/keith/.hermes/vm-assets/qemu.pid)`.

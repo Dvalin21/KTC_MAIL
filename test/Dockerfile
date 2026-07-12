@@ -7,7 +7,7 @@
 # with the actual tools (postfix check, dovecot -n, nginx -t, etc).
 # No ports exposed — this is a syntax/startup test, not a live server.
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV KTC_MAIL_CONFIG_DIR=/etc/ktc-mail
@@ -36,13 +36,14 @@ COPY scripts/ scripts/
 COPY test/ test/
 COPY setup.py .
 
-# Install ktc-mail Python package
-# --break-system-packages for Debian bookworm (PEP 668); fallback for older distros.
-# DO NOT suppress errors — a failed install must fail the build.
+# Install ktc-mail Python package in an isolated venv (PEP 668 — the host is
+# externally-managed; do NOT use --break-system-packages, which defeats the guard
+# and can clobber system Python). The CI test target MUST match the real deploy
+# target: Debian 13 (trixie) / Python 3.13.
 RUN set -eux; \
-    pip install --no-cache-dir -e . --break-system-packages || \
-    pip install --no-cache-dir -e . || \
-    (echo "FATAL: pip install failed" >&2 && exit 1)
+    python3 -m venv /opt/ktc-venv && \
+    /opt/ktc-venv/bin/pip install --no-cache-dir -e . && \
+    ln -s /opt/ktc-venv/bin/ktc-mail /usr/local/bin/ktc-mail
 
 # Create test setup profile
 RUN mkdir -p /etc/ktc-mail && python3 /opt/ktc-mail/test/create_profile.py
