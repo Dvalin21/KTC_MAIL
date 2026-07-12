@@ -63,7 +63,7 @@
 {# ── Renew button ── #}
 <div class="btn-row" style="margin-bottom:1.5rem">
   <form method="post" action="/certs/renew" style="display:inline"
-        onsubmit="return confirm('Renew certificate now? This may take a moment.')">
+        data-confirm="Renew certificate now? This may take a moment.">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <button type="submit">Renew now</button>
   </form>

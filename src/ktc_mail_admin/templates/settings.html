@@ -54,7 +54,7 @@
         <span class="badge badge-ok">Enabled</span>
       </p>
       <form method="post" action="/settings/mfa/disable" style="margin-top:0.75rem"
-            onsubmit="return confirm('Disable two-factor authentication?')">
+            data-confirm="Disable two-factor authentication?">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <button type="submit" style="background:var(--red)">Disable MFA</button>
       </form>
@@ -78,7 +78,7 @@
         <button type="submit">Enable MFA</button>
       </form>
       <form method="post" action="/settings/mfa/init" style="margin-top:0.5rem"
-            onsubmit="return confirm('Generate a new secret? This invalidates the current one.')">
+            data-confirm="Generate a new secret? This invalidates the current one.">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <button type="submit" style="background:var(--muted)">Generate new secret</button>
       </form>
