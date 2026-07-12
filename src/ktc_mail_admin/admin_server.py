@@ -1419,6 +1419,7 @@ def create_app() -> FastAPI:
         acct = load_admin_account()
         acct["mfa_enabled"] = False
         acct["mfa_secret"] = None
+        acct["mfa_recovery_codes"] = []  # purge stale recovery hashes
         acct["session_version"] = acct.get("session_version", 0) + 1
         save_admin_account(acct)
 
@@ -2036,15 +2037,19 @@ def create_app() -> FastAPI:
         save_json_private(API_KEYS_PATH, {"keys": keys})
 
     def _verify_api_key(token: str) -> bool:
-        """Check if a Bearer token matches any stored API key (SHA-256)."""
+        """Check if a Bearer token matches any stored API key (SHA-256).
+
+        Constant-time compare against stored hashes. Does NOT mutate or
+        persist state — last_used_at is left to key-creation time, avoiding a
+        read-modify-write of the whole key file on every authenticated request
+        (which would be a concurrency race under parallel calls).
+        """
         if not token.startswith("ktc_"):
             return False
         token_hash = hashlib.sha256(token.encode()).hexdigest()
         keys = _load_api_keys()
         for key in keys:
             if hmac.compare_digest(key.get("key_hash", ""), token_hash):
-                key["last_used_at"] = int(time.time())
-                _save_api_keys(keys)
                 return True
         return False
 
