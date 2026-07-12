@@ -3,8 +3,8 @@
 
 # ── Current repo state ─────────────────────────────────────────────
 Tree:      CLEAN (all roadmap items H-1.1 → D-5 committed)
-Branch:    clean-scaffold-v2   (local, clean, @ 97d8a42)
-Remote:    origin/clean-scaffold-v3  (97d8a42 — 0 ahead / 0 behind, in sync)
+Branch:    clean-scaffold-v2   (local, clean, @ 11298c5)
+Remote:    origin/clean-scaffold-v3  (11298c5 — 0 ahead / 0 behind, in sync)
 Note:      local `clean-scaffold-v2` IS the pushed `origin/clean-scaffold-v3`.
           They are the same commit under two names; no divergence. The two
           stale `clean-scaffold` + `clean-scaffold-v2` refs retain a historical
@@ -12,7 +12,10 @@ Note:      local `clean-scaffold-v2` IS the pushed `origin/clean-scaffold-v3`.
           GitHub branch protection. Clean history is already on v3. Delete the
           two stale refs + rename v3 -> v2 when convenient (owner call).
 
-# ── Verified fixes (this review cycle, real Debian 12 qemu/kvm VM) ──
+# ── Verified fixes (this review cycle; PRE-RETARGET Debian 12 qemu/kvm VM) ──
+# NOTE: target was later retargeted to Debian 13 (trixie) / Python 3.13 by
+# commit b8acafa. The verification below ran on bookworm/3.11 and remains valid
+# evidence; the trixie/3.13 re-run is automated by ktc-mail-vm-verify.sh.
 THEME   config.py                 atomic_write_text/bytes() (open final mode
                                  -> fsync -> rename, no TOCTOU). 7 sites routed.
 CRIT    admin_server.py           recovery codes no longer in 302 Location;

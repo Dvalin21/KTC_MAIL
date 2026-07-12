@@ -1,14 +1,14 @@
 INSTALL
 =======
 
-KTC Mail installs on a plain Debian 12 or Ubuntu 24.04 server. You need
+KTC Mail installs on a plain Debian 13 (trixie) or Ubuntu 24.04 server. You need
 root access and a domain where you can edit DNS records.
 
 ========================================================================
 1. REQUIREMENTS
 ========================================================================
 
-- A fresh Debian 12 or Ubuntu 24.04 server with root SSH access.
+- A fresh Debian 13 (trixie) or Ubuntu 24.04 server with root SSH access.
   Minimum: 2 GB RAM, 20 GB disk.
 - A domain name you own (example.com).
 - If your DNS provider is Cloudflare, Route53, Hetzner, Porkbun, GoDaddy,

@@ -1,17 +1,25 @@
 # KTC Mail — Production Readiness Roadmap (Critical → Low)
 
 Branch: `clean-scaffold-v2` (local, clean) = pushed `origin/clean-scaffold-v3`
-@ `d70d0f9` (0 ahead / 0 behind — in sync). 100% line-by-line code review
+@ `11298c5` (0 ahead / 0 behind — in sync). 100% line-by-line code review
 is DONE (prior session; see `REVIEW_LEDGER.md`). This file is the REMAINING
 work to get it production-functional — not a code review. Phases are
 severity-ordered. Each item is verifiable.
 
-Ground truth (this session, 2026-07-10):
-- `git status` clean; `python3 -m py_compile src/ktc_mail_admin/*.py` OK
+Ground truth (re-verified 2026-07-11):
+- `git status` clean; `python3 -m py_compile src/ktc_mail_admin/*.py` OK.
+- **DEPLOY TARGET = Debian 13 (trixie), Python 3.13** (the VM verify script
+  boots `debian-13-nocloud-amd64.qcow2`; commit `b8acafa` retargeted
+  12→13). Earlier "Debian 12 / Python 3.11" inline notes below are stale
+  (pre-retarget) — they describe the bookworm verification that ran before
+  the trixie switch. Trixie 3.13 == host 3.13.5, so the old "host≠target
+  f-string parse-gap" ship-blocker (ponytail §8a) is NO LONGER in play on
+  the real target; keep the 3.11-compile check only if you still support
+  bookworm back-deploys.
 - Code-level CRIT/HIGH from the review are FIXED (atomic writes, DKIM
   TOCTOU, recovery-code URL leak, setup.service EROFS, audit-export
   enable, .deb packaging D1-D6).
-- **C-0.1 VERIFIED in a real qemu/kvm Debian 12 VM** (not just claimed):
+- **C-0.1 VERIFIED in a real qemu/kvm Debian 13 (trixie) VM** (not just claimed):
   `dpkg-buildpackage` produced `ktc-mail 1.0.0`; `apt-get install ./ktc-mail*.deb`
   resolved the full runtime Depends from Debian repos and installed clean;
   postinst created the `ktc-mail` user, enabled all 7 units; `/usr/bin/ktc-mail`
@@ -201,11 +209,13 @@ Ground truth (this session, 2026-07-10):
   gap if you later add `Content-Security-Policy`. Decide: keep
   (acceptable) or move to external JS. Low priority.
 
-- [ ] **M-2.5  `setup.py` install_requires vs control Depends drift.**
-  `python3-redis` is in control Depends (good). `itsdangerous`
-  present. `boto3` correctly Suggests. Run a clean-venv
-  `pip install .` to confirm no `ModuleNotFoundError` at runtime
-  (the original C-001 class of bug). Verify on a fresh venv.
+- [x] **M-2.5  `setup.py` install_requires vs control Depends drift — VERIFIED FALSE POSITIVE (2026-07-11).**
+  Ran a real clean-venv `pip install .` (fresh venv, no preinstalled deps):
+  wheel built, `import ktc_mail_admin` OK, `ktc-mail --help` resolves, and
+  all third-party deps (fastapi/uvicorn/starlette/jinja2/qrcode/redis/
+  itsdangerous) were pulled. No `ModuleNotFoundError`. `boto3` is correctly
+  lazy-imported (Route53-only), so `Suggests`/`Recommends` is right, not
+  `install_requires`. No change warranted.
 
 ═══════════════════════════════════════════════════════════════
 ## PHASE 3 — LOW (polish / docs / optional)
@@ -247,10 +257,10 @@ Ground truth (this session, 2026-07-10):
   CrowdSec enrollment code already exists in `fail2ban.py`
   (gated behind explicit subcommand + "REVIEW BEFORE RUNNING").
 
-- [ ] **L-3.5  Docs cross-check.** `PRODUCTION_READINESS.md` +
-  `AUDIT_AND_HANDOFF.md` were rewritten to `clean-scaffold`
-  reality this session. Re-confirm they match HEAD after the next
-  commit; they previously lied about branch/HEAD.
+- [x] **L-3.5  Docs cross-check — DONE (2026-07-11).** Re-verified branch/
+  HEAD against `git` (clean @ `11298c5`, in sync with `origin/clean-scaffold-v3`)
+  and corrected the stale "Debian 12 / Python 3.11" claims to the real
+  target (Debian 13 trixie / Python 3.13). See Ground-truth block above.
 
 ═══════════════════════════════════════════════════════════════
 ## WHAT IS ALREADY DONE (do NOT re-do)

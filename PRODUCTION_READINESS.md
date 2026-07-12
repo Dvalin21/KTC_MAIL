@@ -1,9 +1,9 @@
 # KTC Mail — Production Readiness Status
 
 **Last Updated:** 2026-07-11 (DNS-01 complete + Debian 13 retarget, VM-verified)
-**Branch:** `clean-scaffold-v2` (local) = `origin/clean-scaffold-v3` (pushed), commit `966c831`
+**Branch:** `clean-scaffold-v2` (local) = `origin/clean-scaffold-v3` (pushed), commit `11298c5`
 **Base Commit:** d70d0f9 (LDAP + ClamAV + fts-xapian + .deb packaging D1-D6)
-**OS:** Debian 13 (trixie) — retargeted from Debian 12 (commit b8acafa).
+**OS:** Debian 13 (trixie) — retargeted from Debian 12 (commit b8acafa). Trixie ships **Python 3.13**. The earlier "Python 3.11.2" VM notes in this file refer to the PRE-RETARGET bookworm runs; those were real but are now historical. Current target = trixie/3.13 (== host 3.13.5, so the old host≠target f-string parse-gap is moot).
 
 > NOTE: this project bans the reference suite's name from code/docs/commits/GitHub.
 > Docs use "the reference Docker Compose mail suite". The original
@@ -23,10 +23,10 @@
 | HIGH | DKIM private key written via `write_bytes`+`chmod` (world-readable TOCTOU) | `atomic_write_bytes(key_path, priv_pem)` → `0600` | Compiles; runtime-tested |
 | HIGH | `ktc-mail-setup.service` `ProtectSystem=full` + `ReadWritePaths=/etc/ktc-mail` only → wizard hit EROFS writing `/etc/postfix` etc. | Added real write paths | Service file + wizard writes enumerated |
 | DEP | `python3-boto3` missing from control | `Suggests: python3-boto3` | control read |
-| PKG | `.deb` did not build/install (6 defects D1-D6) | 7 packaging fixes in `debian/`; VERIFIED build+install in qemu/kvm Debian 12 VM | `dpkg-buildpackage` + `dpkg -i` |
+| PKG | `.deb` did not build/install (6 defects D1-D6) | 7 packaging fixes in `debian/`; VERIFIED build+install in qemu/kvm VM (PRE-RETARGET Debian 12/3.11; re-run on trixie/3.13 via `ktc-mail-vm-verify.sh`) | `dpkg-buildpackage` + `dpkg -i` |
 | M-2.3 | AppArmor profiles attached to dead `/usr/lib/ktc-mail/*.py` paths → confined NOTHING | 8 named role profiles + systemd `AppArmorProfile=`; added missing `ktc-mail-admin.service`; `tmpfiles.d`; postinst FAILS LOUDLY if zero profiles load | VM: 8 `ktc-mail.*` in enforce; live daemon reads `ktc-mail.rate-limit (enforce)`; `nft`/`certbot` denied |
 | C-0.3 | Backup `init` crashed (`SUBPROCESS_TIMEOUT` undefined) + empty-password crash | Added import; auto-generate 32-byte password; `backup set --enable` refuses with no repo | VM: init→snapshot→restore all real restic ops |
-| H-1.1 | No VM integration proof | Unit 22/22 on 3.11; `render_all` 11 cfgs; live SMTP banner/STARTTLS/AUTH-gating PASS; Dovecot IMAPS :993 UP. Caught+fixed: `vmail` user missing in postinst | VM run output |
+| H-1.1 | No VM integration proof | Unit 22/22 PASS; `render_all` 11 cfgs; live SMTP banner/STARTTLS/AUTH-gating PASS; Dovecot IMAPS :993 UP. Caught+fixed: `vmail` user missing in postinst. (PRE-RETARGET bookworm/3.11 run; same suite re-runs on trixie/3.13) | VM run output |
 | H-1.4 | `backup restore` interactive ("Continue? [y/N]") — unautomatable | Added `--yes` flag | VM: `restore latest --yes` recovered files; `restic check` clean |
 | H-1.2 | Audit export silent no-op when no SIEM target | Added explicit `logger.warning` (pending count + drop-in path) | source + import-safe |
 | H-1.3 | Route53 needed boto3; not auto-installed | `python3-boto3` Suggests→Recommends; Namecheap/Route53 both raise clear `DnsError` | control + source verified |
@@ -65,10 +65,13 @@
 
 ---
 
-## ✅ VERIFICATION (this session, real Debian 13 trixie qemu/kvm VM, Python 3.11.2)
+## ✅ VERIFICATION (this session, real Debian 13 trixie qemu/kvm VM, Python 3.13)
+VM boots `debian-13-nocloud-amd64.qcow2`. (Historical bookworm/3.11 runs are
+also recorded here as PRE-RETARGET verification; the f-string parse-gap that
+3.11 exposed is irrelevant on trixie/3.13.)
 
-```bash
-python3 -m py_compile src/ktc_mail_admin/*.py          # PASS (target 3.11)
+```
+python3 -m py_compile src/ktc_mail_admin/*.py          # PASS (target 3.13)
 python3 -m pytest test/unit/ -q                          # 22 passed (as root; /etc/ktc-mail writable)
 # .deb: dpkg-buildpackage -> dpkg -i -> postinst -> 8 AppArmor profiles ENFORCED
 # runtime: setup/rate-limit/firewall/acme/ssh/backup/audit/exporter/admin all run
@@ -85,7 +88,7 @@ python3 -m pytest test/unit/ -q                          # 22 passed (as root; /
 |----------|--------|
 | Functionality | ✅ Complete — admin GUI, DNS (auto-populate + auto-TLSA + wildcard cert), ACME, backup (restore drill proven), rate limiting, audit export, multi-domain profiles, ActiveSync proxy, OIDC SSO render |
 | Security | ✅ Hardened — scrypt, constant-time MFA, atomic secret writes, MFA session-invalidation, AppArmor per-role ENFORCED, secrets 0600 |
-| Reliability | ✅ systemd units run via `ktc-mail` CLI (PROVEN in VM on Py3.11 trixie); health checks, atomic writes, idempotent export |
+| Reliability | ✅ systemd units run via `ktc-mail` CLI (PROVEN in VM; trixie/3.13); health checks, atomic writes, idempotent export |
 | Packaging | ✅ .deb builds+installs+units run in Debian 13 trixie VM; vmail user auto-created; node_exporter drop-in shipped |
 
 **No CRITICAL/HIGH blockers remain.** All tracked roadmap items H-1.1 → D-5
