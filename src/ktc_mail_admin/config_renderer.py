@@ -796,8 +796,10 @@ server {{
 
 # SOGo webmail on email.{{domain}} — reverse proxy to sogod on port 20000
 server {{
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
+    listen 443 ssl;
+    http2 on;
+    listen [::]:443 ssl;
+    http2 on;
     server_name {profile.webmail_host};
 
     ssl_certificate /etc/letsencrypt/live/{CERT_NAME}/fullchain.pem;
@@ -865,8 +867,10 @@ server {{
 }}
 
 server {{
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
+    listen 443 ssl;
+    http2 on;
+    listen [::]:443 ssl;
+    http2 on;
     server_name {profile.admin_host};
 
     ssl_certificate /etc/letsencrypt/live/{CERT_NAME}/fullchain.pem;
@@ -886,8 +890,10 @@ server {{
 
 # Autoconfig (Mozilla Thunderbird) — served at /mail/config-v1.1.xml
 server {{
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
+    listen 443 ssl;
+    http2 on;
+    listen [::]:443 ssl;
+    http2 on;
     server_name {profile.autoconfig_host};
 
     ssl_certificate /etc/letsencrypt/live/{CERT_NAME}/fullchain.pem;
@@ -908,8 +914,10 @@ server {{
 
 # Autodiscover (Microsoft Outlook) — served at /autodiscover/autodiscover.xml
 server {{
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
+    listen 443 ssl;
+    http2 on;
+    listen [::]:443 ssl;
+    http2 on;
     server_name {profile.autodiscover_host};
 
     ssl_certificate /etc/letsencrypt/live/{CERT_NAME}/fullchain.pem;
