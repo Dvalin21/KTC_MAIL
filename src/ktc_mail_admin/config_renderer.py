@@ -884,6 +884,50 @@ server {{
     }}
 }}
 
+# Autoconfig (Mozilla Thunderbird) — served at /mail/config-v1.1.xml
+server {{
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name {profile.autoconfig_host};
+
+    ssl_certificate /etc/letsencrypt/live/{CERT_NAME}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/{CERT_NAME}/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers on;
+
+    location = /mail/config-v1.1.xml {{
+        alias /etc/autoconfig/thunderbird.xml;
+        default_type application/xml;
+        add_header Content-Type application/xml;
+    }}
+    location / {{
+        return 404;
+    }}
+}}
+
+# Autodiscover (Microsoft Outlook) — served at /autodiscover/autodiscover.xml
+server {{
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name {profile.autodiscover_host};
+
+    ssl_certificate /etc/letsencrypt/live/{CERT_NAME}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/{CERT_NAME}/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers on;
+
+    location = /autodiscover/autodiscover.xml {{
+        alias /etc/autoconfig/outlook.xml;
+        default_type application/xml;
+        add_header Content-Type application/xml;
+    }}
+    location / {{
+        return 404;
+    }}
+}}
+
 """
 
 # ── Autoconfig / Autodiscover XML templates ──────────────────────────────
