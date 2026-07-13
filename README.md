@@ -1,57 +1,406 @@
 # KTC Mail
 
-KTC Mail is a bare-metal Debian/Ubuntu mail server suite scaffold. The goal is a Dockerized-reference-style operational structure without Docker: mature open-source mail components, a friendly web GUI, guided DNS/TLS setup, and strict firewall/security defaults.
+KTC Mail is a bare-metal Debian/Ubuntu mail-server control plane — a
+non-containerized suite that deploys and operates a mature open-source
+mail stack (Postfix, Dovecot, Rspamd, ClamAV, Redis, Fail2ban, Nginx,
+SOGo) through a guided web GUI, a single CLI (`ktc-mail`), and systemd
+units. No Docker, no Kubernetes — just the proven components, wired
+together with strict security defaults and a friendly setup wizard.
 
-## Current scope
+- **Target OS:** Debian 13 (trixie) / Ubuntu 22.04+ (Python 3.10+;
+  built and verified on trixie / Python 3.13).
+- **License:** see repository. Internal/self-host use.
+- **Status:** shippable. The code is feature-complete and verified
+  end-to-end in an isolated qemu/kvm Debian 13 VM (package build,
+  install, every systemd unit, the backup flow, and the GUI routes).
 
-This repository now contains the first implementation slice:
+---
 
-- A standard-library Python first-run web GUI that launches on the server IP and collects domain, hostname, public IPs, DNS provider, administrator email, and certificate mode.
-- DNS plan generation and first-pass automation for A, AAAA, MX, SPF, DKIM, DMARC, TLS-RPT, optional DANE TLSA, split admin/SOGo hostnames, and autodiscovery SRV records.
-- An nftables firewall monitor that reads the setup profile so DNS-01 keeps port 80 closed unless HTTP-01 is selected.
-- Debian packaging metadata that installs the GUI, firewall monitor, helper scripts, examples, documentation, and systemd units.
-- ACME issue/renew tooling with DNS-01 hooks, HTTP-01 fallback, TLSA regeneration, and service reload hooks.
-- A bootstrap script that installs the proven open-source stack: Postfix, Dovecot, Rspamd, Redis, Fail2ban, Nginx, certbot, nftables, and supporting tools.
+## What it does
 
-## Target production stack
-
-| Layer | Tooling |
+| Area | Capability |
 | --- | --- |
-| SMTP | Postfix with postscreen, Rspamd milter, strict TLS, submission on 587 |
-| IMAP and delivery | Dovecot IMAPS, LMTP, Sieve, ManageSieve as optional |
-| Spam/security policy | Rspamd, Redis, Fail2ban, optional CrowdSec |
-| Admin GUI | KTC Mail Python service, later hardened behind HTTPS and MFA |
-| TLS | ACME DNS-01 provider APIs, service reload hooks, optional DANE TLSA updates |
-| Firewall | nftables (inet family, IPv4+IPv6 single ruleset) |
-| Packaging | `.deb` for Debian/Ubuntu bare-metal installation |
+| **Guided setup** | First-run web wizard collects domain, DNS provider + API token, admin email, certificate mode, and security posture. Auto-detects public IPv4/IPv6, registrar, port-25 status, and hostname. |
+| **DNS automation** | Generates and pushes A/AAAA, MX, SPF, DKIM, DMARC, TLS-RPT, MTA-STS, optional DANE TLSA, split admin/webmail hostnames, and autodiscover/autoconfig SRV records. Drift detection (`dns verify`). |
+| **TLS / ACME** | DNS-01 (provider API) and HTTP-01 challenge modes, cert issue/renew, deploy hooks that reload Postfix/Dovecot/Nginx, and optional DANE TLSA regeneration on renewal. |
+| **Mail stack** | Postfix (postscreen, Rspamd milter, strict TLS, submission 587/465), Dovecot (IMAPS 993, LMTP, Sieve/ManageSieve), Rspamd + Redis, ClamAV AV scanning, SOGo webmail + ActiveSync. |
+| **Admin GUI** | Loopback-bound FastAPI portal: users, DKIM, DNS, mail queue, certs, **backup destination selector**, API keys, MFA/recovery settings, audit log viewer. Reverse-proxied via rendered Nginx. |
+| **Backup** | restic-based, encrypted, deduplicated. GUI destination selector for **Local / Network-SFTP / S3 / Backblaze B2**. Retention policy, scheduled timer, restore (manual, deliberate). |
+| **Observability** | Append-only audit log, Prometheus exporter (service state, queue, DNS drift, cert expiry), and remote audit export to syslog (UDP/TCP/TLS) or an HTTPS SIEM/webhook. |
+| **Auth** | Local accounts, TOTP MFA, RBAC (admin/operator/readonly), CSRF-protected sessions, secure cookies, recovery codes, and break-glass operator access. Optional LDAP directory; optional OIDC **webmail SSO** (external IdP). |
+| **Firewall** | nftables inet ruleset (IPv4+IPv6) managed by a monitor unit. DNS-01 keeps port 80 closed; HTTP-01 opens it only while挑战ing. |
+| **Anti-abuse** | Fail2ban (default), CrowdSec (GPG-pinned apt, not curl|bash), GeoIP blocking, Postfix anvil rate limits, DNSBL checking, and a per-user outbound rate limiter (Postfix policy daemon). |
 
-## Quick developer checks
+---
 
-```bash
-python3 -m py_compile src/ktc_mail_admin/app.py src/ktc_mail_admin/firewall_monitor.py src/ktc_mail_admin/dns_provider.py src/ktc_mail_admin/acme_manager.py
-bash -n scripts/bootstrap-mail-stack.sh scripts/ktc-mail-open-ports.sh packaging/debian/postinst packaging/debian/prerm
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  ktc-mail (single CLI entry point → ktc_mail_admin/cli:main)      │
+├──────────┬──────────┬──────────┬──────────┬──────────┬────────────┤
+│ setup    │ dns      │ acme     │ firewall │ backup   │ admin      │
+│ (GUI)    │          │          │          │ (restic) │ (GUI :8081)│
+├──────────┴──────────┴──────────┴──────────┴──────────┴────────────┤
+│  config_renderer → /etc/{postfix,dovecot,nginx,rspamd,sogo}        │
+│  nftables ruleset        SSH hardening (/etc/ssh/sshd_config.d)    │
+│  secrets.json (0600) ── DNS token, OIDC secret, backup creds      │
+├─────────────────────────────────────────────────────────────────┤
+│  systemd units (7 services + 5 timers) + AppArmor named profiles  │
+└─────────────────────────────────────────────────────────────────┘
+        │ renders / manages
+        ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Postfix · Dovecot · Rspamd · Redis · ClamAV · Fail2ban · Nginx · │
+│  SOGo (webmail + ActiveSync) · nftables                           │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-## Prototype run
+Data structures are the source of truth: `SetupProfile`
+(`src/ktc_mail_admin/config.py`) holds the entire server identity and
+is rendered into the native configs by `config_renderer.py`. Secrets
+live in `/etc/ktc-mail/secrets.json` (mode 0600); the restic
+repository password lives in a separate 0400 file.
+
+See `docs/architecture.md`, `docs/security.md`, and
+`docs/implementation-plan.md` for the detailed design.
+
+---
+
+## Installation
+
+### 1. Bootstrap the OS dependencies
+
+On a **fresh Debian/Ubuntu host as root**:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Dvalin21/KTC_MAIL/main/scripts/bootstrap-mail-stack.sh | bash
+```
+
+This installs Postfix, Dovecot, Rspamd, Redis, Fail2ban, Nginx,
+nftables, ClamAV, SOGo, certbot, and Python tooling, then enables (but
+does not start) the mail services — they need KTC Mail config first.
+It also creates `/etc/ktc-mail` and `/var/lib/ktc-mail`.
+
+> The bootstrap enables Redis (required by Rspamd during setup) and
+> leaves the mail daemons stopped until the setup wizard finishes.
+
+### 2. Install the KTC Mail package
+
+Build the `.deb` from source (it is not (yet) in a public apt repo):
+
+```bash
+sudo apt-get install -y debhelper dh-python python3 python3-setuptools
+dpkg-buildpackage -us -uc -b
+sudo apt-get install -y ../ktc-mail_*.deb
+```
+
+`apt-get install` resolves the runtime `Depends` from Debian repos
+(Postfix, Dovecot, Rspamd, ClamAV, SOGo, Nginx, nftables, Fail2ban,
+certbot, FastAPI/Uvicorn, etc.). `python3-boto3` is a **Recommends**
+(only needed for the AWS Route53 DNS adapter) — install it if you use
+Route53.
+
+The package installs:
+
+- `/usr/bin/ktc-mail` — the CLI entry point.
+- `/usr/lib/ktc-mail/` — the Python modules.
+- `/etc/ktc-mail/` — config + secrets (state dir created at install).
+- systemd units in `/lib/systemd/system/` (see below).
+- AppArmor profiles in `/etc/apparmor.d/`.
+- Example config in `/usr/share/doc/ktc-mail/examples/`.
+
+### 3. Run the setup wizard
+
+```bash
+sudo ktc-mail setup
+```
+
+The wizard binds **loopback only** (`127.0.0.1:8080`). Open
+`http://<server-ip>:8080` from the server console, or proxy it. The
+wizard collects:
+
+- **Primary domain** (e.g. `example.com`) — alias domains optional.
+- **DNS provider** — auto-detected from whois, or overridden. You
+  enter the **DNS API token** here if DNS-01 is selected (stored
+  encrypted in `secrets.json`, never world-readable). Pick "Manual DNS"
+  to skip automation and edit records yourself.
+- **Administrator email** + password (MFA can be enabled after).
+- **Certificate mode** — `dns-01` (recommended), `http-01`, or manual
+  upload.
+- **Security posture** — firewall ports, SSH key-only, Fail2ban/
+  CrowdSec/GeoIP, rate limits (sensible defaults pre-selected).
+- **Outbound relay** — direct, VPS WireGuard relay, IPv6-then-relay,
+  or smarthost (for when port 25 is blocked by the VPS provider).
+
+On completion the wizard renders all native configs, starts the mail
+services, and enables the systemd timer units.
+
+### 4. Expose the admin portal (optional)
+
+The persistent admin GUI binds loopback (`127.0.0.1:8081`). The setup
+renders an Nginx reverse proxy (with TLS) so you can reach it at
+`admin.<your-domain>`. Do **not** pass `--expose` — there is no such
+flag; remote access is via the proxy only.
+
+---
+
+## CLI reference (`ktc-mail`)
+
+Single entry point for all operations. Global flags: `--config`
+(default `/etc/ktc-mail/setup.json`), `--secrets`
+(`/etc/ktc-mail/secrets.json`), `--dry-run` (preview, no writes).
+
+| Command | Purpose |
+| --- | --- |
+| `ktc-mail setup [--host 127.0.0.1] [--port 8080]` | First-run setup web GUI. |
+| `ktc-mail dns plan` | Preview the computed DNS record set + PTR report. |
+| `ktc-mail dns apply` | Push records to the provider (respects `dns_managed` scope). |
+| `ktc-mail dns verify` | Check live DNS for drift vs local state. |
+| `ktc-mail dns providers` | List supported providers + required token scopes. |
+| `ktc-mail acme issue` | Issue certificates (DNS-01 or HTTP-01). |
+| `ktc-mail acme renew` | Renew all certificates. |
+| `ktc-mail acme deploy-hook` | Post-renewal deploy hook (reloads services, updates TLSA). |
+| `ktc-mail acme auth` / `cleanup` | Certbot DNS-01 auth/cleanup hooks. |
+| `ktc-mail firewall check` / `--enforce` | Verify / recreate nftables rules. |
+| `ktc-mail rate-limit` | Run the per-user outbound rate limiter (Postfix policy daemon). |
+| `ktc-mail ssh apply [--password-auth] [--permit-root-login]` | Apply SSH hardening drop-in. |
+| `ktc-mail ssh remove` / `status` | Remove / report SSH policy. |
+| `ktc-mail config render` / `write` / `validate` | Print / deploy / validate native configs. |
+| `ktc-mail dkim generate [--selector default]` | Generate DKIM keypair + DNS record. |
+| `ktc-mail user add <email> [--password] [--quota 1G]` | Create a mailbox. |
+| `ktc-mail user del <email>` / `list` / `passwd <email>` | Manage mailboxes. |
+| `ktc-mail admin start [--host 127.0.0.1] [--port 8081]` | Admin web portal. |
+| `ktc-mail fail2ban ...` | Manage Fail2ban jails. |
+| `ktc-mail metrics collect` | Write Prometheus `metrics.prom`. |
+| `ktc-mail backup init <repo-url>` | Initialize a restic repo (CLI path). |
+| `ktc-mail backup now [--dry-run]` | Run a backup. |
+| `ktc-mail backup status` / `snapshots` / `restore` / `check` / `forget` | Inspect / recover / prune. |
+| `ktc-mail backup set --repository ... --schedule ... --enable/--disable` | Reconfigure without re-init. |
+| `ktc-mail audit export [--syslog-host H] [--tcp] [--tls] [--siem-url U]` | Forward new audit lines to syslog/SIEM. |
+
+---
+
+## Backup (restic)
+
+Backups use [restic](https://restic.net/) — encrypted, deduplicated,
+and backend-agnostic. Configure the destination from the **Backup**
+page in the admin GUI (no CLI required):
+
+1. Pick a **backend**:
+   - **Local disk** — a path like `/backup` or `/srv/backups`.
+   - **Network (SFTP/SSH)** — `sftp:user@host:/path` (auth via SSH keys).
+   - **S3-compatible** — `s3:https://s3…/bucket` (AWS, MinIO, Wasabi…).
+   - **Cloud (Backblaze B2)** — `b2:bucket:/path`.
+2. Enter the **repository URL/path** and an **encryption password**
+   (leave blank to auto-generate a strong random key, stored 0400).
+3. For **S3 / B2**, credential fields appear: access key ID + secret.
+   These are written to `secrets.json` (0600) and to
+   `/etc/ktc-mail/backup-env`, which the systemd backup unit reads via
+   `EnvironmentFile=` and exports to restic (`AWS_*` / `B2_*`). They
+   never appear in `backup.json` or on the command line.
+4. Tick **Enable scheduled backups** (daily 03:00 timer) or leave it
+   off to stage the destination without arming the timer.
+
+The default protected paths are `/var/mail/`, `/etc/ktc-mail/`,
+`/etc/postfix/`, `/etc/dovecot/`, `/etc/nginx/`, and `/etc/rspamd/`.
+Retention defaults to 7 daily, 4 weekly, 3 monthly, 2 yearly. Restore
+is a deliberate manual action (`ktc-mail backup restore --target …`)
+— it is intentionally not one-click.
+
+> **Local repos note:** the backup service runs confined; if you point
+> local backups at a directory outside `/etc/ktc-mail` or
+> `/var/lib/ktc-mail`, add a drop-in
+> `ReadWritePaths=/srv/backups` to `ktc-mail-backup.service`.
+
+---
+
+## Admin GUI routes
+
+Loopback-bound FastAPI portal (`:8081`, reverse-proxied by Nginx).
+All POST routes require a valid per-session CSRF token.
+
+| Route | Method | Purpose |
+| --- | --- | --- |
+| `/login`, `/login/mfa`, `/login/break-glass` | GET/POST | Auth + MFA + break-glass. |
+| `/logout` | GET | End session. |
+| `/` | GET | Dashboard (backup status, service health). |
+| `/users`, `/users/add`, `/users/del`, `/users/passwd` | GET/POST | Mailbox management. |
+| `/settings`, `/settings/password` | GET/POST | Admin password. |
+| `/settings/mfa/enable` `/disable` `/recovery` `/init` | POST | TOTP MFA lifecycle + recovery codes. |
+| `/dkim`, `/dkim/generate` | GET/POST | DKIM keys + DNS record. |
+| `/logs` | GET | Audit log viewer. |
+| `/dns`, `/dns/verify`, `/dns/apply` | GET/POST | DNS plan/verify/apply. |
+| `/queue`, `/queue/flush`, `/queue/del` | GET/POST | Postfix queue control. |
+| `/certs`, `/certs/renew` | GET/POST | Certificate status + renew. |
+| `/backup`, `/backup/run`, `/backup/configure` | GET/POST | Backup status, run-now, **destination selector**. |
+| `/api/keys`, `/api/keys/create`, `/api/keys/revoke` | GET/POST | API key management. |
+| `/api/status`, `/api/health` | GET | JSON status/health. |
+
+The CSP is `script-src 'self'` (no inline handlers) — all client JS
+lives in `static/admin.js`.
+
+---
+
+## DNS providers
+
+Implemented adapters (`ktc-mail dns providers` for scopes):
+
+- **Cloudflare** · **Route53 (AWS, needs `python3-boto3`)** ·
+  **Hetzner** · **Porkbun** · **GoDaddy** · **DigitalOcean**
+- **DryRun** — preview/push simulation for testing.
+
+**Not implemented:** Namecheap (XML-based API, needs
+reverse-engineering). Selecting it raises a clear error from
+`ktc-mail dns apply`.
+
+Drift policy: `dns apply` only touches records KTC computed and
+previously pushed (tracked in `dns-state.json`). A record at the
+registrar whose name is not in your `dns_managed` allow-list is left
+alone — operator-added records survive sync.
+
+---
+
+## Authentication & SSO
+
+- **Default:** local accounts in Dovecot's passwd file, TOTP MFA,
+  RBAC (admin / operator / readonly), CSRF, secure cookies, recovery
+  codes, break-glass.
+- **LDAP:** set `auth_backend=ldap` in the profile (URI, bind DN,
+  search base, filters). Dovecot queries the directory for IMAP/POP
+  auth.
+- **OIDC webmail SSO (optional, external IdP):** enable
+  `oidc_enabled` and supply `oidc_issuer` / `oidc_client_id` /
+  `oidc_client_secret` / `oidc_scopes`. This emits SOGo's native OIDC
+  block for **webmail login SSO only** (Keycloak, Authentik, ADFS,
+  …). IMAP/POP auth is unchanged (still password/LDAP). Leaving
+  `oidc_enabled=False` is a complete no-op. On Debian 13 trixie,
+  Dovecot's OAuth2 passdb (IMAP parity with SSO) is available via the
+  oauth2 driver shipped in `dovecot-core`.
+
+---
+
+## Observability
+
+- **Audit log:** append-only `audit.log` in the state dir. Every
+  privileged action (login, MFA, DNS apply, backup configure, user
+  changes, cert renew) is recorded with actor + client IP.
+- **Prometheus:** `ktc-mail metrics collect` writes
+  `/var/lib/ktc-mail/metrics.prom` (service state, mail queue, DNS
+  drift, certificate expiry). Scrape it with node_exporter's
+  textfile collector (example in `/usr/share/ktc-mail/examples/`).
+- **Remote export:** `ktc-mail audit export` forwards new audit lines
+  to a syslog server (UDP 514, TCP, or TCP+TLS) and/or an HTTPS
+  SIEM/webhook as JSON batches. Idempotent and crash-safe (position
+  file in `audit.log.export.pos`); re-running forwards only deltas.
+
+---
+
+## systemd units & AppArmor
+
+Installed units (run `systemctl status ktc-mail-*`):
+
+| Unit | Type | Role |
+| --- | --- | --- |
+| `ktc-mail-setup.service` | oneshot | First-run setup GUI. |
+| `ktc-mail-acme-renew.service` + `.timer` | oneshot + timer | Cert renewal. |
+| `ktc-mail-backup.service` + `.timer` | oneshot + timer | restic backup (daily). |
+| `ktc-mail-admin.service` | simple | Admin portal (loopback). |
+| `ktc-mail-rate-limit.service` | simple | Outbound rate limiter. |
+| `ktc-mail-firewall-monitor.service` + `.timer` | oneshot + timer | nftables policy. |
+| `ktc-mail-exporter.service` + `.timer` | oneshot + timer | Prometheus metrics. |
+| `ktc-mail-audit-export.service` + `.timer` | oneshot + timer | SIEM/syslog forward. |
+
+Every unit is confined by a **named AppArmor profile**
+(`ktc-mail.<role>`), attached via `AppArmorProfile=` (systemd ≥247).
+The backup profile permits network egress so S3/B2/remote targets
+work. Each profile restricts exec, filesystem writes, and network to
+what its role needs (e.g. the exporter has `deny network`).
+
+---
+
+## Security model (summary)
+
+- Secrets in `secrets.json` (0600); restic password in a 0400 file.
+- GUI binds loopback; remote access only via the TLS Nginx proxy.
+- CSRF tokens per session; secure, `SameSite=Lax` cookies.
+- Firewall defaults: 22/25/443/465/587/993 open; 80 only during
+  HTTP-01; ManageSieve (4190) off by default.
+- SSH: key-only, password auth and root login disabled by default.
+- Anti-abuse: Fail2ban + CrowdSec (GPG-pinned apt, never
+  `curl|bash`) + GeoIP + Postfix anvil + DNSBL + per-user rate limit.
+- Atomic, fsync-durable writes for all config/secret/state files (no
+  chmod race window).
+- Backups are encrypted at rest by restic; the encryption password is
+  generated/store-0400 and is recoverable only from that file.
+
+See `docs/security.md` and `docs/security-review-checklist.md` for the
+full threat model and review history.
+
+---
+
+## Developer checks
+
+```bash
+# Compile all Python modules (host interpreter)
+python3 -m py_compile src/ktc_mail_admin/*.py
+
+# Shell syntax for scripts + packaging hooks
+bash -n scripts/bootstrap-mail-stack.sh scripts/ktc-mail-open-ports.sh \
+        debian/postinst debian/prerm
+
+# Build + install + runtime assertions in an isolated qemu/kvm Debian 13 VM
+bash ~/.hermes/vm-assets/ktc-mail-vm-verify.sh /path/to/KTC_MAIL
+```
+
+The VM verify script boots a fresh Debian 13 image, builds the `.deb`,
+installs it (resolving Depends from Debian repos), and asserts the
+console script resolves, the `ktc-mail` user exists, metrics run as
+that user, GUIs bind loopback, the backup env-dropin wiring works
+(s3 → `AWS_*` / local → empty), and every systemd unit starts without
+an `ImportError`. **The host is never touched.**
+
+---
+
+## Prototype / local run (no package)
 
 ```bash
 KTC_MAIL_CONFIG_DIR=/tmp/ktc-mail/etc KTC_MAIL_STATE_DIR=/tmp/ktc-mail/state \
-  python3 src/ktc_mail_admin/app.py --host 127.0.0.1 --port 8080
+  ktc-mail setup --host 127.0.0.1 --port 8080
 ```
 
-Then open `http://127.0.0.1:8080` and submit the initial domain setup form.
+Then open `http://127.0.0.1:8080` and submit the setup form. The
+`KTC_MAIL_CONFIG_DIR` / `KTC_MAIL_STATE_DIR` env vars override the
+default `/etc/ktc-mail` and `/var/lib/ktc-mail` for sandbox testing.
 
-## What you are missing before production
+---
 
-- DNS provider adapters: Cloudflare, Route53 (AWS, needs boto3), Hetzner,
-  Porkbun, GoDaddy, and DigitalOcean are implemented (plus a DryRun provider
-  for `--dry-run`). Namecheap is NOT implemented (its API is XML-based and
-  needs reverse-engineering — `ktc-mail dns apply` raises a clear error if
-  selected). Run `ktc-mail dns providers` for the full list and token scopes.
-- ✅ Admin identity: local accounts, MFA (TOTP), RBAC (admin/operator/readonly), CSRF, secure cookies, recovery codes, and break-glass operator access are implemented. OIDC/LDAP remain optional future auth backends.
-- ✅ Backup: restic-based (init/run/restore/check/forget/snapshots) with configurable retention. Restore drill + destination selection still need your operational decision.
-- ✅ Observability: append-only audit log, Prometheus exporter (queue/DNS drift/cert expiry), and remote audit export (syslog/SIEM) are implemented. Alert destinations need wiring to your SIEM.
-- Webmail: SOGo is wired by default (config renderer + nginx vhost). Switch to Roundcube/SnappyMail if preferred.
-- Compliance requirements that affect logging, retention, encryption, and access controls — your call (jurisdiction/regime).
+## Remaining operator decisions (not code-blocked)
 
-See `docs/architecture.md`, `docs/security.md`, and `docs/implementation-plan.md` for the detailed plan.
+The software is complete; these are *your* infrastructure inputs,
+entered through the GUI/CLI at deploy time:
+
+- **Real domain + DNS delegation** — run the real-domain smoke test
+  (MX/SPF/DKIM/DMARC resolve, a real ACME cert issues, mail flows).
+- **DNS API token** — entered in the setup wizard if DNS-01 is chosen
+  (stored encrypted).
+- **Backup destination** — pick Local / SFTP / S3 / B2 in the Backup
+  GUI and supply the repo URL + (for S3/B2) keys.
+- **Optional OIDC IdP** — if you want webmail SSO, stand up an
+  external IdP and fill the OIDC fields; otherwise leave disabled.
+- **SIEM/syslog target** — point `ktc-mail audit export` at your
+  collector (drop-in or timer).
+- **Compliance/retention** — logging retention, encryption, and access
+  controls per your jurisdiction.
+
+---
+
+## Documentation index
+
+- `docs/architecture.md` — component design + data flow.
+- `docs/security.md` — threat model + controls.
+- `docs/security-review-checklist.md` — review history.
+- `docs/implementation-plan.md` — phased build plan.
+- `INSTALL.md` — install deep-dive.
+- `HANDOFF.md` / `PRODUCTION_READINESS.md` / `PRODUCTION_ROADMAP.md` —
+  project status (kept in sync with `git` HEAD, not stale docs).
