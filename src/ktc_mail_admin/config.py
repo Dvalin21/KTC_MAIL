@@ -159,6 +159,14 @@ class DnsRecord:
     purpose: str = ""  # Human-readable documentation, NOT serialised
     proxied: bool = False  # Cloudflare proxy status (mail records MUST be False)
 
+    def __post_init__(self) -> None:
+        # Canonical FQDN form: always trailing-dot. Local record generation
+        # omits the dot while provider parsers add it; without normalisation
+        # the record keys never match and every `dns apply` deletes+recreates
+        # all non-TXT records (H4). Frozen dataclass -> object.__setattr__.
+        if self.name and self.name != "@" and not self.name.endswith("."):
+            object.__setattr__(self, "name", self.name.rstrip(".") + ".")
+
     def key(self) -> str:
         """Unique key for this record within a zone.
 

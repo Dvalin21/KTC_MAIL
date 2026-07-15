@@ -20,7 +20,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from ktc_mail_admin.config import DnsRecord, SetupProfile
+from ktc_mail_admin.config import DnsRecord, DnsRecordSet, SetupProfile
 from ktc_mail_admin import dns_provider as dp
 
 
@@ -177,3 +177,27 @@ def test_route53_roundtrip_no_churn():
     })[0]
     assert remade.value == MX.value
     assert remade.priority == MX.priority
+
+
+# ── H4: trailing-dot normalisation must make diff() converge ───────────────
+
+def test_dnsrecord_name_normalized_to_trailing_dot():
+    assert DnsRecord("MX", "example.com", "v").name == "example.com."
+    assert DnsRecord("MX", "example.com.", "v").name == "example.com."   # idempotent
+    assert DnsRecord("MX", "@", "v").name == "@"                         # apex preserved
+
+
+def test_trailing_dot_no_churn_on_apply():
+    local = SetupProfile(domain="example.com").generate_dns_records()
+    p = dp.HetznerProvider(token="dummy", zone_name="example.com")
+    remote = DnsRecordSet("example.com")
+    # Provider returns dotted full names + embedded priority (Hetzner shape;
+    # apex records come back with an empty name, mapped to the zone root).
+    remote.add(p._to_record({"name": "", "type": "MX", "value": "10 mail.example.com.", "ttl": 300}))
+    remote.add(p._to_record({"name": "_submission._tcp", "type": "SRV", "value": "0 1 587 mail.example.com.", "ttl": 300}))
+    diff = local.diff(remote)
+    churn = {r.key() for r in diff.to_create} | {r.key() for r in diff.to_delete}
+    churn |= {u[1].key() for u in diff.to_update}
+    # MX and the mirrored SRV must NOT churn every sync.
+    assert "MX:example.com." not in churn
+    assert "SRV:_submission._tcp.example.com." not in churn
