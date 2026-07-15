@@ -125,14 +125,22 @@ class CloudflareProvider:
         zones = result.get("result", [])
         if not zones:
             raise DnsError(f"Cloudflare zone not found: {self.zone_name}")
-        self._zone_id = str(zones[0]["id"])
+        self._zone_id = str(zones[0].get("id"))
         return self._zone_id
 
-    def _to_dns_record(self, raw: dict[str, Any]) -> DnsRecord:
-        """Convert a Cloudflare API record to our DnsRecord."""
-        name = str(raw["name"])
-        rtype = str(raw["type"]).upper()
-        value = str(raw["content"])
+    def _to_dns_record(self, raw: dict[str, Any]) -> DnsRecord | None:
+        """Convert a Cloudflare API record to our DnsRecord.
+
+        Returns None for a malformed record (missing type/name/content)
+        so one bad API row can't abort the entire zone sync.
+        """
+        rtype = str(raw.get("type", "")).upper()
+        name = raw.get("name")
+        value = raw.get("content")
+        if not rtype or name is None or value is None:
+            return None
+        name = str(name)
+        value = str(value)
 
         # Cloudflare returns fully qualified names; ensure trailing dot
         if rtype in {"MX", "CNAME", "SRV", "NS", "TLSA"}:
@@ -165,7 +173,9 @@ class CloudflareProvider:
                 f"{urlencode({'per_page': 100, 'page': page})}",
             )
             for raw in result.get("result", []):
-                records.append(self._to_dns_record(raw))
+                rec = self._to_dns_record(raw)
+                if rec is not None:
+                    records.append(rec)
             total_pages = result.get("result_info", {}).get("total_pages", 1)
             if page >= total_pages:
                 break
@@ -230,7 +240,7 @@ class CloudflareProvider:
             f"{urlencode({'type': rtype, 'name': name.rstrip('.')})}",
         )
         records = result.get("result", [])
-        return str(records[0]["id"]) if records else None
+        return str(records[0].get("id")) if records else None
 
 
 # ── Route53 Provider (AWS Route53) ───────────────────────────────────────────
@@ -283,13 +293,23 @@ class Route53Provider:
         raise DnsError(f"Route53 zone not found: {self.zone_name}")
 
     def _to_record(self, rset: dict) -> list[DnsRecord]:
-        """Convert a Route53 resource record set to one or more DnsRecords."""
-        name = rset["Name"]  # already has trailing dot
-        rtype = rset["Type"]
+        """Convert a Route53 resource record set to one or more DnsRecords.
+
+        A malformed record set (missing Name/Type, or a ResourceRecord
+        without a Value) is skipped rather than raising KeyError.
+        """
+        name = rset.get("Name")
+        rtype = str(rset.get("Type", "")).upper()
+        if not name or not rtype:
+            return []
+        name = str(name)
         ttl = int(rset.get("TTL", 300))
         records: list[DnsRecord] = []
         for value in rset.get("ResourceRecords", []):
-            content = value["Value"]
+            content = value.get("Value")
+            if content is None:
+                continue
+            content = str(content)
             # Route53 embeds priority in the value string ("prio target" /
             # "prio weight port target"). Split it out so the stored value
             # matches DnsRecord (target only) and diff()/verify() converge.
@@ -303,11 +323,11 @@ class Route53Provider:
                 type=rtype, name=name, value=content, ttl=ttl, priority=priority))
         # Alias records (e.g. A/AAAA for ELB/CloudFront) have AliasTarget instead
         if not records and "AliasTarget" in rset:
-            records.append(DnsRecord(
-                type=rtype, name=name,
-                value=rset["AliasTarget"]["DNSName"],
-                ttl=ttl,
-            ))
+            alias = rset["AliasTarget"]
+            dns_name = alias.get("DNSName")
+            if dns_name is not None:
+                records.append(DnsRecord(
+                    type=rtype, name=name, value=str(dns_name), ttl=ttl))
         return records
 
     # ── DnsTransport protocol ───────────────────────────────────────
@@ -423,15 +443,20 @@ class HetznerProvider:
             return self._zone_id
         result = self._request("GET", "/zones")
         for zone in result.get("zones", []):
-            if zone["name"] == self.zone_name:
-                self._zone_id = str(zone["id"])
+            if zone.get("name") == self.zone_name:
+                self._zone_id = str(zone.get("id"))
                 return self._zone_id
         raise DnsError(f"Hetzner zone not found: {self.zone_name}")
 
-    def _to_record(self, raw: dict[str, Any]) -> DnsRecord:
+    def _to_record(self, raw: dict[str, Any]) -> DnsRecord | None:
+        rtype = str(raw.get("type", "")).upper()
+        if not rtype:
+            return None
         name = str(raw.get("name", ""))
-        rtype = str(raw["type"]).upper()
-        value = str(raw["value"])
+        value = raw.get("value")
+        if value is None:
+            return None
+        value = str(value)
         # Hetzner embeds priority in the value string for MX/SRV — split it
         # out so the stored value matches DnsRecord (target only).
         priority = None
@@ -442,10 +467,7 @@ class HetznerProvider:
                 value = parts[1]
         # Hetzner returns record name without zone suffix
         # e.g. "mail" for mail.example.com
-        if name:
-            fqdn = f"{name}.{self.zone_name}."
-        else:
-            fqdn = f"{self.zone_name}."
+        fqdn = f"{name}.{self.zone_name}." if name else f"{self.zone_name}."
         return DnsRecord(
             type=rtype, name=fqdn, value=value,
             ttl=int(raw.get("ttl", 300)), priority=priority,
@@ -462,7 +484,9 @@ class HetznerProvider:
                 f"/records?zone_id={self._get_zone_id()}&page={page}&per_page=100",
             )
             for raw in result.get("records", []):
-                records.append(self._to_record(raw))
+                rec = self._to_record(raw)
+                if rec is not None:
+                    records.append(rec)
             meta = result.get("meta", {})
             pagination = meta.get("pagination", {})
             total = pagination.get("total_pages", 1)
@@ -520,7 +544,7 @@ class HetznerProvider:
             else:
                 fqdn = f"{self.zone_name}."
             if fqdn.rstrip(".") == needle:
-                return str(rec["id"])
+                return str(rec.get("id"))
         return None
 
 
@@ -589,11 +613,20 @@ class PorkbunProvider:
             )
         return result
 
-    def _to_record(self, raw: dict[str, Any]) -> DnsRecord:
-        """Convert a Porkbun API record to our DnsRecord."""
-        name = str(raw["name"])
-        rtype = str(raw["type"]).upper()
-        content = str(raw["content"])
+    def _to_record(self, raw: dict[str, Any]) -> DnsRecord | None:
+        """Convert a Porkbun API record to our DnsRecord.
+
+        Returns None for a malformed record so it is skipped rather than
+        raising KeyError mid-sync.
+        """
+        rtype = str(raw.get("type", "")).upper()
+        if not rtype:
+            return None
+        name = str(raw.get("name", ""))
+        content = raw.get("content")
+        if content is None:
+            return None
+        content = str(content)
         ttl = int(raw.get("ttl", 300))
 
         # Porkbun returns FQDNs with trailing dot for some types
@@ -616,8 +649,10 @@ class PorkbunProvider:
         result = self._request(f"/dns/retrieve/{domain}")
         records: list[DnsRecord] = []
         for raw in result.get("response", []):
-            if raw.get("type") and raw.get("name"):
-                records.append(self._to_record(raw))
+            if raw.get("type") is not None and "name" in raw:
+                rec = self._to_record(raw)
+                if rec is not None:
+                    records.append(rec)
         return records
 
     def create(self, record: DnsRecord) -> None:
@@ -740,17 +775,16 @@ class GoDaddyProvider:
         except URLError as exc:
             raise DnsError(f"GoDaddy request failed: {exc.reason}") from exc
 
-    def _to_record(self, raw: dict[str, Any]) -> DnsRecord:
+    def _to_record(self, raw: dict[str, Any]) -> DnsRecord | None:
+        rtype = str(raw.get("type", "")).upper()
+        if not rtype:
+            return None
         name = str(raw.get("name", ""))
-        rtype = str(raw["type"]).upper()
         data = str(raw.get("data", ""))
         ttl = int(raw.get("ttl", 300))
 
         # GoDaddy returns names without trailing dot and without domain suffix
-        if name:
-            fqdn = f"{name}.{self.zone_name}."
-        else:
-            fqdn = f"{self.zone_name}."
+        fqdn = f"{name}.{self.zone_name}." if name else f"{self.zone_name}."
 
         if rtype in ("MX", "SRV"):
             parts_raw = data.split(None, 1)
@@ -765,8 +799,9 @@ class GoDaddyProvider:
         result = self._request("GET", f"/domains/{domain}/records")
         records: list[DnsRecord] = []
         for raw in result if isinstance(result, list) else []:
-            if raw.get("type") and "name" in raw:
-                records.append(self._to_record(raw))
+            rec = self._to_record(raw)
+            if rec is not None:
+                records.append(rec)
         return records
 
     def create(self, record: DnsRecord) -> None:
@@ -859,17 +894,16 @@ class DigitalOceanProvider:
         except URLError as exc:
             raise DnsError(f"DigitalOcean request failed: {exc.reason}") from exc
 
-    def _to_record(self, raw: dict[str, Any]) -> DnsRecord:
-        rtype = str(raw["type"]).upper()
+    def _to_record(self, raw: dict[str, Any]) -> DnsRecord | None:
+        rtype = str(raw.get("type", "")).upper()
+        if not rtype:
+            return None
         name = str(raw.get("name", ""))
         data = str(raw.get("data", ""))
         ttl = int(raw.get("ttl", 1800))
 
         # DigitalOcean returns bare names (no domain suffix, no trailing dot)
-        if name:
-            fqdn = f"{name}.{self.zone_name}."
-        else:
-            fqdn = f"{self.zone_name}."
+        fqdn = f"{name}.{self.zone_name}." if name else f"{self.zone_name}."
 
         if rtype in ("MX", "SRV"):
             parts = data.split(None, 1)
@@ -896,7 +930,9 @@ class DigitalOceanProvider:
                 f"/domains/{domain}/records?page={page}&per_page=100",
             )
             for raw in result.get("domain_records", []):
-                records.append(self._to_record(raw))
+                rec = self._to_record(raw)
+                if rec is not None:
+                    records.append(rec)
             meta = result.get("meta", {})
             total = meta.get("total", len(records))
             if len(records) >= total:
@@ -965,7 +1001,7 @@ class DigitalOceanProvider:
                 raw_name = str(raw.get("name", ""))
                 fqdn = f"{raw_name}.{domain}." if raw_name else f"{domain}."
                 if raw_type == rtype and fqdn.rstrip(".") == needle:
-                    return str(raw["id"])
+                    return str(raw.get("id"))
             meta = result.get("meta", {})
             total = meta.get("total", 0)
             if len(result.get("domain_records", [])) == 0:
