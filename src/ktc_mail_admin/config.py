@@ -832,7 +832,10 @@ class SetupProfile:
                              purpose="Mail server IPv6"))
 
         # MX — inbound mail routing
-        rs.add(DnsRecord("MX", self.domain, f"10 {self.hostname}.",
+        # value carries ONLY the target host; preference lives in `priority`.
+        # Adapters that need it embedded (Route53, DigitalOcean) rebuild the
+        # "priority target" string; the rest send it as a separate field.
+        rs.add(DnsRecord("MX", self.domain, self.hostname + ".", priority=10,
                          purpose="Inbound mail routing"))
 
         # SPF — who can send mail for this domain
@@ -884,50 +887,58 @@ class SetupProfile:
         # Submission (STARTTLS, port 587) — standard mail submission
         rs.add(DnsRecord(
             "SRV", f"_submission._tcp.{self.domain}",
-            f"0 1 587 {self.hostname}.",
+            f"1 587 {self.hostname}.",
+            priority=0,
             purpose="Mail submission STARTTLS",
         ))
         # Submissions (implicit TLS, port 465) — legacy but still widely used
         rs.add(DnsRecord(
             "SRV", f"_submissions._tcp.{self.domain}",
-            f"0 1 465 {self.hostname}.",
+            f"1 465 {self.hostname}.",
+            priority=0,
             purpose="Mail submission implicit TLS",
         ))
         # IMAPS (port 993)
         rs.add(DnsRecord(
             "SRV", f"_imaps._tcp.{self.domain}",
-            f"0 1 993 {self.hostname}.",
+            f"1 993 {self.hostname}.",
+            priority=0,
             purpose="IMAPS service discovery",
         ))
         # POP3 intentionally omitted. Modern mail uses IMAP.
         # Sieve (port 4190) — email filtering rule management
         rs.add(DnsRecord(
             "SRV", f"_sieve._tcp.{self.domain}",
-            f"0 1 4190 {self.hostname}.",
+            f"1 4190 {self.hostname}.",
+            priority=0,
             purpose="ManageSieve service discovery",
         ))
         # Autodiscover (Outlook, port 443 via HTTPS)
         rs.add(DnsRecord(
             "SRV", f"_autodiscover._tcp.{self.domain}",
-            f"0 1 443 {self.hostname}.",
+            f"1 443 {self.hostname}.",
+            priority=0,
             purpose="Outlook autodiscovery",
         ))
         # Autoconfig (Thunderbird, port 443 via HTTPS)
         rs.add(DnsRecord(
             "SRV", f"_autoconfig._tcp.{self.domain}",
-            f"0 1 443 {self.hostname}.",
+            f"1 443 {self.hostname}.",
+            priority=0,
             purpose="Thunderbird autoconfig",
         ))
         # CardDAV (contacts, port 443 via HTTPS)
         rs.add(DnsRecord(
             "SRV", f"_carddav._tcp.{self.domain}",
-            f"0 1 443 {self.hostname}.",
+            f"1 443 {self.hostname}.",
+            priority=0,
             purpose="CardDAV contacts sync",
         ))
         # CalDAV (calendar, port 443 via HTTPS)
         rs.add(DnsRecord(
             "SRV", f"_caldav._tcp.{self.domain}",
-            f"0 1 443 {self.hostname}.",
+            f"1 443 {self.hostname}.",
+            priority=0,
             purpose="CalDAV calendar sync",
         ))
 

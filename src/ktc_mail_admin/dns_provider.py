@@ -181,6 +181,8 @@ class CloudflareProvider:
         }
         if record.type in {"A", "AAAA", "CNAME"}:
             payload["proxied"] = False  # never proxy mail traffic
+        if record.type in {"MX", "SRV"} and record.priority is not None:
+            payload["priority"] = record.priority
         self._request("POST", f"/zones/{self._get_zone_id()}/dns_records", payload)
 
     def update(self, old: DnsRecord, new: DnsRecord) -> None:
@@ -199,6 +201,8 @@ class CloudflareProvider:
         }
         if new.type in {"A", "AAAA", "CNAME"}:
             payload["proxied"] = False
+        if new.type in {"MX", "SRV"} and new.priority is not None:
+            payload["priority"] = new.priority
         self._request(
             "PUT",
             f"/zones/{self._get_zone_id()}/dns_records/{existing}",
@@ -286,10 +290,17 @@ class Route53Provider:
         records: list[DnsRecord] = []
         for value in rset.get("ResourceRecords", []):
             content = value["Value"]
-            # Canonical separator is SPACE (matches Cloudflare/Hetzner/Porkbun/
-            # GoDaddy/DigitalOcean and our DnsRecord form). Route53 itself
-            # accepts either; normalize to space so diff() doesn't churn.
-            records.append(DnsRecord(type=rtype, name=name, value=content, ttl=ttl))
+            # Route53 embeds priority in the value string ("prio target" /
+            # "prio weight port target"). Split it out so the stored value
+            # matches DnsRecord (target only) and diff()/verify() converge.
+            priority = None
+            if rtype in ("MX", "SRV"):
+                parts = content.split(None, 1)
+                if len(parts) == 2 and parts[0].isdigit():
+                    priority = int(parts[0])
+                    content = parts[1]
+            records.append(DnsRecord(
+                type=rtype, name=name, value=content, ttl=ttl, priority=priority))
         # Alias records (e.g. A/AAAA for ELB/CloudFront) have AliasTarget instead
         if not records and "AliasTarget" in rset:
             records.append(DnsRecord(
@@ -324,8 +335,12 @@ class Route53Provider:
 
     def _change(self, action: str, record: DnsRecord) -> None:
         value = record.value
-        if record.type in ("MX", "SRV"):
-            value = value.replace("\t", " ")  # Route53 uses space sep
+        if record.type in ("MX", "SRV") and record.priority is not None:
+            # Route53 embeds priority in the value string ("prio target" /
+            # "prio weight port target"); there is no separate priority field.
+            value = f"{record.priority} {record.value}"
+        else:
+            value = value.replace("\t", " ")
         self._client.change_resource_record_sets(
             HostedZoneId=self._get_zone_id(),
             ChangeBatch={
@@ -417,6 +432,14 @@ class HetznerProvider:
         name = str(raw.get("name", ""))
         rtype = str(raw["type"]).upper()
         value = str(raw["value"])
+        # Hetzner embeds priority in the value string for MX/SRV — split it
+        # out so the stored value matches DnsRecord (target only).
+        priority = None
+        if rtype in ("MX", "SRV"):
+            parts = value.split(None, 1)
+            if len(parts) == 2 and parts[0].isdigit():
+                priority = int(parts[0])
+                value = parts[1]
         # Hetzner returns record name without zone suffix
         # e.g. "mail" for mail.example.com
         if name:
@@ -425,7 +448,7 @@ class HetznerProvider:
             fqdn = f"{self.zone_name}."
         return DnsRecord(
             type=rtype, name=fqdn, value=value,
-            ttl=int(raw.get("ttl", 300)),
+            ttl=int(raw.get("ttl", 300)), priority=priority,
         )
 
     # ── DnsTransport protocol ───────────────────────────────────────
@@ -471,11 +494,16 @@ class HetznerProvider:
 
     def _record_payload(self, record: DnsRecord) -> dict[str, Any]:
         name = record.name.removesuffix(f".{self.zone_name}.")
+        value = record.value
+        # Hetzner embeds priority in the value string ("prio target" /
+        # "prio weight port target") — there is no separate priority field.
+        if record.type in ("MX", "SRV") and record.priority is not None:
+            value = f"{record.priority} {record.value}"
         return {
             "zone_id": self._get_zone_id(),
             "type": record.type,
             "name": name,
-            "value": record.value,
+            "value": value,
             "ttl": record.ttl,
         }
 
@@ -626,12 +654,16 @@ class PorkbunProvider:
         content = record.value
         if record.type in ("MX", "SRV"):
             content = content.replace("\t", " ")
-        return {
+        payload = {
             "type": record.type,
             "name": record.name.rstrip("."),
             "content": content,
             "ttl": record.ttl,
         }
+        # Porkbun uses a separate `prio` field for MX/SRV.
+        if record.type in ("MX", "SRV") and record.priority is not None:
+            payload["prio"] = record.priority
+        return payload
 
     def _find_record_id(self, rtype: str, name: str) -> str | None:
         domain = name.rstrip(".").split(".")
@@ -908,12 +940,16 @@ class DigitalOceanProvider:
         data = record.value
         if record.type in ("MX", "SRV"):
             data = data.replace("\t", " ")
-        return {
+        payload = {
             "type": record.type,
             "name": self._domain_arg(record),
             "data": data,
             "ttl": record.ttl,
         }
+        # DigitalOcean uses a separate `priority` field for MX/SRV.
+        if record.type in ("MX", "SRV") and record.priority is not None:
+            payload["priority"] = record.priority
+        return payload
 
     def _find_record_id(self, rtype: str, name: str) -> str | None:
         domain = self.zone_name
