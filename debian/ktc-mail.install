@@ -48,6 +48,8 @@ systemd/ktc-mail-exporter.service lib/systemd/system/
 systemd/ktc-mail-exporter.timer lib/systemd/system/
 systemd/ktc-mail-audit-export.service lib/systemd/system/
 systemd/ktc-mail-audit-export.timer lib/systemd/system/
+systemd/ktc-mail-olefy.service lib/systemd/system/
+systemd/ktc-mail-mta-sts.service lib/systemd/system/
 
 # ── AppArmor profiles (named roles; attached via systemd AppArmorProfile=) ─
 apparmor/ktc-mail.setup etc/apparmor.d/
@@ -61,6 +63,13 @@ apparmor/ktc-mail.rate-limit etc/apparmor.d/
 
 # ── tmpfiles (runtime dir on tmpfs) ──────────────────────────
 packaging/etc/tmpfiles.d/ktc-mail.conf usr/lib/tmpfiles.d/
+
+# ── MTA-STS resolver config ──────────────────────────────────
+packaging/etc/ktc-mail/mta-sts-daemon.yml etc/ktc-mail/
+
+# ── Vendored Olefy daemon (not in Debian/PyPI; see file header) ──
+# dh_install destination is a DIRECTORY; the file keeps its basename (olefy.py).
+vendor/olefy/olefy.py opt/ktc-mail/olefy/
 
 # ── Opt-in node_exporter textfile wiring (see file header) ────
 packaging/usr/share/ktc-mail/examples/node-exporter-ktc-mail.conf usr/share/ktc-mail/examples/

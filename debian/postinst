@@ -12,6 +12,32 @@ adduser ktc-mail ssl-cert 2>/dev/null || true
 adduser --system --group --home /var/mail --quiet vmail 2>/dev/null || true
 adduser vmail ktc-mail 2>/dev/null || true
 
+# Dedicated unprivileged users for the mail helpers.
+adduser --system --group --no-create-home --quiet olefy 2>/dev/null || true
+adduser --system --group --no-create-home --quiet mta-sts 2>/dev/null || true
+# mta-sts must read /etc/ktc-mail (0750 root:ktc-mail) for its config; join the group.
+adduser mta-sts ktc-mail 2>/dev/null || true
+
+# Create the KTC venv and install oletools (provides /opt/ktc-mail/venv/bin/olevba3
+# for Olefy). oletools IS on PyPI; python3-oletools is NOT in Debian trixie, so apt
+# cannot provide it. Olefy itself is vendored at /opt/ktc-mail/olefy/olefy.py.
+# ponytail: offline PyPI => Olefy soft-fails (rspamd can't reach :10050); mail still flows.
+if [[ ! -x /opt/ktc-mail/venv/bin/olevba3 ]]; then
+    if python3 -m venv /opt/ktc-mail/venv 2>/dev/null; then
+        /opt/ktc-mail/venv/bin/pip install --upgrade pip >/dev/null 2>&1 || true
+        if ! /opt/ktc-mail/venv/bin/pip install oletools 2>&1; then
+            echo "WARNING: failed to pip install oletools into /opt/ktc-mail/venv" >&2
+            echo "  Olefy macro scanning will be unavailable until:" >&2
+            echo "    /opt/ktc-mail/venv/bin/pip install oletools" >&2
+        fi
+    else
+        echo "WARNING: failed to create venv at /opt/ktc-mail/venv (python3-venv missing?)" >&2
+    fi
+fi
+# Olefy runs as unprivileged 'olefy'; venv + vendored script must be readable.
+chown -R root:root /opt/ktc-mail/venv /opt/ktc-mail/olefy 2>/dev/null || true
+chmod -R go+rX /opt/ktc-mail/venv /opt/ktc-mail/olefy 2>/dev/null || true
+
 install -d -m 0750 -o root -g ktc-mail /etc/ktc-mail /etc/ktc-mail/dkim
 install -d -m 0770 -o root -g ktc-mail /var/lib/ktc-mail
 # Runtime dir on tmpfs (recreated at boot via tmpfiles.d/ktc-mail.conf)
@@ -20,7 +46,9 @@ systemd-tmpfiles --create ktc-mail.conf 2>/dev/null || true
 # Setup GUI and admin portal need root to write Postfix/Dovecot configs;
 # rate-limiter and exporter use ktc-mail user.
 systemctl daemon-reload
-systemctl enable ktc-mail-setup.service ktc-mail-admin.service ktc-mail-firewall-monitor.timer ktc-mail-acme-renew.timer ktc-mail-backup.timer ktc-mail-exporter.timer ktc-mail-rate-limit.service ktc-mail-audit-export.timer
+systemctl enable ktc-mail-setup.service ktc-mail-admin.service ktc-mail-firewall-monitor.timer ktc-mail-acme-renew.timer ktc-mail-backup.timer ktc-mail-exporter.timer ktc-mail-rate-limit.service ktc-mail-audit-export.timer ktc-mail-olefy.service ktc-mail-mta-sts.service
+# Avoid a port 8461 clash if the apt package ships its own unit for the same daemon.
+systemctl disable --now postfix-mta-sts-resolver.service 2>/dev/null || true
 systemctl restart ktc-mail-setup.service
 
 # Apply default SSH policy (key-only) if no custom config exists

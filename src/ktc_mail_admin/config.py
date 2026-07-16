@@ -694,7 +694,7 @@ class SetupProfile:
     setup_phase: str = "BOOTSTRAP"
 
     # Renewal hooks config
-    reload_services: tuple[str, ...] = ("postfix", "dovecot", "nginx")
+    reload_services: tuple[str, ...] = ("postfix", "dovecot", "rspamd", "nginx")
     update_tlsa_on_renewal: bool = True
 
     dmarc_policy: str = "none"  # none | quarantine | reject
@@ -1064,7 +1064,7 @@ class SetupProfile:
             dns_provider_manual=bool(data.get("dns_provider_manual", False)),
             manage_system_hostname=bool(data.get("manage_system_hostname", True)),
             setup_phase=setup_phase,
-            reload_services=tuple(data.get("reload_services", ["postfix", "dovecot", "nginx"])),
+            reload_services=tuple(data.get("reload_services", ["postfix", "dovecot", "rspamd", "nginx"])),
             update_tlsa_on_renewal=bool(data.get("update_tlsa_on_renewal", True)),
             dmarc_policy=data.get("dmarc_policy", "none"),
             dns_managed=[

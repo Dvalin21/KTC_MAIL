@@ -1,0 +1,22 @@
+[Unit]
+Description=KTC Mail — MTA-STS policy resolver for Postfix
+Documentation=https://github.com/Snawoot/postfix-mta-sts-resolver
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/mta-sts-daemon -c /etc/ktc-mail/mta-sts-daemon.yml
+Restart=on-failure
+RestartSec=5
+User=mta-sts
+Group=mta-sts
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+CapabilityBoundingSet=
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=multi-user.target

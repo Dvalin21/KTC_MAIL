@@ -285,7 +285,8 @@ def _all_service_status() -> dict[str, str]:
     if cached and (now - cached[0]) < SERVICE_CACHE_TTL:
         return cached[1]
 
-    svcs = ["postfix", "dovecot", "rspamd", "nginx", "redis-server"]
+    svcs = ["postfix", "dovecot", "rspamd", "nginx", "redis-server",
+            "ktc-mail-olefy", "ktc-mail-mta-sts"]
     try:
         result = subprocess.run(
             ["systemctl", "show", "-p", "ActiveState", "--value", *svcs],
@@ -2218,7 +2219,8 @@ def create_app() -> FastAPI:
         queue = _queue_depth()
 
         # Overall status: all tracked services must be active
-        tracked = ("postfix", "dovecot", "rspamd", "nginx")
+        tracked = ("postfix", "dovecot", "rspamd", "nginx",
+                   "ktc-mail-olefy", "ktc-mail-mta-sts")
         all_active = all(services.get(s) == "active" for s in tracked)
         overall = "healthy" if all_active and queue >= 0 else "degraded"
 

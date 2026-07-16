@@ -44,7 +44,8 @@ METRICS_PATH = STATE_DIR / "metrics.prom"
 TMP_METRICS_PATH = STATE_DIR / "metrics.prom.tmp"
 
 # Services to monitor
-TRACKED_SERVICES = ("postfix", "dovecot", "rspamd", "nginx", "redis-server")
+TRACKED_SERVICES = ("postfix", "dovecot", "rspamd", "nginx", "redis-server",
+                     "ktc-mail-olefy", "ktc-mail-mta-sts")
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────

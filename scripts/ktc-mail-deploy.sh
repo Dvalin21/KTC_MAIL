@@ -55,6 +55,7 @@ apt-get install -y --no-install-recommends \
     rspamd redis-server \
     nginx openssl certbot \
     python3 nftables \
+    postfix-mta-sts-resolver python3-venv \
     curl jq ca-certificates \
     unattended-upgrades \
     memcached \
@@ -69,6 +70,15 @@ fi
 if ! getent passwd vmail >/dev/null 2>&1; then
     useradd -u "${VMAIL_UID}" -g vmail -d /var/mail -s /usr/sbin/nologin vmail
 fi
+# Dedicated unprivileged users for the pip-only mail helpers.
+if ! getent passwd olefy >/dev/null 2>&1; then
+    adduser --system --group --no-create-home --quiet olefy
+fi
+if ! getent passwd mta-sts >/dev/null 2>&1; then
+    adduser --system --group --no-create-home --quiet mta-sts
+fi
+# mta-sts must read /etc/ktc-mail (0750 root:ktc-mail) for its config; join the group.
+adduser mta-sts ktc-mail 2>/dev/null || true
 install -d -m 0750 -o vmail -g vmail /var/mail
 
 # ── 3. Create config directories ────────────────────────────────────────
@@ -132,6 +142,38 @@ from ktc_mail_admin.config import set_mailbox_db_password
 set_mailbox_db_password('${MAILBOX_DB_PASSWORD}')
 " 2>/dev/null || true
 fi
+
+# ── 4c. Mail helper daemons (Olefy + MTA-STS resolver) ─────────────────
+echo "--- Phase 4c: Installing Olefy + MTA-STS resolver ---"
+# postfix-mta-sts-resolver comes from apt (Phase 1).
+# olefy is vendored at vendor/olefy/olefy.py (not in Debian/PyPI).
+# oletools (provides olevba3) IS on PyPI but NOT in Debian trixie, so we
+# pip-install it into a venv. python3-venv comes from apt (Phase 1).
+install -d -m 0755 -o root -g root /opt/ktc-mail/olefy
+install -m 0755 -o root -g root "${SELF}/../vendor/olefy/olefy.py" /opt/ktc-mail/olefy/olefy.py
+# Install systemd units for the helpers (debian/install handles this for the .deb).
+for u in ktc-mail-olefy ktc-mail-mta-sts; do
+    if [[ -f "${SELF}/../systemd/${u}.service" ]]; then
+        install -m 0644 -o root -g root "${SELF}/../systemd/${u}.service" /etc/systemd/system/${u}.service
+    fi
+done
+install -m 0644 -o root -g root "${SELF}/../packaging/etc/ktc-mail/mta-sts-daemon.yml" \
+    /etc/ktc-mail/mta-sts-daemon.yml 2>/dev/null || true
+# Avoid a port 8461 clash if the apt package ships its own unit for the same daemon.
+systemctl disable --now postfix-mta-sts-resolver.service 2>/dev/null || true
+# Create venv + install oletools (idempotent; tolerant of offline PyPI).
+if [[ ! -x /opt/ktc-mail/venv/bin/olevba3 ]]; then
+    if python3 -m venv /opt/ktc-mail/venv 2>/dev/null; then
+        /opt/ktc-mail/venv/bin/pip install --upgrade pip >/dev/null 2>&1 || true
+        /opt/ktc-mail/venv/bin/pip install oletools 2>&1 || \
+            echo "WARNING: failed to pip install oletools; Olefy macro scanning unavailable until /opt/ktc-mail/venv/bin/pip install oletools"
+    else
+        echo "WARNING: failed to create venv at /opt/ktc-mail/venv (python3-venv missing?)"
+    fi
+fi
+chown -R root:root /opt/ktc-mail/venv /opt/ktc-mail/olefy 2>/dev/null || true
+chmod -R go+rX /opt/ktc-mail/venv /opt/ktc-mail/olefy 2>/dev/null || true
+systemctl daemon-reload
 
 # ── 5. Install ktc-mail Python package ─────────────────────────────────
 echo "--- Phase 5: Installing ktc-mail Python package ---"
@@ -204,14 +246,14 @@ done
 
 # ── 9. Start services ──────────────────────────────────────────────────
 echo "--- Phase 9: Starting services ---"
-for svc in redis-server memcached postgresql rspamd postfix dovecot nginx sogod; do
+for svc in redis-server memcached postgresql rspamd postfix dovecot nginx sogod ktc-mail-olefy ktc-mail-mta-sts; do
     systemctl enable --now "${svc}" || echo "WARNING: ${svc} failed to start" >&2
 done
 
 # ── 10. Verify services ─────────────────────────────────────────────────
 echo "--- Phase 10: Verification ---"
 ALL_OK=0
-for svc in postfix dovecot nginx rspamd redis-server memcached postgresql sogod; do
+for svc in postfix dovecot nginx rspamd redis-server memcached postgresql sogod ktc-mail-olefy ktc-mail-mta-sts; do
     if systemctl is-active --quiet "${svc}" 2>/dev/null; then
         echo "  ✅ ${svc} is running"
     else

@@ -1,0 +1,37 @@
+[Unit]
+Description=KTC Mail — Olefy Office macro scanner (oletools wrapper for rspamd)
+Documentation=https://github.com/HeinleinSupport/olefy
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+# Run via the KTC venv python; oletools (olevba3) is pip-installed there (not in Debian trixie).
+ExecStart=/opt/ktc-mail/venv/bin/python /opt/ktc-mail/olefy/olefy.py
+Restart=on-failure
+RestartSec=5
+User=olefy
+Group=olefy
+# Bind to loopback only; rspamd reaches it locally.
+Environment=OLEFY_BINDADDRESS=127.0.0.1
+Environment=OLEFY_BINDPORT=10050
+Environment=OLEFY_MINLENGTH=500
+Environment=OLEFY_LOGLEVEL=WARNING
+# olevba from the venv (oletools 0.60.2 ships the console script as 'olevba', not 'olevba3').
+# magic is optional; olefy logs mime only if present.
+Environment=OLEFY_OLEVBA_PATH=/opt/ktc-mail/venv/bin/olevba
+Environment=OLEFY_PYTHON_PATH=/opt/ktc-mail/venv/bin/python
+# ProtectSystem=strict => rootfs read-only; don't write .pyc into the venv.
+Environment=PYTHONDONTWRITEBYTECODE=1
+# ponytail: olefy parses untrusted Office docs — baseline confinement via
+# systemd hardening; dedicated AppArmor profile deferred (see HANDOFF.md).
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+CapabilityBoundingSet=
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=multi-user.target

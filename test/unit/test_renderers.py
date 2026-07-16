@@ -92,6 +92,7 @@ def test_all_renderers_run_without_exception():
         cr.render_rspamd_controller_conf,
         cr.render_rspamd_local_conf,
         cr.render_rspamd_dkim_signing_conf,
+        cr.render_rspamd_external_services_conf,
         cr.render_sogo_conf,
         cr.render_nginx_webmail_vhost,
     ):
@@ -136,4 +137,23 @@ def test_mailbox_store_sql_is_wired():
 def test_all_domains_dedupes():
     p = SetupProfile(domain="example.com", domains=["example.com", "b.com"])
     assert p.all_domains == ["example.com", "b.com"]
+
+
+def test_postfix_main_cf_mta_sts_policy_map():
+    # P0 #2: outbound MTA-STS enforcement without breaking opportunistic TLS.
+    out = cr.render_postfix_main_cf(_profile())
+    assert "smtp_tls_security_level = may" in out  # other domains stay opportunistic
+    assert "smtp_tls_CAfile = /etc/ssl/certs/ca-certificates.crt" in out
+    assert "smtp_tls_policy_maps = socketmap:inet:127.0.0.1:8461:postfix" in out
+
+
+def test_rspamd_external_services_olefy_wired():
+    # P0 #1: Olefy Office macro scanning wired to rspamd's built-in oletools scanner.
+    out = cr.render_rspamd_external_services_conf(_profile())
+    assert "oletools {" in out
+    assert 'servers = "127.0.0.1:10050";' in out  # loopback olefy daemon
+    assert 'action = "reject";' in out             # match ClamAV strict posture
+    assert "mime_parts_filter_ext" in out          # scans Office attachment types
+    # No f-string interpolation slipped through (literal braces expected).
+    assert "{profile" not in out
 
