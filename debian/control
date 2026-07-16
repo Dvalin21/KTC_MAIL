@@ -11,9 +11,9 @@ Architecture: all
 Depends: ${misc:Depends}, ${python3:Depends}, python3,
  python3-fastapi, python3-uvicorn, python3-jinja2, python3-itsdangerous,
  python3-qrcode, python3-starlette, python3-redis,
- postfix, dovecot-core, dovecot-imapd, dovecot-lmtpd, dovecot-sieve,
- dovecot-managesieved, rspamd, clamav-daemon, dovecot-fts-xapian, dovecot-ldap, redis-server, fail2ban, nginx, nftables, sogo,
- ca-certificates, curl, jq, certbot, openssl, unattended-upgrades
+  postfix, dovecot-core, dovecot-imapd, dovecot-lmtpd, dovecot-sieve,
+  dovecot-managesieved, rspamd, clamav-daemon, dovecot-fts-xapian, dovecot-ldap, redis-server, fail2ban, nginx, nftables, sogo, postgresql, python3-psycopg2,
+  ca-certificates, curl, jq, certbot, openssl, unattended-upgrades
 Suggests: python3-boto3
 Recommends: python3-boto3
 Description: Bare-metal mail server suite with guided setup

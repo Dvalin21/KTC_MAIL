@@ -1075,8 +1075,15 @@ class SetupProfile:
                 d for d in data.get("domains", [])
                 if isinstance(d, str) and _valid_domain(d)
             ],
-            mailbox_store=data.get("mailbox_store", "maildir"),
         )
+
+        mailbox_store = data.get("mailbox_store", "maildir")
+        if mailbox_store not in ("maildir", "sql"):
+            raise ValidationError(
+                f"Invalid mailbox_store: {mailbox_store!r} "
+                f"(expected 'maildir' or 'sql')"
+            )
+        profile.mailbox_store = mailbox_store  # set after construction (dataclass field)
         # DKIM is NOT serialised to JSON (private key stays in separate file)
         return profile
 
@@ -1216,6 +1223,22 @@ def get_sogo_db_password() -> str | None:
 def set_sogo_db_password(password: str) -> None:
     """Save the SOGo database password to secrets.json atomically."""
     _secrets_set("sogo_db_password", password)
+
+
+# ── Mailbox SQL store (used when SetupProfile.mailbox_store == "sql") ──
+# Reuses the same secrets.json mechanism as the SOGo DB password.
+MAILBOX_DB_NAME = "ktc_mail"
+MAILBOX_DB_ROLE = "ktc_mail"
+
+
+def get_mailbox_db_password() -> str | None:
+    """Get the mailbox SQL store password from secrets.json."""
+    return _secrets_get("mailbox_db_password")
+
+
+def set_mailbox_db_password(password: str) -> None:
+    """Save the mailbox SQL store password to secrets.json atomically."""
+    _secrets_set("mailbox_db_password", password)
 
 
 def detect_public_ipv4() -> str:

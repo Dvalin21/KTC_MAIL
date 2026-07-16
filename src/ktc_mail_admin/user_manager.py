@@ -1,36 +1,42 @@
 #!/usr/bin/env python3
 """KTC Mail — mail user account management.
 
-Data structure: one line per user in Dovecot passwd-file format.
-No database. No SQL. No abstractions.
+Two mailbox stores, selected by SetupProfile.mailbox_store:
+  - "maildir" (default): Dovecot passwd-file + per-user Maildir.
+  - "sql":     PostgreSQL-backed mailbox store (dovecot-sql.conf.ext).
+              Credentials + per-user quota live in the `mailboxes` table.
+              Postfix recipient maps + the Maildir are still maintained
+              locally so delivery and recipient validation keep working.
+
+No over-abstraction: the two stores share small helpers; the public
+CRUD functions branch on the active store.
 
 passwd-file format (colon-separated):
-  user:password:uid:gid:(gecos):home:(shell):extra
-
-Our lines:
   email:{SHA512-CRYPT}$6$salt$hash:5000:5000::/var/mail/%d/%n:/usr/sbin/nologin::userdb_quota_rule=*:storage=1G
-
-Also maintains Postfix virtual_alias and virtual_mbx maps so
-Postfix knows which recipients are valid and where to deliver.
 """
 
 from __future__ import annotations
 
 import argparse
-import os
+import getpass
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
-from .config import atomic_write_text, load_profile
+from .config import (
+    atomic_write_text,
+    load_profile,
+    get_mailbox_db_password,
+    MAILBOX_DB_NAME,
+    MAILBOX_DB_ROLE,
+)
 
 PASSWD_FILE = Path("/etc/dovecot/passwd")
 ALIAS_FILE = Path("/etc/postfix/virtual_alias")
 MBX_FILE = Path("/etc/postfix/virtual_mbx")
 
 # Characters that would break passwd-file parsing or Postfix map lookup.
-# Reject them before any line is written or command is run.
 _INVALID_EMAIL_CHARS = (":", "\n", "\r", "\0")
 
 
@@ -43,7 +49,7 @@ def _validate_email(email: str) -> str | None:
     return email.lower().strip()
 
 
-# ── Helpers ────────────────────────────────────────────────────────────
+# ── passwd-file helpers ──────────────────────────────────────────────────
 
 
 def _parse_passwd(line: str) -> dict[str, str] | None:
@@ -117,7 +123,151 @@ def _dovecot_reload() -> None:
     )
 
 
-# ── CRUD operations ────────────────────────────────────────────────────
+# ── store selection + shared non-store helpers ───────────────────────────
+
+
+def _store_kind() -> str:
+    """Return the active mailbox store ('sql' or 'maildir')."""
+    profile = load_profile()
+    if profile is None:
+        return "maildir"
+    return profile.mailbox_store
+
+
+def _write_postfix_maps(email: str) -> None:
+    """Record the recipient in Postfix alias + mailbox maps."""
+    alias_lines = _read_lines(ALIAS_FILE)
+    alias_lines.append(f"{email} {email}\n")
+    _write_lines(ALIAS_FILE, alias_lines)
+
+    domain, user = email.split("@", 1)
+    mbx_lines = _read_lines(MBX_FILE)
+    mbx_lines.append(f"{email} {domain}/{user}/\n")
+    _write_lines(MBX_FILE, mbx_lines)
+
+
+def _ensure_maildir(email: str) -> None:
+    """Create the per-user Maildir on disk."""
+    domain, user = email.split("@", 1)
+    Path(f"/var/mail/{domain}/{user}").mkdir(parents=True, exist_ok=True)
+
+
+def _prompt_password(sanitized: str, confirm: bool = True) -> str | None:
+    """Prompt for a password (optionally confirm). Returns None on invalid."""
+    pw = getpass.getpass(f"Password for {sanitized}: ")
+    if confirm:
+        if getpass.getpass("Confirm: ") != pw:
+            print("error: passwords do not match", file=sys.stderr)
+            return None
+    if not pw:
+        print("error: password cannot be empty", file=sys.stderr)
+        return None
+    return pw
+
+
+# ── SQL store (psycopg2, lazily imported so maildir works without it) ───
+
+
+def _mailbox_db_conn():
+    """Open a connection to the mailbox SQL store, or None if unavailable."""
+    pw = get_mailbox_db_password()
+    if not pw:
+        return None
+    try:
+        import psycopg2
+    except ImportError:
+        return None
+    try:
+        return psycopg2.connect(
+            host="127.0.0.1",
+            dbname=MAILBOX_DB_NAME,
+            user=MAILBOX_DB_ROLE,
+            password=pw,
+            connect_timeout=5,
+        )
+    except Exception:  # noqa: BLE001 - connection failure is a runtime condition
+        return None
+
+
+def _sql_exec(query: str, params: tuple = ()) -> int:
+    """Execute a write query. Returns 0 on success, 1 on error."""
+    conn = _mailbox_db_conn()
+    if conn is None:
+        print("error: mailbox SQL store unavailable", file=sys.stderr)
+        return 1
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+        return 0
+    except Exception as e:  # noqa: BLE001 - surface, don't crash the CLI
+        print(f"error: mailbox SQL store: {e}", file=sys.stderr)
+        return 1
+    finally:
+        conn.close()
+
+
+def _sql_fetchall(query: str, params: tuple = ()) -> list:
+    conn = _mailbox_db_conn()
+    if conn is None:
+        return []
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def _sql_fetchone(query: str, params: tuple = ()):
+    conn = _mailbox_db_conn()
+    if conn is None:
+        return None
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def _sql_exists(email: str) -> bool:
+    return _sql_fetchone(
+        "SELECT 1 FROM mailboxes WHERE email = %s", (email,)
+    ) is not None
+
+
+def _sql_user_add(email: str, password_hash: str, quota: str) -> int:
+    local, domain = email.split("@", 1)
+    maildir = f"/var/mail/{domain}/{local}"
+    return _sql_exec(
+        "INSERT INTO mailboxes(email, domain, password_hash, maildir, quota) "
+        "VALUES (%s, %s, %s, %s, %s)",
+        (email, domain, password_hash, maildir, quota),
+    )
+
+
+def _sql_user_delete(email: str) -> int:
+    return _sql_exec("DELETE FROM mailboxes WHERE email = %s", (email,))
+
+
+def _sql_user_passwd(email: str, password_hash: str) -> int:
+    return _sql_exec(
+        "UPDATE mailboxes SET password_hash = %s WHERE email = %s",
+        (password_hash, email),
+    )
+
+
+def _sql_user_list() -> list[tuple[str, str]]:
+    rows = _sql_fetchall(
+        "SELECT email, quota FROM mailboxes WHERE active = TRUE ORDER BY email"
+    )
+    return [(r[0], r[1]) for r in rows]
+
+
+# ── CRUD operations ──────────────────────────────────────────────────────
 
 
 def user_add(
@@ -132,13 +282,15 @@ def user_add(
         print(f"error: '{email}' is not a valid email address", file=sys.stderr)
         return 1
 
-    existing = _read_lines(PASSWD_FILE)
-    emails = {
-        _parse_passwd(l)["email"]
-        for l in existing
-        if _parse_passwd(l) is not None
-    }
-    if sanitized in emails:
+    if _store_kind() == "sql":
+        exists = _sql_exists(sanitized)
+    else:
+        exists = sanitized in {
+            _parse_passwd(l)["email"]
+            for l in _read_lines(PASSWD_FILE)
+            if _parse_passwd(l) is not None
+        }
+    if exists:
         print(f"error: user '{sanitized}' already exists", file=sys.stderr)
         return 1
 
@@ -147,42 +299,24 @@ def user_add(
         return 0
 
     if password is None:
-        import getpass
-        password = getpass.getpass(f"Password for {sanitized}: ")
-        confirm = getpass.getpass("Confirm: ")
-        if password != confirm:
-            print("error: passwords do not match", file=sys.stderr)
+        password = _prompt_password(sanitized)
+        if password is None:
             return 1
-        if not password:
-            print("error: password cannot be empty", file=sys.stderr)
-            return 1
-
     hash_str = _hash_password(password)
 
-    # Append to passwd file — only when using the local passwd-file
-    # backend. Under LDAP, Dovecot authenticates against the directory
-    # and this file is not the auth store (postfix maps below still apply).
-    profile = load_profile()
-    if profile is None or profile.auth_backend != "ldap":
-        line = _format_line(sanitized, hash_str, quota) + "\n"
-        existing.append(line)
-        _write_lines(PASSWD_FILE, existing)
+    if _store_kind() == "sql":
+        if _sql_user_add(sanitized, hash_str, quota):
+            return 1
+    else:
+        # passwd-file backend (skip when LDAP is the auth source).
+        profile = load_profile()
+        if profile is None or profile.auth_backend != "ldap":
+            lines = _read_lines(PASSWD_FILE)
+            lines.append(_format_line(sanitized, hash_str, quota) + "\n")
+            _write_lines(PASSWD_FILE, lines)
 
-    # Update Postfix alias map (user@domain → same for local delivery)
-    alias_lines = _read_lines(ALIAS_FILE)
-    alias_lines.append(f"{sanitized} {sanitized}\n")
-    _write_lines(ALIAS_FILE, alias_lines)
-
-    # Update Postfix mailbox map (user@domain → domain/user/)
-    domain, user = sanitized.split("@", 1)
-    mbx_lines = _read_lines(MBX_FILE)
-    mbx_lines.append(f"{sanitized} {domain}/{user}/\n")
-    _write_lines(MBX_FILE, mbx_lines)
-
-    # Ensure maildir exists
-    maildir = Path(f"/var/mail/{domain}/{user}")
-    maildir.mkdir(parents=True, exist_ok=True)
-
+    _write_postfix_maps(sanitized)
+    _ensure_maildir(sanitized)
     _dovecot_reload()
     print(f"added: {sanitized} (quota: {quota})")
     return 0
@@ -195,10 +329,14 @@ def user_delete(email: str, dry_run: bool = False) -> int:
         print(f"error: '{email}' is not a valid email address", file=sys.stderr)
         return 1
 
-    old_lines = _read_lines(PASSWD_FILE)
-    new_lines = [l for l in old_lines if not l.startswith(sanitized + ":")]
-
-    if len(new_lines) == len(old_lines):
+    if _store_kind() == "sql":
+        exists = _sql_exists(sanitized)
+    else:
+        exists = any(
+            l.startswith(sanitized + ":")
+            for l in _read_lines(PASSWD_FILE)
+        )
+    if not exists:
         print(f"error: user '{sanitized}' not found", file=sys.stderr)
         return 1
 
@@ -206,9 +344,14 @@ def user_delete(email: str, dry_run: bool = False) -> int:
         print(f"dry-run: would remove user '{sanitized}'")
         return 0
 
-    _write_lines(PASSWD_FILE, new_lines)
+    if _store_kind() == "sql":
+        if _sql_user_delete(sanitized):
+            return 1
+    else:
+        lines = _read_lines(PASSWD_FILE)
+        lines = [l for l in lines if not l.startswith(sanitized + ":")]
+        _write_lines(PASSWD_FILE, lines)
 
-    # Remove from alias and mailbox maps
     for f in (ALIAS_FILE, MBX_FILE):
         lines = _read_lines(f)
         lines = [l for l in lines if not l.startswith(sanitized + " ")]
@@ -222,12 +365,15 @@ def user_delete(email: str, dry_run: bool = False) -> int:
 def user_list(dry_run: bool = False) -> int:
     """List all mail users."""
     _ = dry_run  # no-op, list is always read-only
-    lines = _read_lines(PASSWD_FILE)
-    users = []
-    for l in lines:
-        parsed = _parse_passwd(l)
-        if parsed:
-            users.append(parsed)
+    if _store_kind() == "sql":
+        users = _sql_user_list()
+    else:
+        lines = _read_lines(PASSWD_FILE)
+        users = [
+            (p["email"], p["quota"])
+            for l in lines
+            if (p := _parse_passwd(l)) is not None
+        ]
 
     if not users:
         print("no mail users")
@@ -235,69 +381,60 @@ def user_list(dry_run: bool = False) -> int:
 
     print(f"{'email':40s} {'quota':8s}")
     print("-" * 48)
-    for u in sorted(users, key=lambda x: x["email"]):
-        print(f"{u['email']:40s} {u['quota']:8s}")
+    for email, quota in sorted(users, key=lambda x: x[0]):
+        print(f"{email:40s} {quota:8s}")
     return 0
 
 
 def user_passwd(email: str, password: str | None = None,
                 dry_run: bool = False) -> int:
-    """Change a user's password.
-
-    Args:
-        email: The user's email address.
-        password: New password. If None, prompts interactively.
-        dry_run: If True, only print what would be done.
-    """
+    """Change a user's password."""
     sanitized = _validate_email(email)
     if sanitized is None:
         print(f"error: '{email}' is not a valid email address", file=sys.stderr)
         return 1
 
-    lines = _read_lines(PASSWD_FILE)
-    new_lines = []
-    found = False
-    for l in lines:
-        if l.startswith(sanitized + ":"):
-            found = True
-            if dry_run:
-                print(f"dry-run: would change password for '{sanitized}'")
-                new_lines.append(l)
-                continue
-            if password is None:
-                import getpass
-                pw = getpass.getpass(f"New password for {sanitized}: ")
-                confirm = getpass.getpass("Confirm: ")
-                if pw != confirm:
-                    print("error: passwords do not match", file=sys.stderr)
-                    return 1
-                if not pw:
-                    print("error: password cannot be empty", file=sys.stderr)
-                    return 1
-                hash_str = _hash_password(pw)
-            else:
-                if not password:
-                    print("error: password cannot be empty", file=sys.stderr)
-                    return 1
-                hash_str = _hash_password(password)
-            parsed = _parse_passwd(l)
-            if parsed is None:
-                new_lines.append(l)
-                continue
-            quota = parsed.get("quota", "1G")
-            new_lines.append(_format_line(sanitized, hash_str, quota) + "\n")
-        else:
-            new_lines.append(l)
-
-    if not found:
+    if _store_kind() == "sql":
+        exists = _sql_exists(sanitized)
+    else:
+        exists = any(
+            l.startswith(sanitized + ":")
+            for l in _read_lines(PASSWD_FILE)
+        )
+    if not exists:
         print(f"error: user '{sanitized}' not found", file=sys.stderr)
         return 1
 
-    if not dry_run:
-        _write_lines(PASSWD_FILE, new_lines)
-        _dovecot_reload()
-        print(f"password changed: {sanitized}")
+    if dry_run:
+        print(f"dry-run: would change password for '{sanitized}'")
+        return 0
 
+    if password is None:
+        password = _prompt_password(sanitized)
+        if password is None:
+            return 1
+    elif not password:
+        print("error: password cannot be empty", file=sys.stderr)
+        return 1
+    hash_str = _hash_password(password)
+
+    if _store_kind() == "sql":
+        if _sql_user_passwd(sanitized, hash_str):
+            return 1
+    else:
+        lines = _read_lines(PASSWD_FILE)
+        new_lines = []
+        for l in lines:
+            if l.startswith(sanitized + ":"):
+                parsed = _parse_passwd(l)
+                quota = parsed.get("quota", "1G") if parsed else "1G"
+                new_lines.append(_format_line(sanitized, hash_str, quota) + "\n")
+            else:
+                new_lines.append(l)
+        _write_lines(PASSWD_FILE, new_lines)
+
+    _dovecot_reload()
+    print(f"password changed: {sanitized}")
     return 0
 
 

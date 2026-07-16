@@ -104,6 +104,35 @@ set_sogo_db_password('${SOGO_DB_PASSWORD}')
 " 2>/dev/null || true
 fi
 
+# ── 4b. Configure mailbox SQL store database ──────────────────────
+echo "--- Phase 4b: Configuring mailbox SQL store PostgreSQL database ---"
+MAILBOX_DB_PASSWORD="${MAILBOX_DB_PASSWORD:-$(openssl rand -base64 32)}"
+if ! su - postgres -c "psql -t -c 'SELECT 1 FROM pg_roles WHERE rolname=\"ktc_mail\"'" 2>/dev/null | grep -q 1; then
+    su - postgres -c "createuser -DRS ktc_mail" 2>/dev/null || true
+    su - postgres -c "psql -c \"ALTER USER ktc_mail WITH PASSWORD '${MAILBOX_DB_PASSWORD}'\"" 2>/dev/null || true
+fi
+if ! su - postgres -c "psql -t -c 'SELECT 1 FROM pg_database WHERE datname=\"ktc_mail\"'" 2>/dev/null | grep -q 1; then
+    su - postgres -c "createdb -O ktc_mail ktc_mail" 2>/dev/null || true
+fi
+# Idempotent schema. Source of truth: ktc_mail_admin.config_renderer.MAILBOX_SCHEMA_SQL
+su - postgres -c "psql -d ktc_mail" <<'SQL' 2>/dev/null || true
+CREATE TABLE IF NOT EXISTS domains (domain TEXT PRIMARY KEY, active BOOLEAN NOT NULL DEFAULT TRUE);
+CREATE TABLE IF NOT EXISTS mailboxes (email TEXT PRIMARY KEY, domain TEXT NOT NULL REFERENCES domains(domain) ON DELETE CASCADE, password_hash TEXT NOT NULL, maildir TEXT NOT NULL, quota TEXT NOT NULL DEFAULT '1G', active BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMPTZ NOT NULL DEFAULT now());
+CREATE INDEX IF NOT EXISTS idx_mailboxes_domain ON mailboxes(domain);
+SQL
+echo "Mailbox DB password: ${MAILBOX_DB_PASSWORD}" > "${CONFIG_DIR}/mailbox-db-password"
+chmod 600 "${CONFIG_DIR}/mailbox-db-password"
+
+# Update secrets.json with mailbox DB password
+if [[ -f "${CONFIG_DIR}/setup.json" ]] && command -v ktc-mail &>/dev/null; then
+    "${PYTHON}" -c "
+import sys
+sys.path.insert(0, '/usr/lib/ktc-mail')
+from ktc_mail_admin.config import set_mailbox_db_password
+set_mailbox_db_password('${MAILBOX_DB_PASSWORD}')
+" 2>/dev/null || true
+fi
+
 # ── 5. Install ktc-mail Python package ─────────────────────────────────
 echo "--- Phase 5: Installing ktc-mail Python package ---"
 if [[ -f "${SELF}/../setup.py" ]] || [[ -f "${SELF}/../pyproject.toml" ]]; then

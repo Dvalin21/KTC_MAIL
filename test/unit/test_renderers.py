@@ -123,12 +123,13 @@ def test_multi_domain_nginx_alias_comments():
     assert "alias: alias2.example.com" in out
 
 
-def test_mailbox_store_sql_is_fail_honest():
+def test_mailbox_store_sql_is_wired():
     p = _profile()
     p.mailbox_store = "sql"
     out = cr.render_dovecot_conf(p)
-    assert "mailbox_store=sql selected" in out
-    # still keeps maildir so the service starts (no silent fake SQL)
+    # SQL store is now actually wired (no fail-honest warning)
+    assert "driver = sql" in out
+    assert "dovecot-sql.conf.ext" in out
     assert "mail_location = maildir:/var/mail/%d/%n" in out
 
 
