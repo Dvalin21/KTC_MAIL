@@ -1,9 +1,16 @@
 # HANDOFF — KTC Mail (2026-07-12)
 
 ## State
-- Branch `clean-scaffold-v2` (local) = `origin/clean-scaffold-v3` (pushed), commit **`30be79d`**. Tree CLEAN.
+- Branch **`clean-scaffold-v2`**, HEAD **`a848615`**, in sync with `origin/clean-scaffold-v2` (tree clean). NOTE: `origin/clean-scaffold-v3` (`9f905b6`) is a SEPARATE branch — do not merge; histories are unrelated (empty merge-base).
 - **OS retargeted Debian 12 → 13 (trixie)** (commit `b8acafa`). Target = **Python 3.13** (trixie's interpreter; host is also 3.13.5). All VM verification runs on real Debian 13 qemu/kvm via `ktc-mail-vm-verify.sh`. Standards-Version 4.7.2.
 - No CRITICAL/HIGH blockers. Remaining work = OPERATOR INPUT only (tokens, domain, IdP creds) — not code-blocked.
+
+## Recent (2026-07) — DNS criticals + security features
+- DNS **CRITICAL C1** (`97586b6`): MX/SRV records shipped without a priority field (priority double-encoded into the value) → malformed MX at every provider, inbound mail bounced. Fixed: `DnsRecord.priority` carries priority; adapters send per-provider contract. Regression: `test/unit/test_dns_mx_srv.py`.
+- DNS **HIGH H4** (`83d7429`): `DnsRecord` names not FQDN-dotted; provider parsers return dotted names → `diff()` key mismatch → every `dns apply` deleted+recreated all non-TXT records (mail-flap window). Fixed: normalize name in `DnsRecord.__post_init__`. Regression: H4 coverage.
+- DNS **CRITICAL C2** (`a848615`): provider parsers used direct dict indexing → malformed/apex records raised `KeyError` and aborted `dns apply`/`verify`; Porkbun dropped apex records. Fixed: `.get()` hardening + skip; Porkbun apex check. Regression: C2 coverage across 6 providers.
+- **ClamAV + greylisting** (`507f355`): ClamAV antivirus wired via rspamd; greylisting parity confirmed. Present on branch.
+- **Multi-domain SQL mailbox store** (working tree, this session): `profile.mailbox_store='sql'` now fully wired — Dovecot SQL passdb/userdb, `MAILBOX_SCHEMA_SQL`, `user_manager.py` SQL path (psycopg2), deploy provisioning of `ktc_mail` PG role/db. opt-in; maildir remains default. VM-verified pending.
 
 ## Verified this cycle (real Debian 13 VM, not host)
 - `.deb` builds (`dpkg-buildpackage` → `ktc-mail_1.0.0_all.deb`) + installs on trixie via `apt` (Depends resolve from Debian repos). sogo 5.12.1, dovecot-core 2.4.1 (ships oauth2 driver).
@@ -42,9 +49,9 @@ NOTE: the verify script previously self-killed at `pkill -9 -f ktc-verify` (matc
 - OPERATOR: `ktc-mail backup init <restic-url>` (restic coded + restore VM-verified; needs a repo URL).
 - OPERATOR: DNS provider API token in `secrets.json`; real-domain smoke test (DKIM/DMARC/SPF push→verify, admin MFA).
 - OPERATOR: OIDC webmail SSO end-to-end needs IdP creds (render gated, ready).
-- DEEP: multi-domain SQL mailbox store (profile/renderer layer done; Dovecot SQL passdb/db + schema remain).
+- DEEP: multi-domain SQL mailbox store — **DONE** (this session, working tree): Dovecot SQL passdb/userdb + `MAILBOX_SCHEMA_SQL` + `user_manager.py` SQL path + deploy provisioning. opt-in via `profile.mailbox_store='sql'`; maildir is default.
 
-## Authoritative docs (match `30be79d`)
+## Authoritative docs (match `a848615`; reconciled 2026-07-16)
 - `PRODUCTION_READINESS.md` — verdict + reference-suite comparison.
 - `PRODUCTION_ROADMAP.md` — all items closed + evidence.
 - `AUDIT_AND_HANDOFF.md` — fix ledger + open items.

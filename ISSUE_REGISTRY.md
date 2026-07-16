@@ -8,7 +8,7 @@ Status starts as `🔴 open`. As items are addressed, update status to `🟡 in_
 `🟢 fixed`, or `⚪ deferred`. New issues found during implementation should be
 appended — the registry is the single source of truth, not a closed list.
 
-**Last updated**: 2026-05-30
+**Last updated**: 2026-07-16
 
 ---
 
@@ -1014,12 +1014,70 @@ reflect real module names.
 
 ---
 
+### C-006: MX/SRV records omit priority field → inbound mail bounces
+
+| Field | Value |
+|-------|-------|
+| **Area** | DNS — Record Generation |
+| **File** | `src/ktc_mail_admin/config.py`, `src/ktc_mail_admin/dns_provider.py` |
+| **Severity** | **C — CRITICAL** |
+| **Status** | 🟢 fixed (`97586b6`) |
+| **Discovered** | DNS-01 verification, 2026-07 |
+| **Root cause** | `generate_dns_records()` built MX/SRV with priority embedded in the value string (`f"10 {host}."`), double-encoding the target dot and dropping the priority field. Adapters shipped a malformed MX to every provider, so inbound mail bounced. |
+
+**Impact**: Total inbound mail loss for the domain until corrected.
+
+**Fix**: `DnsRecord.priority` carries the priority; `value` holds only the target (MX) or `weight port target` (SRV). Cloudflare/Porkbun/DigitalOcean/GoDaddy send a separate priority field; Hetzner/Route53 embed priority in the value and split it back on read so `diff()` converges. Regression: `test/unit/test_dns_mx_srv.py`.
+
+---
+
+### C-007: Provider parsers crash on malformed/apex records → dns apply aborts / deletes user records
+
+| Field | Value |
+|-------|-------|
+| **Area** | DNS — Provider Adapters |
+| **File** | `src/ktc_mail_admin/dns_provider.py` |
+| **Severity** | **C — CRITICAL** |
+| **Status** | 🟢 fixed (`a848615`) |
+| **Discovered** | DNS-01 verification, 2026-07 |
+| **Root cause** | Every provider parser used direct dict indexing (`raw["type"]`, `rset["Name"]`). A single malformed API record raised `KeyError` and aborted the whole `dns apply`/`verify` sync. Porkbun's `list_all` used `if raw.get("type") and raw.get("name")` — falsy for apex records (`name == ""`) — so root MX/TXT/SPF were never synced. |
+
+**Impact**: A malformed record from the provider could abort sync mid-run, leaving `dns apply` to delete user-managed records it failed to re-read. Apex records silently drifted.
+
+**Fix**: `_to_record`/`_to_dns_record` return `None` (or `[]` for Route53) on missing essential fields; `list_all` skips them. `.get()` hardening on zone/record id lookups. Porkbun apex check uses `"name" in raw`. Regression: C2 coverage across all six providers.
+
+---
+
+### H-011: DnsRecord names not FQDN-dotted → every dns apply churns all records
+
+| Field | Value |
+|-------|-------|
+| **Area** | DNS — Diff Engine |
+| **File** | `src/ktc_mail_admin/config.py` |
+| **Severity** | **H — HIGH** |
+| **Status** | 🟢 fixed (`83d7429`) |
+| **Discovered** | DNS-01 verification, 2026-07 |
+| **Root cause** | `generate_dns_records()` emitted un-dotted names (`example.com`); provider parsers return dotted names (`example.com.`). `DnsRecordSet.diff()` keys on `type:name`, so keys never matched → every `dns apply` deleted+recreated all non-TXT records each run. |
+
+**Impact**: Noisy, wasteful re-syncs on every run plus a brief mail-flap window while records are deleted and recreated.
+
+**Fix**: Normalize name to canonical FQDN (trailing dot) in `DnsRecord.__post_init__` via `object.__setattr__` (frozen dataclass). Idempotent for already-dotted names; apex `@` preserved. Regression: H4 coverage.
+
+---
+
+### Feature additions since 2026-05-30
+
+- **ClamAV antivirus via rspamd** (`507f355`): mail scanned by ClamAV through rspamd; greylisting parity confirmed. Security feature, on by default.
+- **Multi-domain SQL mailbox store** (working tree, 2026-07): opt-in `profile.mailbox_store="sql"` wires Dovecot SQL passdb/userdb, `MAILBOX_SCHEMA_SQL`, a `user_manager.py` SQL path (psycopg2, lazy-imported), and deploy-time provisioning of a dedicated `ktc_mail` PostgreSQL role + DB + schema. maildir remains the default store. Adds `test/unit/test_mailbox_store.py`.
+
+---
+
 ## Summary Counts
 
 | Severity | Open | Status |
 |----------|------|--------|
-| **C — CRITICAL** | 0 | ✅ All 5 fixed (Sprint 1) |
-| **H — HIGH** | 0 | ✅ All 10 fixed (Sprints 2–3) |
+| **C — CRITICAL** | 0 | ✅ All 7 fixed (5 Sprint 1 + C-006, C-007) |
+| **H — HIGH** | 0 | ✅ All 11 fixed (10 Sprints 2–3 + H-011) |
 | **M — MEDIUM** | 0 | ✅ All 12 fixed (Sprint 4) |
 | **L — LOW** | 0 | ✅ All 16 fixed (Sprint 5) |
 | **O — OBSERVATION** | 7 | 🟢 No action needed |
@@ -1081,6 +1139,13 @@ reflect real module names.
 - L-014: Logrotate config shipped with monthly rotation, delaycompress, 0640 permissions
 - L-015: Phantom features marked "NOT YET IMPLEMENTED" in docs; broken reference fixed
 - L-016: Fail2ban log fallback already exists in exporter.py
+
+### 2026-07 — DNS criticals + security features
+- C-006 (`97586b6`): MX/SRV priority carried in `DnsRecord.priority`; adapters send per-provider contract
+- H-011 (`83d7429`): `DnsRecord` name normalized to FQDN in `__post_init__`; `diff()` converges
+- C-007 (`a848615`): provider parsers `.get()`-hardened + skip malformed; Porkbun apex records synced
+- `507f355`: ClamAV via rspamd + greylisting parity
+- Working tree: multi-domain SQL mailbox store (`mailbox_store='sql'`) — Dovecot SQL passdb/userdb + schema + deploy provisioning
 
 ---
 
