@@ -27,6 +27,10 @@ src/ktc_mail_admin/templates/dns_status.html usr/lib/ktc-mail/templates/
 src/ktc_mail_admin/templates/certs.html usr/lib/ktc-mail/templates/
 src/ktc_mail_admin/templates/queue.html usr/lib/ktc-mail/templates/
 src/ktc_mail_admin/templates/settings.html usr/lib/ktc-mail/templates/
+src/ktc_mail_admin/templates/spam_policy.html usr/lib/ktc-mail/templates/
+src/ktc_mail_admin/templates/quarantine.html usr/lib/ktc-mail/templates/
+src/ktc_mail_admin/templates/self_login.html usr/lib/ktc-mail/templates/
+src/ktc_mail_admin/templates/self_service.html usr/lib/ktc-mail/templates/
 src/ktc_mail_admin/templates/backup.html usr/lib/ktc-mail/templates/
 src/ktc_mail_admin/templates/mfa_codes.html usr/lib/ktc-mail/templates/
 

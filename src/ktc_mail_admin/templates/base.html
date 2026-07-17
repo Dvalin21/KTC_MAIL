@@ -165,6 +165,9 @@ pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.
   <div class="nav-section">
     <a class="nav-link{% if request.url.path == '/' %} active{% endif %}" href="/">Dashboard</a>
     <a class="nav-link{% if request.url.path == '/users' %} active{% endif %}" href="/users">Users</a>
+    <a class="nav-link{% if request.url.path == '/spam-policy' %} active{% endif %}" href="/spam-policy">Spam Policy</a>
+    <a class="nav-link{% if request.url.path == '/quarantine' %} active{% endif %}" href="/quarantine">Quarantine</a>
+    <a class="nav-link{% if request.url.path == '/self' or request.url.path == '/self/login' %} active{% endif %}" href="/self/login">Self-service</a>
     <a class="nav-link{% if request.url.path == '/dkim' %} active{% endif %}" href="/dkim">DKIM</a>
     <a class="nav-link{% if request.url.path == '/logs' %} active{% endif %}" href="/logs">Logs</a>
     <a class="nav-link{% if request.url.path == '/dns' %} active{% endif %}" href="/dns">DNS</a>

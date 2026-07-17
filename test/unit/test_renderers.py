@@ -59,6 +59,24 @@ def test_dovecot_conf_invariants():
     assert "mail_location = maildir:/var/mail/%d/%" in out
 
 
+def test_dovecot_sieve_spam_files_junk():
+    # P1-Slice-B: delivered spam (X-Spam-Flag) filed to Junk by global sieve.
+    out = cr.render_dovecot_sieve_spam(_profile())
+    assert 'require ["fileinto"];' in out
+    assert "X-Spam-Flag" in out
+    assert 'fileinto "Junk";' in out
+
+
+def test_dovecot_conf_wires_sieve_before():
+    out = cr.render_dovecot_conf(_profile())
+    assert "sieve_before = /var/lib/dovecot/sieve/spam-to-junk.sieve" in out
+
+
+def test_dovecot_sieve_spam_registered():
+    assert "dovecot/sieve/spam-to-junk.sieve" in cr.RENDERED_FILES
+    assert cr.RENDERED_FILES["dovecot/sieve/spam-to-junk.sieve"][1] == "render_dovecot_sieve_spam"
+
+
 def test_rspamd_local_dkim():
     out = cr.render_rspamd_local_conf(_profile())
     assert "dkim" in out
@@ -156,4 +174,26 @@ def test_rspamd_external_services_olefy_wired():
     assert "mime_parts_filter_ext" in out          # scans Office attachment types
     # No f-string interpolation slipped through (literal braces expected).
     assert "{profile" not in out
+
+
+def test_rspamd_settings_conf_per_user_policy():
+    # P1: per-user / per-domain spam policy via settings + settings_redis.
+    out = cr.render_rspamd_settings_conf(_profile())
+    assert "settings_redis {" in out
+    assert "settings {" in out
+    # Dynamic handler keys on recipient/user + domain.
+    assert "setting:user:" in out and "setting:domain:" in out
+    # Explicit baseline thresholds (stable floor for overrides).
+    assert "reject = 15.0;" in out
+    assert '"add header" = 6.0;' in out
+    assert "greylist = 4.0;" in out
+    # Outbound (authenticated) relaxed, no greylisting.
+    assert "authenticated_users {" in out
+    # No f-string interpolation slipped through.
+    assert "{profile" not in out
+
+
+def test_rspamd_settings_conf_registered():
+    assert "rspamd/local.d/settings.conf" in cr.RENDERED_FILES
+    assert cr.RENDERED_FILES["rspamd/local.d/settings.conf"][1] == "render_rspamd_settings_conf"
 

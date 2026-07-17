@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}Spam Policy{% endblock %}
+{% block content %}
+
+<h1>Spam Policy</h1>
+
+{% if error %}
+<div class="msg msg-err">{{ error }}</div>
+{% endif %}
+{% if msg %}
+<div class="msg msg-ok">{{ msg }}</div>
+{% endif %}
+
+{# ── Baseline policy ── #}
+<div class="card" style="margin-bottom:1.5rem">
+  <h2>Baseline policy (all mail)</h2>
+  <p style="color:var(--muted);font-size:0.85rem;margin-bottom:0.75rem">
+    Applied to every message. Per-user / per-domain overrides below win on any
+    overlapping action.
+  </p>
+  <table>
+    <thead><tr><th>Action</th><th>Score ≥</th></tr></thead>
+    <tbody>
+      <tr><td>Reject (hard bounce)</td><td><strong>{{ baseline.reject }}</strong></td></tr>
+      <tr><td>Add spam header</td><td><strong>{{ baseline.add_header }}</strong></td></tr>
+      <tr><td>Greylist</td><td><strong>{{ baseline.greylist }}</strong></td></tr>
+    </tbody>
+  </table>
+</div>
+
+{# ── Set override form ── #}
+<div class="card" style="margin-bottom:1.5rem">
+  <h2>Set override</h2>
+  <form method="post" action="/spam-policy" class="form-inline" style="margin-top:0.75rem;flex-wrap:wrap">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div style="flex:0 0 120px">
+      <label class="form-row" style="font-size:0.8rem;font-weight:600;margin-bottom:0.25rem">Scope</label>
+      <select name="target_type">
+        <option value="user">User</option>
+        <option value="domain">Domain</option>
+      </select>
+    </div>
+    <div style="flex:2">
+      <label class="form-row" style="font-size:0.8rem;font-weight:600;margin-bottom:0.25rem">Email or domain</label>
+      <input name="target" type="text" placeholder="alice@example.com or example.com" required>
+    </div>
+    <div style="flex:0 0 110px">
+      <label class="form-row" style="font-size:0.8rem;font-weight:600;margin-bottom:0.25rem">Reject ≥</label>
+      <input name="reject" type="number" step="0.5" placeholder="15" required>
+    </div>
+    <div style="flex:0 0 130px">
+      <label class="form-row" style="font-size:0.8rem;font-weight:600;margin-bottom:0.25rem">Add-header ≥</label>
+      <input name="add_header" type="number" step="0.5" placeholder="6" required>
+    </div>
+    <div style="flex:0 0 110px">
+      <label class="form-row" style="font-size:0.8rem;font-weight:600;margin-bottom:0.25rem">Greylist ≥</label>
+      <input name="greylist" type="number" step="0.5" placeholder="optional">
+    </div>
+    <button type="submit" style="margin-bottom:0.25rem">Save</button>
+  </form>
+</div>
+
+{# ── Active overrides ── #}
+<div class="card">
+  <h2>Active overrides</h2>
+  {% if overrides %}
+  <table>
+    <thead><tr><th>Key</th><th>Value</th><th></th></tr></thead>
+    <tbody>
+      {% for o in overrides %}
+      <tr>
+        <td><code>{{ o.key }}</code></td>
+        <td><code>{{ o.value }}</code></td>
+        <td style="text-align:right">
+          <form method="post" action="/spam-policy" style="display:inline"
+                data-confirm="Remove {{ o.key }}?">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="key" value="{{ o.key }}">
+            <input type="hidden" name="action" value="remove">
+            <button type="submit" class="danger small">Remove</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">No per-user / per-domain overrides yet.</p>
+  {% endif %}
+</div>
+
+{% endblock %}

@@ -34,6 +34,7 @@ import logging
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import time
@@ -73,6 +74,151 @@ from .config import (
     _EMAIL_RE,
     _valid_email,
 )
+
+# ── Quarantine helpers (module-level: pure + subprocess, unit-testable) ────────
+# rspamd's `add header` action delivers spam with X-Spam-Flag: YES, which the
+# global sieve (spam-to-junk.sieve) files into Junk. These list those messages
+# from rspamd history and release / confirm them.
+
+
+def _first_rcpt(row: dict) -> str:
+    rcpt = row.get("rcpt_smtp") or row.get("rcpt") or []
+    if isinstance(rcpt, list) and rcpt:
+        return rcpt[0]
+    if isinstance(rcpt, str):
+        return rcpt
+    return ""
+
+
+def parse_rspamc_history(stdout: str) -> list[dict]:
+    """Parse `rspamc -j get history` JSON into delivered-spam rows.
+
+    Defensive: tolerates bare-list vs {"rows":[...]}, and field-name variants
+    (message-id / message_id, sender_smtp / from, rcpt_smtp / rcpt).
+    """
+    if not stdout or not stdout.strip():
+        return []
+    try:
+        data = json.loads(stdout)
+    except json.JSONDecodeError:
+        return []
+    if isinstance(data, list):
+        rows = data
+    elif isinstance(data, dict):
+        rows = data.get("rows", [])
+    else:
+        rows = []
+    kept: list[dict] = []
+    for r in rows:
+        action = str(r.get("action") or "").lower()
+        if action not in ("add header", "rewrite subject"):
+            continue
+        kept.append({
+            "message_id": str(r.get("message-id") or r.get("message_id") or ""),
+            "from": str(r.get("sender_smtp") or r.get("sender_mime")
+                        or r.get("from") or ""),
+            "to": _first_rcpt(r),
+            "subject": str(r.get("subject") or ""),
+            "score": r.get("score", 0),
+            "action": str(r.get("action") or ""),
+            "time": r.get("unix_time") or r.get("time") or 0,
+        })
+    return kept
+
+
+def rspamc_history_rows() -> list[dict]:
+    """Run `rspamc -j get history`; return delivered-spam rows (empty if absent)."""
+    rspamc = shutil.which("rspamc")
+    if not rspamc:
+        return []
+    try:
+        out = subprocess.run(
+            [rspamc, "-j", "get", "history"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return []
+    if out.returncode != 0:
+        return []
+    return parse_rspamc_history(out.stdout)
+
+
+def quarantine_release(message_id: str, user: str) -> dict:
+    """Move a message from Junk to INBOX for the recipient (best-effort)."""
+    doveadm = shutil.which("doveadm")
+    moved = False
+    if doveadm and user:
+        try:
+            search = subprocess.run(
+                [doveadm, "search", "-u", user, "mailbox", "Junk",
+                 "header", "Message-ID", message_id],
+                capture_output=True, text=True, timeout=15,
+            )
+            uids = [ln.split()[-1] for ln in search.stdout.splitlines() if ln.strip()]
+            if uids:
+                subprocess.run(
+                    [doveadm, "move", "-u", user, "INBOX",
+                     "mailbox", "Junk", *uids],
+                    capture_output=True, text=True, timeout=15,
+                )
+                moved = True
+        except (subprocess.SubprocessError, OSError):
+            pass
+    return {"moved": moved}
+
+
+def quarantine_confirm(message_id: str, user: str) -> dict:
+    """Train rspamd that this Junk message is spam (best-effort)."""
+    doveadm = shutil.which("doveadm")
+    rspamc = shutil.which("rspamc")
+    learned = False
+    if doveadm and rspamc and user:
+        try:
+            fetch = subprocess.run(
+                [doveadm, "fetch", "-u", user, "text", "mailbox", "Junk",
+                 "header", "Message-ID", message_id],
+                capture_output=True, text=True, timeout=15,
+            )
+            if fetch.returncode == 0 and fetch.stdout.strip():
+                res = subprocess.run(
+                    [rspamc, "learn_spam"], input=fetch.stdout,
+                    capture_output=True, text=True, timeout=10,
+                )
+                learned = res.returncode == 0
+        except (subprocess.SubprocessError, OSError):
+            pass
+    return {"learned": learned}
+
+
+def mailbox_auth(email: str, password: str) -> bool:
+    """Authenticate a mailbox user via Dovecot's own auth backend.
+
+    Uses `doveadm auth test` so it works for both passwd-file and SQL stores
+    without re-implementing hash verification. Returns True on success.
+    ponytail: password is passed as a CLI arg (brief, localhost-only exposure);
+    if Dovecot ever exposes a stdin/IMAP-auth path, switch to that.
+    """
+    doveadm = shutil.which("doveadm")
+    if not doveadm or not email or not password:
+        return False
+    try:
+        res = subprocess.run(
+            [doveadm, "auth", "test", email, password],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return False
+    return res.returncode == 0
+
+
+def build_spam_policy_ucl(reject: float, add_header: float,
+                          greylist: float | None = None) -> str:
+    """Build the rspamd `setting:user:` / `setting:domain:` UCL override string."""
+    parts = [f"reject={reject};", f'"add header"={add_header};']
+    if greylist is not None:
+        parts.append(f"greylist={greylist};")
+    return "{actions{" + "".join(parts) + "}}"
+
 
 # ── Module-level paths ───────────────────────────────────────────────────────
 
@@ -130,6 +276,7 @@ ROLE_HIERARCHY: dict[str, int] = {
     "admin": 100,
     "operator": 50,
     "readonly": 10,
+    "user": 1,
 }
 DEFAULT_ROLE = "admin"
 
@@ -1269,6 +1416,295 @@ def create_app() -> FastAPI:
                                   query={"error": f"Failed to change password for {email}"})
 
         audit_log("user_passwd", actor_email(request), email, client_ip(request))
+
+    # ── Spam policy (per-user / per-domain) ─────────────────────────────
+
+    def _load_spam_overrides() -> list[dict[str, str]]:
+        """List active rspamd override keys from Redis (setting:user: / setting:domain:)."""
+        try:
+            r = _get_redis()
+            keys = r.keys("setting:*")
+        except Exception:
+            return []
+        out: list[dict[str, str]] = []
+        for k in sorted(keys):
+            out.append({"key": k, "value": r.get(k) or ""})
+        return out
+
+    @app.get("/spam-policy", response_class=HTMLResponse)
+    async def spam_policy_page(request: Request):
+        if not require_role(request, "admin"):
+            return login_redirect()
+
+        error = request.query_params.get("error", "")
+        msg = request.query_params.get("msg", "")
+        return templates.TemplateResponse(
+            request, "spam_policy.html",
+            {
+                "request": request,
+                "csrf_token": get_csrf_token(request),
+                "overrides": _load_spam_overrides(),
+                "baseline": {"reject": 15.0, "add_header": 6.0, "greylist": 4.0},
+                "error": error,
+                "msg": msg,
+            },
+        )
+
+    @app.post("/spam-policy")
+    async def spam_policy_save(request: Request):
+        if not require_role(request, "admin"):
+            return login_redirect()
+
+        form = await request.form()
+        csrf_token = form.get("csrf_token", "")
+        if not validate_csrf(request, csrf_token):
+            return RedirectResponse(
+                url="/spam-policy?error=Invalid+session+token", status_code=302)
+
+        action = str(form.get("action", "set"))
+        target = str(form.get("target", "")).strip().lower()
+
+        if action == "remove":
+            key = str(form.get("key", ""))
+            if not (key.startswith("setting:user:") or key.startswith("setting:domain:")):
+                return _safe_redirect("/spam-policy", query={"error": "Invalid override key"})
+            try:
+                _get_redis().delete(key)
+            except Exception:
+                return _safe_redirect("/spam-policy", query={"error": "Redis unavailable"})
+            audit_log("spam_policy_remove", actor_email(request), key, client_ip(request))
+            return _safe_redirect("/spam-policy", query={"msg": f"Removed {key}"})
+
+        # action == "set"
+        target_type = str(form.get("target_type", "user"))
+        if not target:
+            return _safe_redirect("/spam-policy", query={"error": "Email or domain required"})
+        if target_type == "user":
+            if not _valid_email(target):
+                return _safe_redirect("/spam-policy", query={"error": "Invalid email address"})
+            key = f"setting:user:{target}"
+        else:
+            domain = target.split("@")[-1]
+            if not re.match(r"^[a-z0-9.-]+\.[a-z]{2,}$", domain):
+                return _safe_redirect("/spam-policy", query={"error": "Invalid domain"})
+            key = f"setting:domain:{domain}"
+
+        try:
+            reject = float(form.get("reject", ""))
+            add_header = float(form.get("add_header", ""))
+        except (ValueError, TypeError):
+            return _safe_redirect(
+                "/spam-policy", query={"error": "reject and add-header must be numbers"})
+
+        greylist: float | None = None
+        greylist_raw = str(form.get("greylist", "")).strip()
+        if greylist_raw:
+            try:
+                greylist = float(greylist_raw)
+            except ValueError:
+                return _safe_redirect(
+                    "/spam-policy", query={"error": "greylist must be a number"})
+
+        ucl = build_spam_policy_ucl(reject, add_header, greylist)
+        try:
+            _get_redis().set(key, ucl)
+        except Exception:
+            return _safe_redirect("/spam-policy", query={"error": "Redis unavailable"})
+        audit_log("spam_policy_set", actor_email(request), f"{key} -> {ucl}", client_ip(request))
+        return _safe_redirect("/spam-policy", query={"msg": f"Saved {key}"})
+
+    # ── Quarantine (delivered spam in Junk) ──────────────────────────────
+    # rspamd's `add header` action delivers spam with X-Spam-Flag: YES, which the
+    # global sieve (spam-to-junk.sieve) files into Junk. This view lists those
+    # messages from rspamd history and lets an admin release false positives
+    # (Junk -> INBOX) or confirm spam (train the filter). Helpers are
+    # module-level (see top of file) so they are unit-testable.
+
+    @app.get("/quarantine", response_class=HTMLResponse)
+    async def quarantine_page(request: Request):
+        if not require_role(request, "admin"):
+            return login_redirect()
+        rows = rspamc_history_rows()
+        return templates.TemplateResponse(
+            request, "quarantine.html",
+            {
+                "request": request,
+                "csrf_token": get_csrf_token(request),
+                "rows": rows,
+                "message": request.query_params.get("msg", ""),
+                "error": request.query_params.get("error", ""),
+            },
+        )
+
+    @app.post("/quarantine/release")
+    async def quarantine_release_handler(request: Request):
+        if not require_role(request, "admin"):
+            return login_redirect()
+        form = await request.form()
+        if not validate_csrf(request, str(form.get("csrf_token", ""))):
+            return _safe_redirect("/quarantine", query={"error": "Invalid session token"})
+        message_id = str(form.get("message_id", "")).strip()
+        user = str(form.get("user", "")).strip().lower()
+        if not message_id or not user:
+            return _safe_redirect("/quarantine", query={"error": "message_id and user required"})
+        res = quarantine_release(message_id, user)
+        audit_log("quarantine_release", actor_email(request), f"{user} {message_id}",
+                  client_ip(request))
+        msg = "Released to Inbox" if res["moved"] else "Released (mailbox move unavailable)"
+        return _safe_redirect("/quarantine", query={"msg": msg})
+
+    @app.post("/quarantine/confirm")
+    async def quarantine_confirm_handler(request: Request):
+        if not require_role(request, "admin"):
+            return login_redirect()
+        form = await request.form()
+        if not validate_csrf(request, str(form.get("csrf_token", ""))):
+            return _safe_redirect("/quarantine", query={"error": "Invalid session token"})
+        message_id = str(form.get("message_id", "")).strip()
+        user = str(form.get("user", "")).strip().lower()
+        if not message_id or not user:
+            return _safe_redirect("/quarantine", query={"error": "message_id and user required"})
+        res = quarantine_confirm(message_id, user)
+        audit_log("quarantine_confirm", actor_email(request), f"{user} {message_id}",
+                  client_ip(request))
+        msg = "Marked as spam" if res["learned"] else "Confirmed (trainer unavailable)"
+        return _safe_redirect("/quarantine", query={"msg": msg})
+
+    # ── End-user self-service ────────────────────────────────────────────
+    # Mailbox users log in with their own credentials (Dovecot auth) and may
+    # change their password, tune their own spam sensitivity (reuses the
+    # setting:user: rspamd override from Slice-A), and release their own Junk
+    # mail (reuses quarantine_release from Slice-B, scoped to their address).
+
+    @app.get("/self/login", response_class=HTMLResponse)
+    async def self_login_page(request: Request):
+        if require_role(request, "user"):
+            return RedirectResponse(url="/self", status_code=302)
+        error = request.query_params.get("error", "")
+        return templates.TemplateResponse(
+            request, "self_login.html",
+            {"request": request, "error": error, "csrf_token": get_csrf_token(request)},
+        )
+
+    @app.post("/self/login")
+    async def self_login_post(request: Request):
+        form = await request.form()
+        if not validate_csrf(request, str(form.get("csrf_token", ""))):
+            return _safe_redirect("/self/login", query={"error": "Invalid session token"})
+        email = str(form.get("email", "")).strip().lower()
+        password = str(form.get("password", ""))
+        if not _valid_email(email):
+            return _safe_redirect("/self/login", query={"error": "Invalid email address"})
+        if not mailbox_auth(email, password):
+            audit_log("self_login_fail", email, client_ip(request))
+            return _safe_redirect("/self/login", query={"error": "Invalid credentials"})
+        request.session["authenticated"] = True
+        request.session["email"] = email
+        request.session["role"] = "user"
+        request.session["mfa_verified"] = True
+        request.session["login_time"] = int(time.time())
+        request.session["session_version"] = load_admin_account().get("session_version", 0)
+        audit_log("self_login", email, client_ip(request))
+        return RedirectResponse(url="/self", status_code=302)
+
+    @app.get("/self", response_class=HTMLResponse)
+    async def self_service_page(request: Request):
+        if not require_role(request, "user"):
+            return RedirectResponse(url="/self/login", status_code=302)
+        email = request.session.get("email", "")
+        current = None
+        try:
+            raw = _get_redis().get(f"setting:user:{email}")
+            if raw:
+                current = raw
+        except Exception:
+            current = None
+        rows = [r for r in rspamc_history_rows() if r.get("to", "").lower() == email]
+        return templates.TemplateResponse(
+            request, "self_service.html",
+            {
+                "request": request,
+                "csrf_token": get_csrf_token(request),
+                "email": email,
+                "current": current,
+                "baseline": {"reject": 15.0, "add_header": 6.0, "greylist": 4.0},
+                "rows": rows,
+                "message": request.query_params.get("msg", ""),
+                "error": request.query_params.get("error", ""),
+            },
+        )
+
+    @app.post("/self/password")
+    async def self_password_change(request: Request):
+        if not require_role(request, "user"):
+            return RedirectResponse(url="/self/login", status_code=302)
+        form = await request.form()
+        if not validate_csrf(request, str(form.get("csrf_token", ""))):
+            return _safe_redirect("/self", query={"error": "Invalid session token"})
+        email = request.session.get("email", "")
+        old = str(form.get("old_password", ""))
+        new = str(form.get("new_password", ""))
+        if not mailbox_auth(email, old):
+            return _safe_redirect("/self", query={"error": "Current password incorrect"})
+        if len(new) < 8:
+            return _safe_redirect("/self", query={"error": "New password too short (min 8)"})
+        if um.user_passwd(email, password=new) != 0:
+            return _safe_redirect("/self", query={"error": "Password change failed"})
+        audit_log("self_passwd", email, client_ip(request))
+        return _safe_redirect("/self", query={"msg": "Password changed"})
+
+    @app.post("/self/spam-policy")
+    async def self_spam_policy(request: Request):
+        if not require_role(request, "user"):
+            return RedirectResponse(url="/self/login", status_code=302)
+        form = await request.form()
+        if not validate_csrf(request, str(form.get("csrf_token", ""))):
+            return _safe_redirect("/self", query={"error": "Invalid session token"})
+        email = request.session.get("email", "")
+        key = f"setting:user:{email}"
+        if str(form.get("action", "set")) == "remove":
+            try:
+                _get_redis().delete(key)
+            except Exception:
+                return _safe_redirect("/self", query={"error": "Redis unavailable"})
+            audit_log("self_spam_remove", email, client_ip(request))
+            return _safe_redirect("/self", query={"msg": "Spam settings reset to baseline"})
+        try:
+            reject = float(form.get("reject", ""))
+            add_header = float(form.get("add_header", ""))
+        except (ValueError, TypeError):
+            return _safe_redirect("/self", query={"error": "reject and add-header must be numbers"})
+        greylist: float | None = None
+        greylist_raw = str(form.get("greylist", "")).strip()
+        if greylist_raw:
+            try:
+                greylist = float(greylist_raw)
+            except ValueError:
+                return _safe_redirect("/self", query={"error": "greylist must be a number"})
+        ucl = build_spam_policy_ucl(reject, add_header, greylist)
+        try:
+            _get_redis().set(key, ucl)
+        except Exception:
+            return _safe_redirect("/self", query={"error": "Redis unavailable"})
+        audit_log("self_spam_set", email, f"{key} -> {ucl}", client_ip(request))
+        return _safe_redirect("/self", query={"msg": "Spam settings saved"})
+
+    @app.post("/self/quarantine/release")
+    async def self_quarantine_release(request: Request):
+        if not require_role(request, "user"):
+            return RedirectResponse(url="/self/login", status_code=302)
+        form = await request.form()
+        if not validate_csrf(request, str(form.get("csrf_token", ""))):
+            return _safe_redirect("/self", query={"error": "Invalid session token"})
+        # always scope to the session identity; ignore any user-supplied target
+        email = request.session.get("email", "")
+        message_id = str(form.get("message_id", "")).strip()
+        if not message_id:
+            return _safe_redirect("/self", query={"error": "message_id required"})
+        res = quarantine_release(message_id, email)
+        audit_log("self_quarantine_release", email, message_id, client_ip(request))
+        msg = "Released to Inbox" if res["moved"] else "Released (mailbox move unavailable)"
+        return _safe_redirect("/self", query={"msg": msg})
 
     # ── Settings ────────────────────────────────────────────────────────
 

@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}User Login{% endblock %}
+{% block content %}
+
+<h1>Mailbox sign-in</h1>
+<p style="color:var(--muted);font-size:0.85rem">
+  Sign in with your mailbox address and password to manage your own spam
+  settings, release quarantined mail, and change your password.
+</p>
+
+{% if error %}
+<div class="msg msg-err">{{ error }}</div>
+{% endif %}
+
+<div class="card" style="max-width:460px">
+  <form method="post" action="/self/login">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="form-row">
+      <label>Email</label>
+      <input name="email" type="email" placeholder="you@example.com" required>
+    </div>
+    <div class="form-row">
+      <label>Password</label>
+      <input name="password" type="password" required>
+    </div>
+    <button type="submit">Sign in</button>
+  </form>
+</div>
+
+{% endblock %}

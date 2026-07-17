@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Quarantine{% endblock %}
+{% block content %}
+
+<h1>Quarantine</h1>
+<p style="color:var(--muted);font-size:0.85rem">
+  Messages rspamd delivered as spam (filed to each user's <strong>Junk</strong>
+  folder by the global sieve). Release false positives to Inbox, or confirm spam
+  to train the filter.
+</p>
+
+{% if error %}
+<div class="msg msg-err">{{ error }}</div>
+{% endif %}
+{% if msg %}
+<div class="msg msg-ok">{{ msg }}</div>
+{% endif %}
+
+<div class="card">
+  <h2>Delivered spam</h2>
+  {% if rows %}
+  <table>
+    <thead>
+      <tr>
+        <th>Time</th><th>From</th><th>To</th><th>Subject</th>
+        <th>Score</th><th>Action</th><th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td>{{ r.time }}</td>
+        <td><code>{{ r.from }}</code></td>
+        <td><code>{{ r.to }}</code></td>
+        <td>{{ r.subject }}</td>
+        <td>{{ r.score }}</td>
+        <td>{{ r.action }}</td>
+        <td style="text-align:right;white-space:nowrap">
+          <form method="post" action="/quarantine/release" style="display:inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="message_id" value="{{ r.message_id }}">
+            <input type="hidden" name="user" value="{{ r.to }}">
+            <button type="submit" class="small">Release</button>
+          </form>
+          <form method="post" action="/quarantine/confirm" style="display:inline"
+                data-confirm="Confirm this is spam?">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="message_id" value="{{ r.message_id }}">
+            <input type="hidden" name="user" value="{{ r.to }}">
+            <button type="submit" class="danger small">Confirm spam</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">No quarantined messages in rspamd history (or rspamd history
+  is unavailable).</p>
+  {% endif %}
+</div>
+
+{% endblock %}

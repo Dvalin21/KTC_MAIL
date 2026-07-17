@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}Self-service{% endblock %}
+{% block content %}
+
+<h1>Self-service</h1>
+<p style="color:var(--muted);font-size:0.85rem">Signed in as <code>{{ email }}</code></p>
+
+{% if error %}
+<div class="msg msg-err">{{ error }}</div>
+{% endif %}
+{% if message %}
+<div class="msg msg-ok">{{ message }}</div>
+{% endif %}
+
+{# ── Password change ── #}
+<div class="card" style="margin-bottom:1.5rem">
+  <h2>Change password</h2>
+  <form method="post" action="/self/password" style="margin-top:0.75rem">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="form-row">
+      <label>Current password</label>
+      <input name="old_password" type="password" required>
+    </div>
+    <div class="form-row">
+      <label>New password (min 8)</label>
+      <input name="new_password" type="password" required>
+    </div>
+    <button type="submit">Change password</button>
+  </form>
+</div>
+
+{# ── Spam sensitivity ── #}
+<div class="card" style="margin-bottom:1.5rem">
+  <h2>Your spam sensitivity</h2>
+  <p style="color:var(--muted);font-size:0.85rem;margin-bottom:0.75rem">
+    Overrides the server baseline for <strong>your</strong> address only.
+    {% if current %}Current: <code>{{ current }}</code>{% else %}Currently using baseline.{% endif %}
+  </p>
+  <form method="post" action="/self/spam-policy" class="form-inline" style="margin-top:0.75rem;flex-wrap:wrap">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="action" value="set">
+    <div style="flex:0 0 110px">
+      <label class="form-row" style="font-size:0.8rem;font-weight:600;margin-bottom:0.25rem">Reject ≥</label>
+      <input name="reject" type="number" step="0.5" placeholder="15" required>
+    </div>
+    <div style="flex:0 0 130px">
+      <label class="form-row" style="font-size:0.8rem;font-weight:600;margin-bottom:0.25rem">Add-header ≥</label>
+      <input name="add_header" type="number" step="0.5" placeholder="6" required>
+    </div>
+    <div style="flex:0 0 110px">
+      <label class="form-row" style="font-size:0.8rem;font-weight:600;margin-bottom:0.25rem">Greylist ≥</label>
+      <input name="greylist" type="number" step="0.5" placeholder="optional">
+    </div>
+    <button type="submit" style="margin-bottom:0.25rem">Save</button>
+  </form>
+  <form method="post" action="/self/spam-policy" style="margin-top:0.5rem">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="action" value="remove">
+    <button type="submit" class="small">Reset to baseline</button>
+  </form>
+</div>
+
+{# ── Own quarantined mail ── #}
+<div class="card">
+  <h2>Your quarantined mail</h2>
+  {% if rows %}
+  <table>
+    <thead><tr><th>Time</th><th>From</th><th>Subject</th><th>Score</th><th></th></tr></thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td>{{ r.time }}</td>
+        <td><code>{{ r.from }}</code></td>
+        <td>{{ r.subject }}</td>
+        <td>{{ r.score }}</td>
+        <td style="text-align:right">
+          <form method="post" action="/self/quarantine/release" style="display:inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="message_id" value="{{ r.message_id }}">
+            <button type="submit" class="small">Release</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">No quarantined mail for your address.</p>
+  {% endif %}
+</div>
+
+{% endblock %}
