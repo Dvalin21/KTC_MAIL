@@ -105,7 +105,16 @@ button:hover { opacity: 0.9; }
       {% if error %}
       <div class="error">{{ error }}</div>
       {% endif %}
-      <p class="step-info">Enter the 6-digit code from your authenticator app.</p>
+      {% if webauthn_available %}
+      <p class="step-info">Use your security key or built-in authenticator.</p>
+      <button type="button" id="wa-login-btn" onclick="startLogin()">Use security key →</button>
+      <div id="wa-status" class="step-info"></div>
+      {% if totp_available %}
+      <hr style="margin:1.25rem 0;border:none;border-top:1px solid var(--border)">
+      {% endif %}
+      {% endif %}
+      {% if totp_available %}
+      <p class="step-info">Or enter the 6-digit code from your authenticator app.</p>
       <form method="post" action="/login/mfa">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <label for="totp_code">Verification code</label>
@@ -113,6 +122,7 @@ button:hover { opacity: 0.9; }
                pattern="[0-9]{6}" placeholder="000000" required autofocus>
         <button type="submit">Verify →</button>
       </form>
+      {% endif %}
     {% else %}
       <h1>Sign in</h1>
       {% if error %}
@@ -128,5 +138,7 @@ button:hover { opacity: 0.9; }
       </form>
     {% endif %}
   </div>
+  <script>window.WA_CSRF = "{{ csrf_token }}";</script>
+  <script src="/static/webauthn.js"></script>
 </body>
 </html>

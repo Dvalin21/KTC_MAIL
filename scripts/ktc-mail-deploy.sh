@@ -173,6 +173,19 @@ if [[ ! -x /opt/ktc-mail/venv/bin/olevba3 ]]; then
 fi
 chown -R root:root /opt/ktc-mail/venv /opt/ktc-mail/olefy 2>/dev/null || true
 chmod -R go+rX /opt/ktc-mail/venv /opt/ktc-mail/olefy 2>/dev/null || true
+
+# WebAuthn / FIDO2 server library for security-key TFA (not in Debian trixie).
+# Install from the vendored wheels (offline) shipped beside this script.
+WA_WHEELS="${SELF}/../wheels"
+if ! ${PYTHON:-python3} -c "import webauthn" 2>/dev/null; then
+    if [[ -d "$WA_WHEELS" ]]; then
+        ${PYTHON:-python3} -m pip install --no-index --find-links "$WA_WHEELS" webauthn==3.0.0 --break-system-packages 2>&1 || \
+            echo "WARNING: failed to install webauthn from vendored wheels; security-key TFA unavailable"
+    else
+        ${PYTHON:-python3} -m pip install --break-system-packages webauthn 2>&1 || \
+            echo "WARNING: failed to pip install webauthn; security-key TFA unavailable"
+    fi
+fi
 systemctl daemon-reload
 
 # ── 5. Install ktc-mail Python package ─────────────────────────────────

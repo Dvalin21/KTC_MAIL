@@ -45,7 +45,7 @@ from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from jinja2 import Environment, FileSystemLoader
@@ -54,6 +54,7 @@ from pathlib import Path as _Path
 
 from . import user_manager as um
 from . import mfa as mfa_mod
+from . import webauthn_mgr as wa
 from .qr import qr_svg_b64
 from .config import (
     CONFIG_DIR,
@@ -1023,6 +1024,12 @@ def create_app() -> FastAPI:
             return RedirectResponse(url="/", status_code=302)
 
         is_mfa_step = request.session.get("mfa_pending", False)
+        wa_email = request.session.get("mfa_pending_email", "")
+        webauthn_available = wa.has_credentials(wa_email) if is_mfa_step else False
+        totp_available = (
+            bool(load_admin_account().get("mfa_enabled", False))
+            if is_mfa_step else False
+        )
         error = request.query_params.get("error", "")
 
         return templates.TemplateResponse(
@@ -1032,6 +1039,8 @@ def create_app() -> FastAPI:
                 "error": error,
                 "csrf_token": get_csrf_token(request),
                 "mfa_step": is_mfa_step,
+                "webauthn_available": webauthn_available,
+                "totp_available": totp_available,
             },
         )
 
@@ -1075,9 +1084,11 @@ def create_app() -> FastAPI:
         # Successful login — clear rate limit for this IP
         _login_rate_clear(ip)
 
-        # Password OK — check if MFA is required
+        # Password OK — check if a second factor is required.
+        # TOTP (mfa_enabled) OR an enrolled security key both gate the session.
         mfa_enabled = bool(acct.get("mfa_enabled", False))
-        if mfa_enabled:
+        wa_enabled = wa.has_credentials(email)
+        if mfa_enabled or wa_enabled:
             # Set pending state, redirect to MFA step
             request.session["mfa_pending"] = True
             request.session["mfa_pending_email"] = email
@@ -1237,6 +1248,65 @@ def create_app() -> FastAPI:
         request.session["break_glass"] = True
         audit_log("login", operator, "login (break-glass)", client_ip(request))
         return RedirectResponse(url="/", status_code=302)
+
+    # ── WebAuthn login second factor (P2) ─────────────────────────────
+    # Triggered from the MFA step when the pending admin has keys enrolled.
+
+    @app.post("/login/webauthn/begin")
+    async def login_wa_begin(request: Request):
+        if not request.session.get("mfa_pending", False):
+            return JSONResponse({"error": "no pending login"}, status_code=400)
+        email = request.session.get("mfa_pending_email", "")
+        if not email or not wa.has_credentials(email):
+            return JSONResponse({"error": "no webauthn credential"},
+                                status_code=400)
+        try:
+            opts = wa.begin_authentication(request, email)
+        except RuntimeError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=503)
+        return JSONResponse(opts)
+
+    @app.post("/login/webauthn/finish")
+    async def login_wa_finish(request: Request):
+        if not request.session.get("mfa_pending", False):
+            return RedirectResponse(url="/login", status_code=302)
+        ip = client_ip(request)
+        if _login_rate_check(ip):
+            return JSONResponse(
+                {"ok": False, "error": "Too many failed attempts"},
+                status_code=429)
+        try:
+            payload = await request.json()
+        except Exception:
+            _login_rate_record(ip)
+            return JSONResponse({"ok": False, "error": "Invalid response"},
+                                status_code=400)
+        if not validate_csrf(request, payload.get("csrf_token", "")):
+            _login_rate_record(ip)
+            return JSONResponse({"ok": False, "error": "Invalid session token"},
+                                status_code=403)
+        email = request.session.get("mfa_pending_email", "unknown")
+        ok, err = wa.verify_authentication(request, email, payload)
+        if not ok:
+            _login_rate_record(ip)
+            logger.warning("Failed WebAuthn login: ip=%s email=%s err=%s",
+                           ip, email, err)
+            return JSONResponse({"ok": False, "error": "Invalid security key"},
+                                status_code=401)
+        _login_rate_clear(ip)
+        acct = load_admin_account()
+        request.session["authenticated"] = True
+        request.session["email"] = email
+        request.session["role"] = acct.get("role", DEFAULT_ROLE)
+        request.session["mfa_verified"] = True
+        request.session["login_time"] = int(time.time())
+        request.session["session_version"] = acct.get("session_version", 0)
+        request.session.pop("mfa_pending", None)
+        request.session.pop("mfa_pending_email", None)
+        request.session.pop("mfa_pending_time", None)
+        audit_log("login", email, "login (WebAuthn)", client_ip(request))
+        return JSONResponse({"ok": True})
+
     @app.get("/logout")
     async def logout(request: Request):
         request.session.clear()
@@ -1716,6 +1786,7 @@ def create_app() -> FastAPI:
         profile = _load_profile()
         admin_email = profile.admin_email if profile else ""
         mfa = account_mfa_status()
+        wa_creds = wa.credentials_for(request.session.get("email", ""))
 
         error = request.query_params.get("error", "")
         msg = request.query_params.get("msg", "")
@@ -1735,6 +1806,7 @@ def create_app() -> FastAPI:
                 "config_dir": str(CONFIG_DIR),
                 "state_dir": str(STATE_DIR),
                 "mfa": mfa,
+                "webauthn": {"credentials": wa_creds, "available": bool(wa_creds)},
                 "qr_src": qr_src,
                 "error": error,
                 "msg": msg,
@@ -1868,6 +1940,67 @@ def create_app() -> FastAPI:
             url="/settings?msg=Two-factor+authentication+disabled",
             status_code=302,
         )
+
+    # ── WebAuthn / security-key second factor (P2) ─────────────────────
+    # Enrollment is admin self-service: the logged-in admin enrolls keys for
+    # their own account. begin/finish are JSON-driven (browser glue in
+    # static/webauthn.js).
+
+    @app.post("/settings/webauthn/register/begin")
+    async def wa_register_begin(request: Request):
+        if not require_role(request, "admin"):
+            return login_redirect()
+        form = await request.form()
+        if not validate_csrf(request, form.get("csrf_token", "")):
+            return JSONResponse(
+                {"ok": False, "error": "Invalid session token"}, status_code=403)
+        email = request.session.get("email", "")
+        try:
+            opts = wa.begin_registration(request, email)
+        except RuntimeError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
+        return JSONResponse(opts)
+
+    @app.post("/settings/webauthn/register/finish")
+    async def wa_register_finish(request: Request):
+        if not require_role(request, "admin"):
+            return login_redirect()
+        form = await request.form()
+        if not validate_csrf(request, form.get("csrf_token", "")):
+            return JSONResponse(
+                {"ok": False, "error": "Invalid session token"}, status_code=403)
+        try:
+            payload = json.loads(form.get("response", "{}"))
+        except (ValueError, TypeError):
+            return JSONResponse({"ok": False, "error": "Invalid response"},
+                                status_code=400)
+        ok, err = wa.finish_registration(
+            request, request.session.get("email", ""), payload)
+        if not ok:
+            return JSONResponse(
+                {"ok": False, "error": err or "Registration failed"},
+                status_code=400)
+        audit_log("webauthn_register", actor_email(request),
+                  "security key enrolled", client_ip(request))
+        return JSONResponse({"ok": True})
+
+    @app.post("/settings/webauthn/remove")
+    async def wa_remove(request: Request):
+        if not require_role(request, "admin"):
+            return login_redirect()
+        form = await request.form()
+        if not validate_csrf(request, form.get("csrf_token", "")):
+            return RedirectResponse(
+                url="/settings?error=Invalid+session+token", status_code=302)
+        cred_id = form.get("cred_id", "")
+        email = request.session.get("email", "")
+        if wa.remove_credential(email, cred_id):
+            audit_log("webauthn_remove", actor_email(request),
+                      "security key removed", client_ip(request))
+            return RedirectResponse(url="/settings?msg=Security+key+removed",
+                                    status_code=302)
+        return RedirectResponse(url="/settings?error=Key+not+found",
+                                status_code=302)
 
     @app.post("/settings/mfa/recovery")
     async def settings_mfa_recovery(request: Request):

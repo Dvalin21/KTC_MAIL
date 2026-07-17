@@ -16,6 +16,7 @@ src/ktc_mail_admin/rate_limiter.py usr/lib/ktc-mail/
 src/ktc_mail_admin/mfa.py usr/lib/ktc-mail/
 src/ktc_mail_admin/exporter.py usr/lib/ktc-mail/
 src/ktc_mail_admin/imap_migrate.py usr/lib/ktc-mail/
+src/ktc_mail_admin/webauthn_mgr.py usr/lib/ktc-mail/
 
 # ── Jinja2 templates ──────────────────────────────────────────────
 src/ktc_mail_admin/templates/base.html usr/lib/ktc-mail/templates/
@@ -34,6 +35,12 @@ src/ktc_mail_admin/templates/self_login.html usr/lib/ktc-mail/templates/
 src/ktc_mail_admin/templates/self_service.html usr/lib/ktc-mail/templates/
 src/ktc_mail_admin/templates/backup.html usr/lib/ktc-mail/templates/
 src/ktc_mail_admin/templates/mfa_codes.html usr/lib/ktc-mail/templates/
+
+# ── Static assets (served at /static) ──────────────────────────
+# package_data globs these too, but list explicitly so they reach the
+# flattened usr/lib/ktc-mail/static/ the admin app actually serves from.
+src/ktc_mail_admin/static/admin.js usr/lib/ktc-mail/static/
+src/ktc_mail_admin/static/webauthn.js usr/lib/ktc-mail/static/
 
 # ── Scripts ───────────────────────────────────────────────────────
 scripts/bootstrap-mail-stack.sh usr/lib/ktc-mail/
@@ -75,6 +82,9 @@ packaging/etc/ktc-mail/mta-sts-daemon.yml etc/ktc-mail/
 # ── Vendored Olefy daemon (not in Debian/PyPI; see file header) ──
 # dh_install destination is a DIRECTORY; the file keeps its basename (olefy.py).
 vendor/olefy/olefy.py opt/ktc-mail/olefy/
+
+# ── Vendored WebAuthn wheels (offline install; see postinst) ──
+wheels/* usr/share/ktc-mail/wheels/
 
 # ── Opt-in node_exporter textfile wiring (see file header) ────
 packaging/usr/share/ktc-mail/examples/node-exporter-ktc-mail.conf usr/share/ktc-mail/examples/

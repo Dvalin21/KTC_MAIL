@@ -95,6 +95,38 @@
     {% endif %}
   </div>
 
+  {# ── WebAuthn / security keys ── #}
+  <div class="card">
+    <h2>Security Keys (WebAuthn)</h2>
+    {% if webauthn.credentials %}
+      <table>
+        <tr><th>Name</th><th>Registered</th><th></th></tr>
+        {% for c in webauthn.credentials %}
+        <tr>
+          <td>{{ c.name }}</td>
+          <td style="font-size:0.8rem;color:var(--muted)">{{ c.created_at | datetime_from_ts }}</td>
+          <td>
+            <form method="post" action="/settings/webauthn/remove" style="display:inline"
+                  data-confirm="Remove this security key?">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="cred_id" value="{{ c.id }}">
+              <button type="submit" class="danger small">Remove</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </table>
+    {% else %}
+      <p style="margin:0.75rem 0;font-size:0.9rem;color:var(--muted)">
+        No security keys enrolled yet. A hardware key (YubiKey) or your device's
+        built-in authenticator adds phishing-resistant second-factor login.
+      </p>
+    {% endif %}
+    <button type="button" id="wa-register-btn" onclick="startRegister()"
+            style="margin-top:0.75rem">Register security key</button>
+    <div id="wa-status" class="step-info"></div>
+  </div>
+
   {# ── System info ── #}
   <div class="card">
     <h2>System</h2>
@@ -112,5 +144,8 @@
     </table>
   </div>
 </div>
+
+<script>window.WA_CSRF = "{{ csrf_token }}";</script>
+<script src="/static/webauthn.js"></script>
 
 {% endblock %}

@@ -38,6 +38,36 @@ fi
 chown -R root:root /opt/ktc-mail/venv /opt/ktc-mail/olefy 2>/dev/null || true
 chmod -R go+rX /opt/ktc-mail/venv /opt/ktc-mail/olefy 2>/dev/null || true
 
+# WebAuthn / FIDO2 server library for security-key TFA. Not in Debian trixie;
+# the wheels ship INSIDE the .deb (usr/share/ktc-mail/wheels) so install is
+# fully offline — no PyPI/network at install time. webauthn 3.0.0 requires
+# cryptography>=49 but Debian trixie only ships 43, so we install into an
+# ISOLATED venv (/opt/ktc-mail/webauthn-venv) rather than polluting dist-packages
+# or fighting the distro cryptography. webauthn_mgr prepends this venv's
+# site-packages to sys.path at import time. Mirrors the Olefy oletools venv.
+WA_WHEELS=/usr/share/ktc-mail/wheels
+WA_VENV=/opt/ktc-mail/webauthn-venv
+if ! python3 -c "import sys; sys.path.insert(0,'$WA_VENV/lib/python3/dist-packages'); import webauthn" 2>/dev/null; then
+    if [ -d "$WA_WHEELS" ]; then
+        if python3 -m venv "$WA_VENV" 2>/dev/null; then
+            if "$WA_VENV/bin/pip" install --no-index --find-links "$WA_WHEELS" webauthn==3.0.0 >/dev/null 2>&1; then
+                chown -R root:root "$WA_VENV" 2>/dev/null || true
+                chmod -R go+rX "$WA_VENV" 2>/dev/null || true
+                echo "KTC Mail: WebAuthn security-key TFA enabled (venv at $WA_VENV)."
+            else
+                echo "WARNING: failed to install webauthn into $WA_VENV; security-key TFA unavailable" >&2
+                echo "  TOTP still works. Retry: $WA_VENV/bin/pip install --no-index --find-links $WA_WHEELS webauthn==3.0.0" >&2
+            fi
+        else
+            echo "WARNING: failed to create venv at $WA_VENV (python3-venv missing?); security-key TFA unavailable" >&2
+            echo "  TOTP still works." >&2
+        fi
+    else
+        echo "WARNING: webauthn wheels missing at $WA_WHEELS; security-key TFA unavailable" >&2
+        echo "  TOTP still works." >&2
+    fi
+fi
+
 install -d -m 0750 -o root -g ktc-mail /etc/ktc-mail /etc/ktc-mail/dkim
 install -d -m 0770 -o root -g ktc-mail /var/lib/ktc-mail
 # Runtime dir on tmpfs (recreated at boot via tmpfiles.d/ktc-mail.conf)
