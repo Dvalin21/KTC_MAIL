@@ -35,6 +35,11 @@ src/ktc_mail_admin/templates/self_login.html usr/lib/ktc-mail/templates/
 src/ktc_mail_admin/templates/self_service.html usr/lib/ktc-mail/templates/
 src/ktc_mail_admin/templates/backup.html usr/lib/ktc-mail/templates/
 src/ktc_mail_admin/templates/mfa_codes.html usr/lib/ktc-mail/templates/
+src/ktc_mail_admin/templates/domains.html usr/lib/ktc-mail/templates/
+src/ktc_mail_admin/templates/options.html usr/lib/ktc-mail/templates/
+src/ktc_mail_admin/templates/sieve_global.html usr/lib/ktc-mail/templates/
+src/ktc_mail_admin/templates/transports.html usr/lib/ktc-mail/templates/
+src/ktc_mail_admin/templates/mail_routing.html usr/lib/ktc-mail/templates/
 
 # ── Static assets (served at /static) ──────────────────────────
 # package_data globs these too, but list explicitly so they reach the
