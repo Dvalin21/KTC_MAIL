@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Sender Transports{% endblock %}
+{% block content %}
+
+<h1>Sender-Dependent Transports</h1>
+
+{% if error %}<div class="msg msg-err">{{ error }}</div>{% endif %}
+{% if msg %}<div class="msg msg-ok">{{ msg }}</div>{% endif %}
+
+<p style="color:#64748b;font-size:0.85rem">
+  Route mail from a sender domain through a specific relay. JSON array of
+  <code>{"sender":"@domain","transport":"smtp:relay:25"}</code>. Saving reloads Postfix.
+</p>
+
+<form method="post" action="/transports">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <div class="card">
+    <textarea name="json" rows="16" style="width:100%;font-family:monospace">{{ rows | tojson(indent=2) }}</textarea>
+  </div>
+  <button type="submit" style="margin-top:1rem">Save changes</button>
+</form>
+
+{% endblock %}

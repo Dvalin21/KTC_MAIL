@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Global Sieve{% endblock %}
+{% block content %}
+
+<h1>Global Sieve Filters</h1>
+
+{% if error %}<div class="msg msg-err">{{ error }}</div>{% endif %}
+{% if msg %}<div class="msg msg-ok">{{ msg }}</div>{% endif %}
+
+<form method="post" action="/sieve-global">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <div class="card" style="margin-bottom:1.5rem">
+    <h2>Global Prefilter</h2>
+    <p class="muted" style="color:#64748b;font-size:0.8rem">Runs before user scripts. Editing triggers a Dovecot reload.</p>
+    <textarea name="pre" rows="12" style="width:100%;font-family:monospace">{{ pre }}</textarea>
+  </div>
+  <div class="card" style="margin-bottom:1.5rem">
+    <h2>Global Postfilter</h2>
+    <textarea name="post" rows="12" style="width:100%;font-family:monospace">{{ post }}</textarea>
+  </div>
+  <button type="submit">Save changes</button>
+</form>
+
+{% endblock %}

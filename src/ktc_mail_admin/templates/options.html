@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Options{% endblock %}
+{% block content %}
+
+<h1>Options</h1>
+
+{% if error %}<div class="msg msg-err">{{ error }}</div>{% endif %}
+{% if msg %}<div class="msg msg-ok">{{ msg }}</div>{% endif %}
+
+<form method="post" action="/options">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <div class="card">
+    <label class="form-row" style="display:flex;align-items:center;gap:0.5rem">
+      <input type="checkbox" name="fail2ban_enabled" {% if opts.fail2ban_enabled %}checked{% endif %}>
+      Enable Fail2ban (SSH/Auth banning)
+    </label>
+    <label class="form-row" style="margin-top:1rem">
+      Quota warning threshold (%)
+      <input type="number" name="quota_notify_pct" min="1" max="100" value="{{ opts.quota_notify_pct }}">
+    </label>
+    <label class="form-row" style="margin-top:1rem">
+      Minimum password length
+      <input type="number" name="min_password_len" min="6" max="64" value="{{ opts.min_password_len }}">
+    </label>
+    <label class="form-row" style="margin-top:1rem">
+      Rspamd reject score
+      <input type="number" name="rspamd_reject" step="0.1" min="1" value="{{ opts.rspamd_reject }}">
+    </label>
+  </div>
+  <button type="submit" style="margin-top:1rem">Save changes</button>
+</form>
+
+{% endblock %}

@@ -56,6 +56,8 @@ nav {
   border-bottom: 1px solid #334155;
 }
 .nav-brand span { color: var(--accent); }
+.nav-group-label { display: block; padding: 0.85rem 0.25rem 0.25rem; font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.08em; color: #64748b; }
+.nav-section a.nav-link + .nav-group-label { margin-top: 0.25rem; }
 .nav-section { padding: 1rem 0; }
 .nav-link {
   display: flex;
@@ -176,16 +178,23 @@ pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.
   <div class="nav-brand">{% if ui.logo_url %}<img src="{{ ui.logo_url }}" alt="" style="height:1.4rem;vertical-align:middle;margin-right:0.4rem;border-radius:0.3rem">{% endif %}{{ ui.brand_name }}<span>{{ ui.brand_suffix }}</span></div>
   <div class="nav-section">
     <a class="nav-link{% if request.url.path == '/' %} active{% endif %}" href="/">Dashboard</a>
+    <span class="nav-group-label">Mailbox</span>
     <a class="nav-link{% if request.url.path == '/users' %} active{% endif %}" href="/users">Users</a>
+    <a class="nav-link{% if request.url.path == '/domains' %} active{% endif %}" href="/domains">Domains</a>
     <a class="nav-link{% if request.url.path == '/spam-policy' %} active{% endif %}" href="/spam-policy">Spam Policy</a>
     <a class="nav-link{% if request.url.path == '/quarantine' %} active{% endif %}" href="/quarantine">Quarantine</a>
     <a class="nav-link{% if request.url.path == '/self' or request.url.path == '/self/login' %} active{% endif %}" href="/self/login">Self-service</a>
+    <span class="nav-group-label">System</span>
     <a class="nav-link{% if request.url.path == '/dkim' %} active{% endif %}" href="/dkim">DKIM</a>
     <a class="nav-link{% if request.url.path == '/logs' %} active{% endif %}" href="/logs">Logs</a>
     <a class="nav-link{% if request.url.path == '/dns' %} active{% endif %}" href="/dns">DNS</a>
     <a class="nav-link{% if request.url.path == '/queue' %} active{% endif %}" href="/queue">Queue</a>
     <a class="nav-link{% if request.url.path == '/certs' %} active{% endif %}" href="/certs">Certs</a>
     <a class="nav-link{% if request.url.path == '/backup' %} active{% endif %}" href="/backup">Backup</a>
+    <a class="nav-link{% if request.url.path == '/options' %} active{% endif %}" href="/options">Options</a>
+    <a class="nav-link{% if request.url.path == '/sieve-global' %} active{% endif %}" href="/sieve-global">Sieve</a>
+    <a class="nav-link{% if request.url.path == '/transports' %} active{% endif %}" href="/transports">Transports</a>
+    <a class="nav-link{% if request.url.path == '/mail-routing' %} active{% endif %}" href="/mail-routing">Routing</a>
   </div>
   <div class="nav-footer">
     <a class="nav-link{% if request.url.path == '/settings' %} active{% endif %}" href="/settings">Settings</a>

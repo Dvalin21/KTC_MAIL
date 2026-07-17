@@ -438,6 +438,190 @@ def user_passwd(email: str, password: str | None = None,
     return 0
 
 
+# ── reporting helpers (read-only, degrade gracefully without Dovecot) ───
+
+
+def list_domains() -> list[str]:
+    """Return the de-duplicated sorted set of hosted domains from users.
+
+    The primary domain and any aliases in SetupProfile shape the union;
+    this derives the live set from actual mailboxes so it stays correct
+    even if the profile is stale.
+    """
+    profile = load_profile()
+    domains: set[str] = set()
+    if profile is not None:
+        domains.add(profile.domain)
+        domains.update(getattr(profile, "domains", []) or [])
+    for _email, _quota in _user_pairs():
+        if "@" in _email:
+            domains.add(_email.split("@", 1)[1])
+    return sorted(domains)
+
+
+def _user_pairs() -> list[tuple[str, str]]:
+    """Return (email, quota) pairs from the active store (read-only)."""
+    if _store_kind() == "sql":
+        try:
+            return _sql_user_list()
+        except Exception:  # noqa: BLE001 - reporting must never crash the UI
+            return []
+    lines = _read_lines(PASSWD_FILE)
+    return [
+        (p["email"], p.get("quota", "1G"))
+        for l in lines
+        if (p := _parse_passwd(l)) is not None
+    ]
+
+
+def _human_to_bytes(value: str) -> int:
+    """Parse a quota string like '1G'/'256M'/'unlimited' to bytes.
+
+    'unlimited' (or anything non-numeric) returns -1 so callers can show ∞.
+    """
+    value = (value or "").strip().lower()
+    if value in ("", "unlimited", "none"):
+        return -1
+    mult = 1
+    if value.endswith("k"):
+        mult, value = 1024, value[:-1]
+    elif value.endswith("m"):
+        mult, value = 1024**2, value[:-1]
+    elif value.endswith("g"):
+        mult, value = 1024**3, value[:-1]
+    elif value.endswith("t"):
+        mult, value = 1024**4, value[:-1]
+    try:
+        return int(float(value) * mult)
+    except ValueError:
+        return -1
+
+
+def domain_stats() -> list[dict[str, object]]:
+    """Per-domain aggregate for the Domains table.
+
+    Columns mirror what an operator needs at a glance: mailbox count,
+    total quota ceiling, and the quota string used for display. Dovecot
+    message/usage stats are pulled best-effort and degrade to '—' when
+    Dovecot is absent (e.g. dev box) so the page never 500s.
+    """
+    users = _user_pairs()
+    by_domain: dict[str, list[str]] = {}
+    for email, _q in users:
+        if "@" in email:
+            by_domain.setdefault(email.split("@", 1)[1], []).append(email)
+
+    rows: list[dict[str, object]] = []
+    usage = _dovecot_quota_usage(by_domain)
+    for domain, members in sorted(by_domain.items()):
+        total_bytes = sum(_human_to_bytes(q) for _e, q in users if _e in members)
+        rows.append({
+            "domain": domain,
+            "mailboxes": len(members),
+            "quota_bytes": total_bytes,
+            "quota_display": _bytes_to_human(total_bytes) if total_bytes >= 0 else "∞",
+            "usage_bytes": usage.get(domain, -1),
+            "usage_display": _bytes_to_human(usage[domain]) if usage.get(domain, -1) >= 0 else "—",
+        })
+    return rows
+
+
+def _bytes_to_human(n: int) -> str:
+    """Human-readable byte string. Negative input returns '—'."""
+    if n < 0:
+        return "—"
+    units = ("B", "K", "M", "G", "T")
+    size = float(n)
+    for unit in units:
+        if size < 1024 or unit == "T":
+            if unit == "B":
+                return f"{int(size)}B"
+            return f"{size:.1f}{unit}"
+        size /= 1024
+    return f"{int(size)}B"
+
+
+def _dovecot_quota_usage(by_domain: dict[str, list[str]]) -> dict[str, int]:
+    """Best-effort per-domain quota usage in bytes via doveadm.
+
+    Returns {} on any failure (no Dovecot, no perm). Callers treat a
+    missing domain as 'unknown' and render '—'. Never raises.
+    """
+    if not by_domain:
+        return {}
+    try:
+        # One call per domain is cheap and avoids a huge argv. doveadm
+        # returns JSON; we sum the 'storage.used' bytes across members.
+        result = subprocess.run(
+            ["doveadm", "-f", "json", "quota", "get", "-A"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return {}
+    if result.returncode != 0 or not result.stdout.strip():
+        return {}
+    try:
+        import json
+        records = json.loads(result.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return {}
+    # doveadm -A emits one object per user with 'user' and 'storage.used'.
+    per_user: dict[str, int] = {}
+    items = records if isinstance(records, list) else [records]
+    for rec in items:
+        if not isinstance(rec, dict):
+            continue
+        user = rec.get("user", "")
+        used = 0
+        for kv in rec.get("quota", []) if isinstance(rec.get("quota"), list) else []:
+            if isinstance(kv, dict) and kv.get("name") == "storage":
+                used = int(kv.get("used", 0) or 0)
+        if user:
+            per_user[user] = used
+    out: dict[str, int] = {}
+    for domain, members in by_domain.items():
+        out[domain] = sum(per_user.get(m, 0) for m in members)
+    return out
+
+
+def user_stats(email: str) -> dict[str, object]:
+    """Per-user reporting row for the Users table (messages, last login).
+
+    All fields degrade to '—' when Dovecot is unavailable. Never raises.
+    """
+    out = {
+        "messages": "—",
+        "last_login": "—",
+        "password_changed": "—",
+    }
+    try:
+        st = subprocess.run(
+            ["doveadm", "-f", "json", "mailbox", "status", "-u", email,
+             "messages", "INBOX"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        if st.returncode == 0 and st.stdout.strip():
+            import json
+            recs = json.loads(st.stdout)
+            for rec in (recs if isinstance(recs, list) else [recs]):
+                if isinstance(rec, dict) and rec.get("mailbox") == "INBOX":
+                    out["messages"] = str(rec.get("messages", "—"))
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    try:
+        last = subprocess.run(
+            ["doveadm", "user", "-f", "last_login", email],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        if last.returncode == 0 and last.stdout.strip():
+            val = last.stdout.strip().split("\n", 1)[0].strip()
+            out["last_login"] = val or "—"
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    return out
+
+
 # ── CLI handler ────────────────────────────────────────────────────────
 
 

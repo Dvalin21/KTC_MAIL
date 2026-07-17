@@ -45,13 +45,15 @@
   {% if users %}
   <table>
     <thead>
-      <tr><th>Email</th><th>Quota</th><th></th></tr>
+      <tr><th>Email</th><th>Quota</th><th>Messages</th><th>Last login</th><th></th></tr>
     </thead>
     <tbody>
       {% for user in users %}
       <tr>
         <td><strong>{{ user.email }}</strong></td>
         <td><span class="badge badge-ok">{{ user.quota }}</span></td>
+        <td>{{ user.messages }}</td>
+        <td>{{ user.last_login }}</td>
         <td style="text-align:right">
           <form method="post" action="/users/del" style="display:inline"
                 data-confirm="Remove {{ user.email }}?">
