@@ -315,11 +315,15 @@ def restic_installed() -> bool:
 
 def restic_version() -> str:
     """Return restic version string, or 'not installed'."""
-    result = subprocess.run(
-        ["restic", "version"],
-        capture_output=True, text=True, check=False,
-        timeout=SUBPROCESS_TIMEOUT,
-    )
+    try:
+        result = subprocess.run(
+            ["restic", "version"],
+            capture_output=True, text=True, check=False,
+            timeout=SUBPROCESS_TIMEOUT,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        # restic not on PATH (or hung) — the backup page must still render.
+        return "not installed"
     if result.returncode == 0:
         return result.stdout.strip()
     return "not installed"

@@ -79,6 +79,8 @@ from .config import (
     setup_logging,
     SetupProfile,
     Branding,
+    load_profile,
+    save_branding,
     _EMAIL_RE,
     _valid_email,
 )
