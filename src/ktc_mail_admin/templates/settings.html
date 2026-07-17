@@ -156,6 +156,20 @@
       </div>
       <button type="submit">Save branding</button>
     </form>
+
+    <hr style="border:none;border-top:1px solid var(--border);margin:1.25rem 0">
+    <form method="post" action="/settings/branding/logo"
+          enctype="multipart/form-data" style="margin-top:0.5rem">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="form-row">
+        <label>Logo image (PNG)</label>
+        <input name="file" type="file" accept="image/png" required>
+        <span style="font-size:0.75rem;color:var(--muted)">
+          Optional. Replaces the default mark. Max 256 KB, PNG only.
+        </span>
+      </div>
+      <button type="submit">Upload logo</button>
+    </form>
   </div>
 
   {# ── System info ── #}
