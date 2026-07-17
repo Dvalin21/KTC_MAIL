@@ -1,17 +1,35 @@
 {% extends "base.html" %}
-{% block title %}Log Viewer{% endblock %}
+{% block title %}Logs{% endblock %}
 {% block content %}
 
-<h1>Log Viewer</h1>
+<h1>Logs</h1>
+<p style="color:var(--muted);font-size:0.85rem;margin-bottom:1rem">
+  Pick a service to see exactly what it is doing. Each tab is one component —
+  no guessing which log belongs to what.
+</p>
 
-<form method="get" action="/logs" class="form-inline" style="margin-bottom:1rem">
-  <div style="flex:0 0 140px">
-    <label class="form-row" style="font-size:0.8rem;font-weight:600">Source</label>
-    <select name="source">
-      <option value="mail" {% if source == 'mail' %}selected{% endif %}>Mail Log</option>
-      <option value="audit" {% if source == 'audit' %}selected{% endif %}>Audit Log</option>
-    </select>
+{# ── Service selector (grouped) ── #}
+<div class="card" style="margin-bottom:1rem;padding:1rem">
+  {% for group, items in groups %}
+  <div style="margin-bottom:0.75rem">
+    <div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);margin-bottom:0.4rem">{{ group }}</div>
+    <div style="display:flex;flex-wrap:wrap;gap:0.4rem">
+      {% for key, label in items %}
+      <a href="/logs?source={{ key }}&lines={{ lines }}"
+         style="text-decoration:none;padding:0.35rem 0.7rem;border-radius:0.5rem;font-size:0.8rem;font-weight:600;
+                border:1px solid var(--border);
+                 {% if key == source %}background:var(--accent);color:var(--on-accent);border-color:var(--accent){% else %}background:var(--card);color:var(--ink){% endif %}">
+        {{ label }}
+      </a>
+      {% endfor %}
+    </div>
   </div>
+  {% endfor %}
+</div>
+
+{# ── Controls ── #}
+<form method="get" action="/logs" class="form-inline" style="margin-bottom:1rem">
+  <input type="hidden" name="source" value="{{ source }}">
   <div style="flex:0 0 80px">
     <label class="form-row" style="font-size:0.8rem;font-weight:600">Lines</label>
     <select name="lines">
@@ -27,7 +45,12 @@
   <button type="submit" style="margin-bottom:0.25rem">View</button>
 </form>
 
-<div class="card" style="padding:0">
+<div class="card" style="padding:0.75rem 1rem;border-left:4px solid var(--accent)">
+  <strong>{{ source_label }}</strong>
+  <span style="color:var(--muted);font-size:0.8rem"> · last {{ lines }} lines</span>
+</div>
+
+<div class="card" style="padding:0;margin-top:0.75rem">
   <pre style="margin:0;border-radius:0.5rem;max-height:70vh;overflow-y:auto">{{ log_text }}</pre>
 </div>
 

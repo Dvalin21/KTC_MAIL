@@ -48,7 +48,7 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from jinja2 import Environment, FileSystemLoader
+from jinja2 import Environment, FileSystemLoader, pass_context
 from starlette.middleware.sessions import SessionMiddleware
 from pathlib import Path as _Path
 
@@ -72,6 +72,7 @@ from .config import (
     atomic_write_text,
     setup_logging,
     SetupProfile,
+    Branding,
     _EMAIL_RE,
     _valid_email,
 )
@@ -648,6 +649,62 @@ def _tail_file(path: Path, n: int = 100) -> str:
         return f"(error reading file: {exc})"
 
 
+# ── Log sources for the /logs viewer ───────────────────────────────────────────
+# Each entry is either a systemd unit (read via journalctl) or a file on disk.
+# Grouped so the UI can show "what is doing what, for what service" plainly.
+LOG_SOURCES: dict[str, dict[str, str]] = {
+    # KTC Mail services
+    "ktc-setup":      {"label": "Setup wizard",        "group": "KTC Mail", "unit": "ktc-mail-setup.service"},
+    "ktc-admin":      {"label": "Admin portal",        "group": "KTC Mail", "unit": "ktc-mail-admin.service"},
+    "ktc-acme":       {"label": "ACME / TLS",          "group": "KTC Mail", "unit": "ktc-mail-acme-renew.service"},
+    "ktc-backup":     {"label": "Backup",              "group": "KTC Mail", "unit": "ktc-mail-backup.service"},
+    "ktc-olefy":      {"label": "Olefy (macro scan)",  "group": "KTC Mail", "unit": "ktc-mail-olefy.service"},
+    "ktc-mta-sts":    {"label": "MTA-STS resolver",    "group": "KTC Mail", "unit": "ktc-mail-mta-sts.service"},
+    "ktc-firewall":   {"label": "Firewall monitor",    "group": "KTC Mail", "unit": "ktc-mail-firewall-monitor.service"},
+    "ktc-exporter":   {"label": "Metrics exporter",    "group": "KTC Mail", "unit": "ktc-mail-exporter.service"},
+    "ktc-rate-limit": {"label": "Rate limiter",        "group": "KTC Mail", "unit": "ktc-mail-rate-limit.service"},
+    "ktc-audit-exp":  {"label": "Audit export",        "group": "KTC Mail", "unit": "ktc-mail-audit-export.service"},
+    # Mail stack
+    "postfix":        {"label": "Postfix (SMTP)",      "group": "Mail stack", "unit": "postfix.service"},
+    "dovecot":        {"label": "Dovecot (IMAP)",      "group": "Mail stack", "unit": "dovecot.service"},
+    "rspamd":         {"label": "Rspamd (anti-spam)",  "group": "Mail stack", "unit": "rspamd.service"},
+    "nginx":          {"label": "Nginx (web)",        "group": "Mail stack", "unit": "nginx.service"},
+    # File-based
+    "audit":          {"label": "Admin audit log",     "group": "Files", "file": "audit"},
+    "mail":           {"label": "System mail log",     "group": "Files", "file": "mail"},
+}
+
+
+def _read_log_source(source_key: str, n: int = 100) -> str:
+    """Return log text for a LOG_SOURCES key.
+
+    Journal units are read via `journalctl -u <unit> -n N` (subprocess with a
+    hard timeout — never block the request thread). File sources reuse
+    _tail_file. Returns a plain-text string either way.
+    """
+    spec = LOG_SOURCES.get(source_key)
+    if not spec:
+        return "(unknown log source)"
+    if "unit" in spec:
+        try:
+            result = subprocess.run(
+                ["journalctl", "-u", spec["unit"], "-n", str(n),
+                 "--no-pager", "--output=short"],
+                capture_output=True, text=True, timeout=10,
+            )
+        except subprocess.TimeoutExpired:
+            return "(journalctl timed out — service may be busy)"
+        except FileNotFoundError:
+            return "(journalctl not available on this host)"
+        if result.returncode != 0:
+            return f"(journalctl error: {result.stderr.strip() or 'exit ' + str(result.returncode)})"
+        return result.stdout or f"(no log output for {spec['label']})"
+    # file source
+    if spec.get("file") == "audit":
+        return _tail_file(AUDIT_LOG_PATH, n)
+    return _tail_file(Path("/var/log/mail.log"), n)
+
+
 # ── Certificate helpers ────────────────────────────────────────────────────────
 
 
@@ -910,6 +967,41 @@ def create_app() -> FastAPI:
         except (ValueError, OSError, OverflowError):
             return "unknown"
     templates.env.filters["datetime_from_ts"] = datetime_from_ts
+
+    # ── Branding context (available to every template as `ui`) ──
+    # ponytail: load once, cache; branding changes are rare. Falls back to
+    # KTC Mail defaults when no profile/branding exists yet.
+    _branding_cache: dict = {"ts": 0.0, "val": None}
+
+    def _load_branding() -> "Branding":
+        import time as _t
+        now = _t.time()
+        if _branding_cache["val"] is not None and now - _branding_cache["ts"] < 30:
+            return _branding_cache["val"]
+        prof = load_profile()
+        b = prof.branding if prof else Branding()
+        _branding_cache["val"] = b
+        _branding_cache["ts"] = now
+        return b
+
+    @pass_context
+    def _ui_global(context: Any) -> dict:
+        b = _load_branding()
+        name = b.org_name.strip() or "KTC"
+        # Split "Acme Mail" -> ("Acme", "Mail") for the two-tone wordmark.
+        parts = name.rsplit(" ", 1)
+        if len(parts) == 2:
+            brand_name, brand_suffix = parts[0], parts[1]
+        else:
+            brand_name, brand_suffix = name, ""
+        return {
+            "accent": b.effective_accent(),
+            "brand_name": brand_name,
+            "brand_suffix": brand_suffix,
+            "logo_url": b.logo_url.strip(),
+        }
+
+    templates.env.globals["ui"] = _ui_global
 
     # ── Auth / RBAC helpers ────────────────────────────────────────────
 
@@ -1808,6 +1900,7 @@ def create_app() -> FastAPI:
                 "mfa": mfa,
                 "webauthn": {"credentials": wa_creds, "available": bool(wa_creds)},
                 "qr_src": qr_src,
+                "branding": _load_branding(),
                 "error": error,
                 "msg": msg,
             },
@@ -1865,6 +1958,50 @@ def create_app() -> FastAPI:
 
         return RedirectResponse(
             url="/settings?msg=Password+updated+successfully",
+            status_code=302,
+        )
+
+    @app.post("/settings/branding")
+    async def settings_branding(request: Request):
+        if not require_role(request, "admin"):
+            return login_redirect()
+
+        form = await request.form()
+        if not validate_csrf(request, form.get("csrf_token", "")):
+            return RedirectResponse(
+                url="/settings?error=Invalid+session+token",
+                status_code=302,
+            )
+
+        org_name = (form.get("org_name", "") or "").strip()
+        accent = (form.get("accent", "") or "").strip()
+        logo_url = (form.get("logo_url", "") or "").strip()
+
+        # Validate before persisting — Branding rejects unsafe input.
+        try:
+            Branding(org_name=org_name, accent=accent, logo_url=logo_url).validate()
+        except ValueError as exc:
+            return RedirectResponse(
+                url="/settings?error=" + urllib.parse.quote(str(exc)),
+                status_code=302,
+            )
+
+        try:
+            save_branding(Branding(org_name=org_name, accent=accent,
+                                   logo_url=logo_url))
+            _branding_cache["val"] = None
+            _branding_cache["ts"] = 0.0
+            audit_log("branding_change", actor_email(request),
+                      "portal branding updated", client_ip(request))
+        except Exception as exc:
+            logger.exception("saving branding")
+            return RedirectResponse(
+                url="/settings?error=" + urllib.parse.quote("Save failed: " + str(exc)),
+                status_code=302,
+            )
+
+        return RedirectResponse(
+            url="/settings?msg=Branding+saved",
             status_code=302,
         )
 
@@ -2154,7 +2291,19 @@ def create_app() -> FastAPI:
         if not require_role(request, "operator"):
             return login_redirect()
 
-        source = request.query_params.get("source", "mail")
+        # Group sources for the tabbed UI: {group: [(key, label), ...]}
+        grouped: dict[str, list[tuple[str, str]]] = {}
+        for key, spec in LOG_SOURCES.items():
+            grouped.setdefault(spec["group"], []).append((key, spec["label"]))
+        # Stable group order: KTC Mail, Mail stack, Files.
+        group_order = ["KTC Mail", "Mail stack", "Files"]
+        ordered_groups = [
+            (g, grouped[g]) for g in group_order if g in grouped
+        ] + [(g, v) for g, v in grouped.items() if g not in group_order]
+
+        source = request.query_params.get("source", "ktc-admin")
+        if source not in LOG_SOURCES:
+            source = "ktc-admin"
         raw_lines = request.query_params.get("lines", "100")
         filter_str = request.query_params.get("filter", "")
 
@@ -2163,18 +2312,11 @@ def create_app() -> FastAPI:
         except (ValueError, TypeError):
             n_lines = 100
 
-        if source == "audit":
-            log_path = AUDIT_LOG_PATH
-        else:
-            log_path = Path("/var/log/mail.log")
-
-        log_text = _tail_file(log_path, n_lines)
+        log_text = _read_log_source(source, n_lines)
 
         if filter_str:
             log_lines = log_text.splitlines()
-            filtered = [
-                l for l in log_lines if filter_str.lower() in l.lower()
-            ]
+            filtered = [l for l in log_lines if filter_str.lower() in l.lower()]
             log_text = "\n".join(filtered) if filtered else "(no matching lines)"
 
         return templates.TemplateResponse(
@@ -2182,6 +2324,8 @@ def create_app() -> FastAPI:
             {
                 "request": request,
                 "source": source,
+                "source_label": LOG_SOURCES[source]["label"],
+                "groups": ordered_groups,
                 "lines": n_lines,
                 "filter": filter_str,
                 "log_text": log_text,

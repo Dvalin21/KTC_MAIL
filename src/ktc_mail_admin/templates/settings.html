@@ -127,6 +127,37 @@
     <div id="wa-status" class="step-info"></div>
   </div>
 
+  {# ── Branding ── #}
+  <div class="card">
+    <h2>Branding</h2>
+    <p style="font-size:0.85rem;color:var(--muted);margin-bottom:0.75rem">
+      Customise how the admin and mailbox portals look. Changes apply
+      immediately — no restart needed.
+    </p>
+    <form method="post" action="/settings/branding" style="margin-top:0.5rem">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="form-row">
+        <label>Organisation name</label>
+        <input name="org_name" type="text" value="{{ branding.org_name }}"
+               placeholder="KTC Mail" maxlength="40">
+      </div>
+      <div class="form-row">
+        <label>Accent colour</label>
+        <input name="accent" type="text" value="{{ branding.accent }}"
+               placeholder="#5b67f1" pattern="#[0-9a-fA-F]{6}" maxlength="7"
+               style="font-family:monospace">
+        <span style="font-size:0.75rem;color:var(--muted)">Hex colour, e.g. #5b67f1</span>
+      </div>
+      <div class="form-row">
+        <label>Logo URL (optional)</label>
+        <input name="logo_url" type="url" value="{{ branding.logo_url }}"
+               placeholder="https://example.com/logo.png" maxlength="300">
+        <span style="font-size:0.75rem;color:var(--muted)">Leave blank to use the text wordmark</span>
+      </div>
+      <button type="submit">Save branding</button>
+    </form>
+  </div>
+
   {# ── System info ── #}
   <div class="card">
     <h2>System</h2>

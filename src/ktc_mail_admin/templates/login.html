@@ -3,10 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>KTC Mail · Login</title>
+  <title>{{ ui.brand_name }}{{ ui.brand_suffix }} · Login</title>
   <style>
 :root {
-  --brand: #5b67f1;
+  --accent: {{ ui.accent }};
+  --brand: var(--accent);
   --ink: #1f2a44;
   --bg: #f1f5f9;
   --card: #ffffff;
@@ -40,7 +41,7 @@ body {
   letter-spacing: -0.02em;
   margin-bottom: 0.25rem;
 }
-.logo span { color: var(--brand); }
+.logo span { color: var(--accent); }
 .subtitle {
   text-align: center;
   color: var(--muted);
@@ -60,7 +61,7 @@ input {
 }
 input:focus {
   outline: none;
-  border-color: var(--brand);
+  border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(91,103,241,0.12);
 }
 button {
@@ -72,7 +73,7 @@ button {
   font-size: 1rem;
   font-weight: 700;
   color: white;
-  background: linear-gradient(135deg, var(--brand), #8b5cf6);
+  background: var(--accent);
   cursor: pointer;
   margin-top: 1.5rem;
   transition: opacity 0.15s;
@@ -93,11 +94,19 @@ button:hover { opacity: 0.9; }
   color: var(--muted);
   margin-bottom: 1rem;
 }
+.toggle-link {
+  text-align: center;
+  margin-top: 1.25rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.toggle-link a { color: var(--accent); text-decoration: none; font-weight: 600; }
+.toggle-link a:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
   <div class="login-card">
-    <div class="logo">KTC<span>Mail</span></div>
+    <div class="logo">{% if ui.logo_url %}<img src="{{ ui.logo_url }}" alt="" style="height:1.6rem;vertical-align:middle;margin-right:0.4rem;border-radius:0.3rem">{% endif %}{{ ui.brand_name }}<span>{{ ui.brand_suffix }}</span></div>
     <div class="subtitle">Mail server administration</div>
 
     {% if mfa_step %}
@@ -136,6 +145,9 @@ button:hover { opacity: 0.9; }
         <input id="password" name="password" type="password" placeholder="••••••••" required>
         <button type="submit">Sign in →</button>
       </form>
+      <div class="toggle-link">
+        Not an admin? <a href="/self/login">Sign in to your mailbox →</a>
+      </div>
     {% endif %}
   </div>
   <script>window.WA_CSRF = "{{ csrf_token }}";</script>

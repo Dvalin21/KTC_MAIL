@@ -645,6 +645,64 @@ def validate_domain(domain: str) -> bool:
 
 
 @dataclass
+class Branding:
+    """Operator-facing customisation for the admin/self-service web UIs.
+
+    Stored inside setup.json. All fields optional; the UI falls back to the
+    KTC Mail defaults when a field is empty. Kept deliberately small — name,
+    accent colour, and an optional logo URL. No binary asset upload yet
+    (that is a later step); operators host their logo and paste the URL.
+    """
+
+    org_name: str = ""          # shown in nav brand + login logo (else "KTC Mail")
+    accent: str = ""            # CSS colour overriding --brand (must be a safe token)
+    logo_url: str = ""          # optional logo image URL (else text wordmark)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "org_name": self.org_name,
+            "accent": self.accent,
+            "logo_url": self.logo_url,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> Branding:
+        if not isinstance(data, dict):
+            return cls()
+        # ponytail: only keep known fields; ignore anything stray.
+        return cls(
+            org_name=str(data.get("org_name", "")),
+            accent=str(data.get("accent", "")),
+            logo_url=str(data.get("logo_url", "")),
+        )
+
+    def effective_accent(self) -> str:
+        """Return the accent colour if valid, else the default brand."""
+        a = self.accent.strip()
+        # Only accept hex (#rgb/#rrggbb) or named-safe tokens; reject anything
+        # that could break out of a style attribute (no quotes/url()/expr).
+        if a and (a.startswith("#") and len(a) in (4, 7)
+                  and all(c in "0123456789abcdefABCDEF#" for c in a)):
+            return a
+        return "#5b67f1"
+
+    def validate(self) -> None:
+        """Raise ValueError if any field is unsafe to persist.
+
+        Accent must be empty or a strict #rgb/#rrggbb hex (no injection room).
+        org_name/logo_url are bounded lengths only.
+        """
+        a = self.accent.strip()
+        if a and not (a.startswith("#") and len(a) in (4, 7)
+                      and all(c in "0123456789abcdefABCDEF#" for c in a)):
+            raise ValueError("Accent must be a hex colour like #5b67f1 or blank")
+        if len(self.org_name) > 40:
+            raise ValueError("Organisation name is too long (max 40)")
+        if len(self.logo_url) > 300:
+            raise ValueError("Logo URL is too long (max 300)")
+
+
+@dataclass
 class SetupProfile:
     """Complete mail server setup profile.
 
@@ -690,6 +748,7 @@ class SetupProfile:
     dkim: DkimKeyPair | None = None
     certificate_mode: str = "dns-01"  # dns-01 | http-01 | upload
     dns_provider_manual: bool = False  # True if user picked "manual DNS"
+    branding: Branding = field(default_factory=Branding)  # UI customisation
     manage_system_hostname: bool = True
     setup_phase: str = "BOOTSTRAP"
 
@@ -1015,6 +1074,7 @@ class SetupProfile:
             "dns_managed": list(self.dns_managed),
             "domains": list(self.domains),
             "mailbox_store": self.mailbox_store,
+            "branding": self.branding.to_dict(),
         }
         return d
 
@@ -1075,6 +1135,7 @@ class SetupProfile:
                 d for d in data.get("domains", [])
                 if isinstance(d, str) and _valid_domain(d)
             ],
+            branding=Branding.from_dict(data.get("branding", {})),
         )
 
         mailbox_store = data.get("mailbox_store", "maildir")
@@ -1343,3 +1404,21 @@ def load_profile(path: Path | None = None) -> SetupProfile | None:
     except (OSError, ValueError) as exc:
         logger.debug("load_profile: %s", exc)
         return None
+
+
+def save_profile(profile: SetupProfile, path: Path | None = None) -> None:
+    """Write a SetupProfile back to setup.json atomically (fsync + rename)."""
+    save_json_private(path or SETUP_PATH, profile.to_dict())
+
+
+def save_branding(branding: Branding, path: Path | None = None) -> None:
+    """Load the active profile, replace its branding, and persist atomically.
+
+    No-op (silently) if no profile exists yet — branding is meaningless before
+    setup completes.
+    """
+    profile = load_profile(path)
+    if profile is None:
+        return
+    profile.branding = branding
+    save_profile(profile, path)

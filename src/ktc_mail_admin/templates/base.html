@@ -8,7 +8,9 @@
 :root {
   color-scheme: light;
   --ink: #1f2a44;
-  --brand: #5b67f1;
+  --brand: #5b67f1;            /* --accent is overridden at runtime by branding */
+  --accent: var(--brand);
+  --on-accent: #ffffff;
   --warm: #f59e0b;
   --ok: #10b981;
   --red: #ef4444;
@@ -19,7 +21,15 @@
   --nav-bg: #1e293b;
   --nav-text: #94a3b8;
   --nav-active: #ffffff;
+  /* State colours — single source of truth. Components MUST use these,
+     never hardcode hex (see the token-drift sweep). */
+  --ok-bg: #d1fae5;        --ok-border: #a7f3d0;     --ok-ink: #065f46;
+  --warn-bg: #fef3c7;      --warn-border: #fde68a;   --warn-ink: #92400e;
+  --danger-bg: #fee2e2;    --danger-border: #fecaca; --danger-ink: #991b1b;
+  --info-bg: #e0e7ff;      --info-border: #c7d2fe;   --info-ink: #3730a3;
 }
+/* Branding override: --accent comes from SetupProfile.branding (via `ui`) */
+:root { --accent: {{ ui.accent }}; }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
@@ -45,7 +55,7 @@ nav {
   letter-spacing: -0.02em;
   border-bottom: 1px solid #334155;
 }
-.nav-brand span { color: var(--brand); }
+.nav-brand span { color: var(--accent); }
 .nav-section { padding: 1rem 0; }
 .nav-link {
   display: flex;
@@ -94,10 +104,10 @@ h2 { font-size: 1.1rem; font-weight: 700; margin-bottom: 0.75rem; }
   text-transform: uppercase;
   letter-spacing: 0.03em;
 }
-.badge-ok { background: #d1fae5; color: #065f46; }
-.badge-warn { background: #fef3c7; color: #92400e; }
-.badge-err { background: #fee2e2; color: #991b1b; }
-.badge-unknown { background: #f1f5f9; color: #64748b; }
+.badge-ok { background: var(--ok-bg); color: var(--ok-ink); }
+.badge-warn { background: var(--warn-bg); color: var(--warn-ink); }
+.badge-err { background: var(--danger-bg); color: var(--danger-ink); }
+.badge-unknown { background: var(--bg); color: var(--muted); }
 table { width: 100%; border-collapse: collapse; }
 th { text-align: left; padding: 0.625rem 0.75rem; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); border-bottom: 2px solid var(--border); }
 td { padding: 0.625rem 0.75rem; border-bottom: 1px solid var(--border); font-size: 0.875rem; }
@@ -128,7 +138,7 @@ button {
   font-size: 0.8rem;
   font-weight: 700;
   color: white;
-  background: var(--brand);
+  background: var(--accent);
   cursor: pointer;
   transition: opacity 0.1s;
 }
@@ -142,9 +152,11 @@ button.small { padding: 0.3rem 0.6rem; font-size: 0.75rem; }
 .form-row label { display: block; font-size: 0.8rem; font-weight: 600; margin-bottom: 0.25rem; }
 .form-inline { display: flex; gap: 0.5rem; align-items: end; }
 .form-inline input { flex: 1; }
-.msg { padding: 0.625rem 0.75rem; border-radius: 0.5rem; font-size: 0.8rem; margin-bottom: 1rem; }
-.msg-ok { background: #d1fae5; color: #065f46; border: 1px solid #a7f3d0; }
-.msg-err { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
+.msg { padding: 0.625rem 0.75rem; border-radius: 0.5rem; font-size: 0.8rem; margin-bottom: 1rem; border: 1px solid transparent; }
+.msg-ok { background: var(--ok-bg); color: var(--ok-ink); border-color: var(--ok-border); }
+.msg-err { background: var(--danger-bg); color: var(--danger-ink); border-color: var(--danger-border); }
+.msg-warn { background: var(--warn-bg); color: var(--warn-ink); border-color: var(--warn-border); }
+.msg-info { background: var(--info-bg); color: var(--info-ink); border-color: var(--info-border); }
 pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.8rem; background: #0f172a; color: #e2e8f0; padding: 1rem; border-radius: 0.5rem; overflow-x: auto; }
 .empty { color: var(--muted); font-style: italic; padding: 1rem 0; }
 @media (max-width: 768px) {
@@ -161,7 +173,7 @@ pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.
 </head>
 <body>
 <nav>
-  <div class="nav-brand">KTC<span>Mail</span></div>
+  <div class="nav-brand">{% if ui.logo_url %}<img src="{{ ui.logo_url }}" alt="" style="height:1.4rem;vertical-align:middle;margin-right:0.4rem;border-radius:0.3rem">{% endif %}{{ ui.brand_name }}<span>{{ ui.brand_suffix }}</span></div>
   <div class="nav-section">
     <a class="nav-link{% if request.url.path == '/' %} active{% endif %}" href="/">Dashboard</a>
     <a class="nav-link{% if request.url.path == '/users' %} active{% endif %}" href="/users">Users</a>
