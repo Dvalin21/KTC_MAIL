@@ -41,6 +41,10 @@ src/ktc_mail_admin/templates/mfa_codes.html usr/lib/ktc-mail/templates/
 # flattened usr/lib/ktc-mail/static/ the admin app actually serves from.
 src/ktc_mail_admin/static/admin.js usr/lib/ktc-mail/static/
 src/ktc_mail_admin/static/webauthn.js usr/lib/ktc-mail/static/
+src/ktc_mail_admin/static/branding/logo.png usr/lib/ktc-mail/static/branding/
+
+# ── Logo generator (pure stdlib; operators can regenerate the mark) ──
+tools/gen_logo.py usr/share/ktc-mail/tools/
 
 # ── Scripts ───────────────────────────────────────────────────────
 scripts/bootstrap-mail-stack.sh usr/lib/ktc-mail/
