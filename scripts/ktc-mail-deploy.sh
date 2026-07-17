@@ -248,6 +248,15 @@ else
     echo "  Run the setup wizard first: ktc-mail setup" >&2
 fi
 
+# MAIL_CONFIG_DEPLOYED gates Phase 9: mail services must not start with
+# default Debian configs (open-relay + plaintext IMAP window) when no KTC
+# profile exists. Infra services (redis/memcached/postgresql) still start.
+MAIL_CONFIG_DEPLOYED=0
+VALIDATE_OK="${VALIDATE_OK:-1}"
+if [[ -f "${CONFIG_DIR}/setup.json" && "${VALIDATE_OK}" -eq 0 ]]; then
+    MAIL_CONFIG_DEPLOYED=1
+fi
+
 # ── 8. Create Postfix lookup files ─────────────────────────────────────
 echo "--- Phase 8: Creating Postfix lookup tables ---"
 for f in /etc/postfix/virtual_alias /etc/postfix/virtual_mbx; do
@@ -259,9 +268,20 @@ done
 
 # ── 9. Start services ──────────────────────────────────────────────────
 echo "--- Phase 9: Starting services ---"
-for svc in redis-server memcached postgresql rspamd postfix dovecot nginx sogod ktc-mail-olefy ktc-mail-mta-sts; do
+# Infra (no mail exposure) always starts.
+for svc in redis-server memcached postgresql; do
     systemctl enable --now "${svc}" || echo "WARNING: ${svc} failed to start" >&2
 done
+# ponytail: mail services only after KTC config is deployed — default Debian
+# Postfix/Dovecot open IMAP 143 + risk open relay until config is written.
+if [[ "${MAIL_CONFIG_DEPLOYED}" -eq 1 ]]; then
+    for svc in rspamd postfix dovecot nginx sogod ktc-mail-olefy ktc-mail-mta-sts; do
+        systemctl enable --now "${svc}" || echo "WARNING: ${svc} failed to start" >&2
+    done
+else
+    echo "WARNING: skipping mail services (postfix/dovecot/nginx/rspamd) —"
+    echo "  no KTC setup profile deployed. Run 'ktc-mail setup' then re-run this script."
+fi
 
 # ── 10. Verify services ─────────────────────────────────────────────────
 echo "--- Phase 10: Verification ---"
