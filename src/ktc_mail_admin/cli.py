@@ -259,6 +259,25 @@ def cmd_metrics(args: argparse.Namespace) -> int:
     return metric_main()
 
 
+def cmd_migrate(args: argparse.Namespace) -> int:
+    """Mailbox migration (IMAP source -> destination)."""
+    import os
+    from .imap_migrate import run_migration
+    if args.migrate_cmd != "imap":
+        return 1
+    args.src_password = args.src_password or os.environ.get("KTC_SRC_PASS")
+    args.dst_password = args.dst_password or os.environ.get("KTC_DST_PASS")
+    if not args.src_password:
+        print("error: source password required (--src-password or KTC_SRC_PASS)",
+              file=sys.stderr)
+        return 1
+    if not args.dst_password:
+        print("error: destination password required (--dst-password or KTC_DST_PASS)",
+              file=sys.stderr)
+        return 1
+    return run_migration(args)
+
+
 def cmd_audit(args: argparse.Namespace) -> int:
     """Audit-log export (syslog/SIEM)."""
     from .audit_export import run_once
@@ -427,6 +446,35 @@ def main() -> int:
     from .backup_manager import add_subparser as add_backup_subparser
     add_backup_subparser(sub)
 
+    # ── migrate ───────────────────────────────────────
+    p_mig = sub.add_parser("migrate", help="Mailbox migration (IMAP)")
+    p_mig.add_argument(
+        "migrate_cmd", choices=("imap",),
+        help="imap = copy mail from a source IMAP server to a destination",
+    )
+    p_mig.add_argument("--src-host", required=True,
+                       help="Source IMAP host (the server you are migrating FROM)")
+    p_mig.add_argument("--src-user", required=True, help="Source IMAP username")
+    p_mig.add_argument("--src-password", default=None,
+                       help="Source IMAP password (omit to read from KTC_SRC_PASS env)")
+    p_mig.add_argument("--src-port", type=int, default=None)
+    p_mig.add_argument("--src-no-ssl", action="store_true",
+                       help="Use plaintext IMAP (143) instead of IMAPS (993)")
+    p_mig.add_argument("--src-starttls", action="store_true",
+                       help="Use STARTTLS instead of implicit SSL")
+    p_mig.add_argument("--dst-host", default="127.0.0.1",
+                       help="Destination IMAP host (default: local Dovecot)")
+    p_mig.add_argument("--dst-user", required=True, help="Destination IMAP username")
+    p_mig.add_argument("--dst-password", default=None,
+                       help="Destination IMAP password (omit to read from KTC_DST_PASS env)")
+    p_mig.add_argument("--dst-port", type=int, default=None)
+    p_mig.add_argument("--dst-no-ssl", action="store_true",
+                       help="Use plaintext IMAP to the destination")
+    p_mig.add_argument("--dst-starttls", action="store_true",
+                       help="Use STARTTLS to the destination")
+    p_mig.add_argument("--state", default=None,
+                       help="Resume-state file (default: /var/lib/ktc-mail/migrate-<user>.json)")
+
     args = parser.parse_args()
 
     dispatch = {
@@ -444,6 +492,7 @@ def main() -> int:
         "backup": cmd_backup,
         "metrics": cmd_metrics,
         "audit": cmd_audit,
+        "migrate": cmd_migrate,
     }
 
     handler = dispatch.get(args.command)
