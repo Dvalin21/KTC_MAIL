@@ -102,3 +102,36 @@ def test_legacy_key_without_scope_is_write(monkeypatch):
             json={"email": "x@y.com", "password": "pw"})
         assert r.status_code == 201
 
+
+def test_revoke_by_api_requires_write_key(client):
+    # read key -> 403 (revoke is a write action)
+    r = client.delete("/api/keys/write",
+                      headers={"Authorization": f"Bearer {client.read_token}"})
+    assert r.status_code == 403
+
+
+def test_revoke_by_api_with_write_key(client):
+    import ktc_mail_admin.user_manager as um  # noqa: F401 (keep import path warm)
+    # Authenticate with the write key, revoke the read key (id "read").
+    r = client.delete("/api/keys/read",
+                      headers={"Authorization": f"Bearer {client.write_token}"})
+    assert r.status_code == 200
+    assert r.json()["status"] == "revoked"
+
+
+def test_revoke_by_api_missing_key_404(client):
+    r = client.delete("/api/keys/does-not-exist",
+                      headers={"Authorization": f"Bearer {client.write_token}"})
+    assert r.status_code == 404
+
+
+def test_usage_is_logged_on_authenticated_request(client):
+    # A read-key GET should record usage; the usage log should carry the
+    # read key's id ("read").
+    client.get("/api/v1/domains",
+               headers={"Authorization": f"Bearer {client.read_token}"})
+    log = cfg_mod.STATE_DIR / "api-keys-usage.log"
+    assert log.exists(), "usage log should be written"
+    content = log.read_text(encoding="utf-8")
+    assert ",read," in content, "read key id 'read' should appear in usage log"
+

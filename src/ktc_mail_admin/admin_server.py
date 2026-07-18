@@ -3114,13 +3114,12 @@ def create_app() -> FastAPI:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         save_json_private(API_KEYS_PATH, {"keys": keys})
 
-    def _verify_api_key(token: str, scope: str | None = None) -> bool:
+    def _verify_api_key(token: str, scope: str | None = None) -> "dict | None":
         """Check if a Bearer token matches any stored API key (SHA-256).
 
-        Constant-time compare against stored hashes. Does NOT mutate or
-        persist state — last_used_at is left to key-creation time, avoiding a
-        read-modify-write of the whole key file on every authenticated request
-        (which would be a concurrency race under parallel calls).
+        Constant-time compare against stored hashes. Returns the matched key
+        dict on success (or ``{"scope": <scope>}`` when no scope check was
+        requested), else ``None``.
 
         Scope: if ``scope`` is given, the matched key must grant it. Keys
         created before scope existed carry no ``scope`` field and are treated
@@ -3129,20 +3128,62 @@ def create_app() -> FastAPI:
         ``write`` key.
         """
         if not token.startswith("ktc_"):
-            return False
+            return None
         token_hash = hashlib.sha256(token.encode()).hexdigest()
         keys = _load_api_keys()
         for key in keys:
             if not hmac.compare_digest(key.get("key_hash", ""), token_hash):
                 continue
-            if scope is None:
-                return True
             key_scope = key.get("scope", "write")  # legacy keys => write
+            if scope is None:
+                return key
             if scope == "read" and key_scope in ("read", "write"):
-                return True
+                return key
             if scope == "write" and key_scope == "write":
-                return True
-        return False
+                return key
+        return None
+
+    def _record_key_usage(key: dict, request: Request) -> None:
+        """Append-only usage log (concurrency-safe, no key-file rewrite).
+
+        Records ``ts,key_id,scope,method,path`` to STATE_DIR/api-keys-usage.log
+        so operators can see last-used and audit API access without a read-
+        modify-write race on the key file itself. Failures are swallowed —
+        usage logging must never break an API response.
+        """
+        try:
+            log_path = STATE_DIR / "api-keys-usage.log"
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            line = "{},{},{},{},{}\n".format(
+                int(time.time()),
+                key.get("id", "?"),
+                key.get("scope", "write"),
+                request.method if request else "?",
+                request.url.path if request else "?",
+            )
+            with open(log_path, "a") as fh:
+                fh.write(line)
+        except OSError:
+            pass
+
+    def _last_used_at(key_id: str) -> int:
+        """Latest usage timestamp for a key from the append-only log (0 if none)."""
+        log_path = STATE_DIR / "api-keys-usage.log"
+        if not log_path.exists():
+            return 0
+        try:
+            last = 0
+            with open(log_path) as fh:
+                for line in fh:
+                    parts = line.rstrip("\n").split(",")
+                    if len(parts) >= 2 and parts[1] == key_id:
+                        try:
+                            last = int(parts[0])
+                        except ValueError:
+                            pass
+            return last
+        except OSError:
+            return 0
 
     # ── API key routes ─────────────────────────────────────────────
 
@@ -3150,7 +3191,11 @@ def create_app() -> FastAPI:
     async def api_keys_page(request: Request):
         if not require_role(request, "admin"):
             return login_redirect()
-        keys = _load_api_keys()
+        # Attach live last_used_at from the append-only usage log.
+        keys = [
+            {**k, "last_used_at": _last_used_at(k.get("id", ""))}
+            for k in _load_api_keys()
+        ]
         return templates.TemplateResponse(
             "api_keys.html", {
                 "request": request,
@@ -3225,6 +3270,72 @@ def create_app() -> FastAPI:
         _save_api_keys(keys)
         return RedirectResponse("/api/keys", status_code=303)
 
+    @app.post("/api/keys/rotate")
+    async def api_key_rotate(request: Request):
+        """Rotate a key: issue a fresh key (same scope/description) and revoke
+        the old one in a single action. The new raw key is shown once."""
+        if not require_role(request, "admin"):
+            return forbidden_response()
+        form = await request.form()
+        if not validate_csrf(request, str(form.get("csrf_token", ""))):
+            return templates.TemplateResponse(
+                "api_keys.html", {
+                    "request": request,
+                    "keys": _load_api_keys(),
+                    "csrf_token": get_csrf_token(request),
+                    "error": "Invalid CSRF token",
+                },
+                status_code=403,
+            )
+        old_id = str(form.get("id", ""))
+        keys = _load_api_keys()
+        old = next((k for k in keys if k.get("id") == old_id), None)
+        if old is None:
+            return RedirectResponse("/api/keys?error=Key+not+found",
+                                    status_code=303)
+        scope = old.get("scope", "write")
+        description = old.get("description", "Unnamed key") + " (rotated)"
+
+        raw_key = "ktc_" + secrets.token_hex(32)
+        key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+        new_key = {
+            "id": secrets.token_hex(8),
+            "key_hash": key_hash,
+            "description": description,
+            "scope": scope,
+            "created_at": int(time.time()),
+            "last_used_at": 0,
+        }
+        keys = [k for k in keys if k.get("id") != old_id]
+        keys.append(new_key)
+        _save_api_keys(keys)
+
+        return templates.TemplateResponse(
+            "api_key_created.html", {
+                "request": request,
+                "raw_key": raw_key,
+                "description": description,
+                "scope": scope,
+                "csrf_token": get_csrf_token(request),
+            },
+        )
+
+    @app.delete("/api/keys/{key_id}")
+    async def api_key_revoke_json(key_id: str, request: Request):
+        """Revoke a key programmatically (JSON, write-scoped key)."""
+        token = _api_key_from_request(request)
+        key = _verify_api_key(token, scope="write") if token else None
+        if key is None:
+            return JSONResponse(
+                {"error": "valid write-scoped API key required"}, status_code=403)
+        keys = _load_api_keys()
+        if not any(k.get("id") == key_id for k in keys):
+            return JSONResponse({"error": "key not found"}, status_code=404)
+        keys = [k for k in keys if k.get("id") != key_id]
+        _save_api_keys(keys)
+        audit_log("api_key_revoke", "api", key_id, client_ip(request))
+        return JSONResponse({"id": key_id, "status": "revoked"})
+
     # ── API routes (key-authenticated) ─────────────────────────────
 
     def _api_key_from_request(request: Request) -> str | None:
@@ -3237,9 +3348,10 @@ def create_app() -> FastAPI:
     def require_api_key(scope: str = "read"):
         """FastAPI dependency: authorize via Bearer API key with ``scope``.
 
-        Returns the key metadata dict on success. Raises 401 if no/invalid
-        token, 403 if the token lacks the required scope. Session auth is NOT
-        accepted on /api/v1 — machine clients use keys.
+        Raises 401 if no/invalid token, 403 if the token lacks the required
+        scope. On success, records usage (append-only) and returns the matched
+        key dict. Session auth is NOT accepted on /api/v1 — machine clients
+        use keys.
         """
         from fastapi import Depends, HTTPException
 
@@ -3247,13 +3359,15 @@ def create_app() -> FastAPI:
             token = _api_key_from_request(request)
             if not token:
                 raise HTTPException(status_code=401, detail="API key required")
-            if not _verify_api_key(token, scope=scope):
+            key = _verify_api_key(token, scope=scope)
+            if key is None:
                 # Distinguish missing key vs insufficient scope is not possible
                 # without revealing which; return 403 (forbidden) uniformly.
                 raise HTTPException(
                     status_code=403,
                     detail="Invalid API key or insufficient scope")
-            return True
+            _record_key_usage(key, request)
+            return key
 
         return Depends(_dep)
 

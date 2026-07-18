@@ -76,3 +76,11 @@ curl -X PUT -H "Authorization: Bearer $KTC_WRITE_KEY" \
   identical between the two surfaces.
 - `GET /api/status` (session **or** read-key) and unauthenticated
   `GET /api/health` are also available for monitoring.
+- A machine-readable schema is served at `/openapi.json`; interactive docs at
+  `/docs` (Swagger UI) and `/redoc`. These are admin-surface endpoints
+  (loopback-bound, behind the TLS proxy).
+- **Key hygiene:** each authenticated request appends a line to
+  `STATE_DIR/api-keys-usage.log` (`ts,key_id,scope,method,path`) — an
+  append-only audit trail; the keys page shows last-used per key. Rotate a key
+  from the **API Keys** page (issues a new key, revokes the old in one action);
+  revoke programmatically with `DELETE /api/keys/{id}` (write-scoped key).
