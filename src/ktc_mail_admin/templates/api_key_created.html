@@ -15,6 +15,13 @@
     <p>{{ description }}</p>
   </div>
 
+  {% if expires_at %}
+  <div style="margin:1rem 0">
+    <label>Expires</label>
+    <p>{{ expires_at|datetime_from_ts }}</p>
+  </div>
+  {% endif %}
+
   <div style="margin:1rem 0">
     <label>API Key</label>
     <pre style="

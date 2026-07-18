@@ -125,13 +125,61 @@ def test_revoke_by_api_missing_key_404(client):
     assert r.status_code == 404
 
 
-def test_usage_is_logged_on_authenticated_request(client):
-    # A read-key GET should record usage; the usage log should carry the
-    # read key's id ("read").
+def test_usage_updates_last_used_at_in_key_file(client):
+    # A read-key GET should bump last_used_at for that key (under flock, in
+    # the key file itself — no sidecar log).
     client.get("/api/v1/domains",
                headers={"Authorization": f"Bearer {client.read_token}"})
-    log = cfg_mod.STATE_DIR / "api-keys-usage.log"
-    assert log.exists(), "usage log should be written"
-    content = log.read_text(encoding="utf-8")
-    assert ",read," in content, "read key id 'read' should appear in usage log"
+    import json as _json
+    data = _json.loads((cfg_mod.STATE_DIR / "api-keys.json").read_text())
+    read_key = next(k for k in data["keys"] if k["id"] == "read")
+    assert read_key["last_used_at"] > 0, "last_used_at should be bumped on use"
+
+
+def test_expired_key_is_rejected():
+    # A key past its expires_at must be treated as invalid (403).
+    import ktc_mail_admin.user_manager as um
+    import json as _json
+    um.user_add = lambda *a, **k: 0
+    state_dir = cfg_mod.STATE_DIR
+    expired_token = "ktc_" + "e" * 64
+    (state_dir / "api-keys.json").write_text(_json.dumps({"keys": [{
+        "id": "exp", "key_hash": __import__("hashlib").sha256(expired_token.encode()).hexdigest(),
+        "description": "expired", "scope": "write", "expires_at": 1,
+        "created_at": 0, "last_used_at": 0}]}), encoding="utf-8")
+    from fastapi.testclient import TestClient
+    app = a.create_app()
+    with TestClient(app) as c:
+        r = c.post("/api/v1/users",
+                   headers={"Authorization": f"Bearer {expired_token}"},
+                   json={"email": "x@y.com", "password": "pw"})
+        assert r.status_code == 403
+
+
+def test_openapi_requires_admin_session():
+    # The schema discloses write endpoints; it must not be anonymously
+    # reachable. Unauthenticated -> redirect to login (302, not followed).
+    from fastapi.testclient import TestClient
+    app = a.create_app()
+    with TestClient(app) as c:
+        r = c.get("/openapi.json", follow_redirects=False)
+        assert r.status_code == 302, r.status_code
+        assert "/login" in r.headers.get("location", "")
+
+
+def test_api_v1_surface_is_tenant_scoped_only():
+    # Lock the boundary contract: no /api/v1 route may touch global
+    # server-infrastructure settings (those stay admin-panel-only).
+    forbidden = {"transports", "dns", "tls", "firewall", "backup",
+                 "acme", "settings", "setup", "options", "sieve", "routing"}
+    from fastapi.testclient import TestClient
+    app = a.create_app()
+    with TestClient(app) as c:
+        pass  # app already built; inspect routes
+    for r in app.routes:
+        p = getattr(r, "path", "")
+        if not p.startswith("/api/v1"):
+            continue
+        seg = p[len("/api/v1"):].strip("/").split("/")[0]
+        assert seg not in forbidden, f"API exposes infra setting: {p}"
 

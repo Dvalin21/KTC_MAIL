@@ -79,8 +79,15 @@ curl -X PUT -H "Authorization: Bearer $KTC_WRITE_KEY" \
 - A machine-readable schema is served at `/openapi.json`; interactive docs at
   `/docs` (Swagger UI) and `/redoc`. These are admin-surface endpoints
   (loopback-bound, behind the TLS proxy).
-- **Key hygiene:** each authenticated request appends a line to
-  `STATE_DIR/api-keys-usage.log` (`ts,key_id,scope,method,path`) — an
-  append-only audit trail; the keys page shows last-used per key. Rotate a key
-  from the **API Keys** page (issues a new key, revokes the old in one action);
-  revoke programmatically with `DELETE /api/keys/{id}` (write-scoped key).
+- **Key hygiene:** each authenticated request updates `last_used_at` for the
+  key (under a file lock) — the keys page shows last-used per key. Keys may be
+  given an optional expiry (set in the GUI when created; never via the API) —
+  expired keys are rejected. Rotate a key from the **API Keys** page (issues a
+  new key, revokes the old in one action); revoke programmatically with
+  `DELETE /api/keys/{id}` (write-scoped key).
+- **Scope boundary:** the REST API is mailbox/domain-scoped only (users,
+  domains, per-user/domain spam overrides, quarantine). Global server
+  infrastructure — transports, DNS, TLS policy, firewall, backup, ACME, setup,
+  options — is **admin-panel only** and is intentionally NOT exposed via the
+  API. The schema (`/openapi.json`, `/docs`, `/redoc`) is served only to
+  authenticated admins; it is not anonymously discoverable.

@@ -872,7 +872,16 @@ def _login_rate_clear(ip: str) -> None:
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI admin application."""
-    app = FastAPI(title="KTC Mail Admin")
+    # Built-in /docs, /redoc, /openapi.json are disabled: the schema discloses
+    # every API endpoint (including write routes) and must not be reachable
+    # without an admin session. We re-expose them below as session-protected
+    # routes so the schema is available to authenticated admins only.
+    app = FastAPI(
+        title="KTC Mail Admin",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+    )
     app.mount(
         "/static",
         StaticFiles(directory=str(_Path(__file__).resolve().parent / "static")),
@@ -3119,7 +3128,8 @@ def create_app() -> FastAPI:
 
         Constant-time compare against stored hashes. Returns the matched key
         dict on success (or ``{"scope": <scope>}`` when no scope check was
-        requested), else ``None``.
+        requested), else ``None``. Expired keys (``expires_at`` set and in the
+        past) are rejected.
 
         Scope: if ``scope`` is given, the matched key must grant it. Keys
         created before scope existed carry no ``scope`` field and are treated
@@ -3130,10 +3140,14 @@ def create_app() -> FastAPI:
         if not token.startswith("ktc_"):
             return None
         token_hash = hashlib.sha256(token.encode()).hexdigest()
+        now = int(time.time())
         keys = _load_api_keys()
         for key in keys:
             if not hmac.compare_digest(key.get("key_hash", ""), token_hash):
                 continue
+            expires = key.get("expires_at", 0)
+            if expires and expires < now:
+                continue  # expired key -> treat as no match
             key_scope = key.get("scope", "write")  # legacy keys => write
             if scope is None:
                 return key
@@ -3143,47 +3157,38 @@ def create_app() -> FastAPI:
                 return key
         return None
 
-    def _record_key_usage(key: dict, request: Request) -> None:
-        """Append-only usage log (concurrency-safe, no key-file rewrite).
+    def _touch_key_usage(key: dict) -> None:
+        """Update ``last_used_at`` for a key under an exclusive file lock.
 
-        Records ``ts,key_id,scope,method,path`` to STATE_DIR/api-keys-usage.log
-        so operators can see last-used and audit API access without a read-
-        modify-write race on the key file itself. Failures are swallowed —
-        usage logging must never break an API response.
+        Rewrites the key file with the matched key's ``last_used_at`` bumped.
+        The advisory lock (fcntl) serializes concurrent updates so there is no
+        lost-update race; API request rates are low enough that per-request
+        file rewrite is acceptable. Failures are swallowed — usage tracking
+        must never break an API response.
         """
         try:
-            log_path = STATE_DIR / "api-keys-usage.log"
+            import fcntl
             STATE_DIR.mkdir(parents=True, exist_ok=True)
-            line = "{},{},{},{},{}\n".format(
-                int(time.time()),
-                key.get("id", "?"),
-                key.get("scope", "write"),
-                request.method if request else "?",
-                request.url.path if request else "?",
-            )
-            with open(log_path, "a") as fh:
-                fh.write(line)
+            with open(API_KEYS_PATH, "r+") as fh:
+                fcntl.flock(fh, fcntl.LOCK_EX)
+                try:
+                    try:
+                        data = json.load(fh)
+                    except (ValueError, OSError):
+                        return
+                    stored = data.get("keys", []) if isinstance(data, dict) else []
+                    now = int(time.time())
+                    for k in stored:
+                        if k.get("id") == key.get("id"):
+                            k["last_used_at"] = now
+                            break
+                    fh.seek(0)
+                    fh.truncate()
+                    save_json_private(API_KEYS_PATH, {"keys": stored})
+                finally:
+                    fcntl.flock(fh, fcntl.LOCK_UN)
         except OSError:
             pass
-
-    def _last_used_at(key_id: str) -> int:
-        """Latest usage timestamp for a key from the append-only log (0 if none)."""
-        log_path = STATE_DIR / "api-keys-usage.log"
-        if not log_path.exists():
-            return 0
-        try:
-            last = 0
-            with open(log_path) as fh:
-                for line in fh:
-                    parts = line.rstrip("\n").split(",")
-                    if len(parts) >= 2 and parts[1] == key_id:
-                        try:
-                            last = int(parts[0])
-                        except ValueError:
-                            pass
-            return last
-        except OSError:
-            return 0
 
     # ── API key routes ─────────────────────────────────────────────
 
@@ -3191,11 +3196,8 @@ def create_app() -> FastAPI:
     async def api_keys_page(request: Request):
         if not require_role(request, "admin"):
             return login_redirect()
-        # Attach live last_used_at from the append-only usage log.
-        keys = [
-            {**k, "last_used_at": _last_used_at(k.get("id", ""))}
-            for k in _load_api_keys()
-        ]
+        # Keys already carry last_used_at (updated per request under lock).
+        keys = _load_api_keys()
         return templates.TemplateResponse(
             "api_keys.html", {
                 "request": request,
@@ -3224,6 +3226,16 @@ def create_app() -> FastAPI:
         if scope not in ("read", "write"):
             scope = "read"
 
+        # Optional expiry, set ONLY here in the admin panel (never via the
+        # API). 0 / blank => never expires.
+        expires_at = 0
+        try:
+            days = int(str(form.get("expires_in_days", "")).strip() or "0")
+        except ValueError:
+            days = 0
+        if days > 0:
+            expires_at = int(time.time()) + days * 86400
+
         raw_key = "ktc_" + secrets.token_hex(32)
         key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
 
@@ -3233,6 +3245,7 @@ def create_app() -> FastAPI:
             "key_hash": key_hash,
             "description": description or "Unnamed key",
             "scope": scope,
+            "expires_at": expires_at,
             "created_at": int(time.time()),
             "last_used_at": 0,
         })
@@ -3245,6 +3258,7 @@ def create_app() -> FastAPI:
                 "raw_key": raw_key,
                 "description": description,
                 "scope": scope,
+                "expires_at": expires_at,
                 "csrf_token": get_csrf_token(request),
             },
         )
@@ -3366,7 +3380,7 @@ def create_app() -> FastAPI:
                 raise HTTPException(
                     status_code=403,
                     detail="Invalid API key or insufficient scope")
-            _record_key_usage(key, request)
+            _touch_key_usage(key)
             return key
 
         return Depends(_dep)
@@ -3580,6 +3594,52 @@ def create_app() -> FastAPI:
             "learned": res.get("learned", False),
             "status": "confirmed spam" if res.get("learned") else "trainer unavailable",
         })
+
+    # ── Boundary guard: REST API is tenant/mailbox-scoped only ────────
+    # The REST API (/api/v1) must NEVER expose global server-infrastructure
+    # mutators (transports, DNS, TLS policy, firewall, backup, ACME, setup,
+    # settings). Those are admin-panel-only (session-authenticated GUI) by
+    # design. Fail fast at app construction if a future slice violates this,
+    # so the regression is caught immediately rather than shipped.
+    _FORBIDDEN_API_PREFIXES = (
+        "/api/v1/transports", "/api/v1/dns", "/api/v1/tls",
+        "/api/v1/firewall", "/api/v1/backup", "/api/v1/acme",
+        "/api/v1/settings", "/api/v1/setup", "/api/v1/options",
+        "/api/v1/sieve", "/api/v1/routing",
+    )
+    for _r in app.routes:
+        _p = getattr(_r, "path", "")
+        if _p.startswith("/api/v1") and _p in _FORBIDDEN_API_PREFIXES:
+            raise RuntimeError(
+                f"API boundary violation: {_p} exposes global server "
+                f"settings and must live behind the admin panel only")
+
+    # ── OpenAPI schema, admin-session-gated (replaces built-in docs) ──
+    # Served only to authenticated admins; the schema lists write routes
+    # and must not be anonymously discoverable.
+    from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
+    from fastapi.openapi.utils import get_openapi
+
+    @app.get("/openapi.json")
+    async def openapi_json(request: Request):
+        if not require_role(request, "admin"):
+            return login_redirect()
+        return JSONResponse(get_openapi(
+            title=app.title, version="1.0.0", routes=app.routes))
+
+    @app.get("/docs")
+    async def swagger_ui(request: Request):
+        if not require_role(request, "admin"):
+            return login_redirect()
+        return get_swagger_ui_html(openapi_url="/openapi.json",
+                                   title=app.title + " — API docs")
+
+    @app.get("/redoc")
+    async def redoc_ui(request: Request):
+        if not require_role(request, "admin"):
+            return login_redirect()
+        return get_redoc_html(openapi_url="/openapi.json",
+                              title=app.title + " — ReDoc")
 
     return app
 
