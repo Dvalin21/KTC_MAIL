@@ -800,6 +800,13 @@ _LOGIN_RATE_LIMIT = 5
 _LOGIN_RATE_WINDOW = 60  # seconds
 _login_attempts_fallback: dict[str, list[float]] = {}
 
+# API write-key abuse throttle: a write key is a privileged grant, so a stolen
+# key must not be able to loop-delete every mailbox unchecked. Read keys are
+# cheap and read-only; only write scope is throttled.
+_API_WRITE_RATE_LIMIT = 60          # write ops
+_API_WRITE_RATE_WINDOW = 60         # per 60s, per token
+_api_write_attempts_fallback: dict[str, list[float]] = {}
+
 _REDIS_URL = os.environ.get("KTC_ADMIN_REDIS", "redis://localhost:6379/0")
 _redis_client = None
 
@@ -3157,6 +3164,32 @@ def create_app() -> FastAPI:
                 return key
         return None
 
+    def _api_write_rate_limited(token_hash: str) -> bool:
+        """Return True if this write token has exceeded its request budget.
+
+        Mirrors the login throttle: a Redis sorted-set sliding window keyed by
+        token hash, falling back to in-process state when Redis is unavailable.
+        """
+        now = time.time()
+        window_start = now - _API_WRITE_RATE_WINDOW
+        r = _get_redis()
+        if r:
+            key = f"ktc:ratelimit:api:{token_hash}"
+            r.zremrangebyscore(key, 0, window_start)
+            count = r.zcard(key)
+            if count >= _API_WRITE_RATE_LIMIT:
+                return True
+            r.zadd(key, {str(now): now})
+            r.expire(key, _API_WRITE_RATE_WINDOW + 10)
+            return False
+        attempts = _api_write_attempts_fallback.get(token_hash, [])
+        attempts = [t for t in attempts if t > window_start]
+        _api_write_attempts_fallback[token_hash] = attempts
+        if len(attempts) >= _API_WRITE_RATE_LIMIT:
+            return True
+        attempts.append(now)
+        return False
+
     def _touch_key_usage(key: dict) -> None:
         """Update ``last_used_at`` for a key under an exclusive file lock.
 
@@ -3380,6 +3413,12 @@ def create_app() -> FastAPI:
                 raise HTTPException(
                     status_code=403,
                     detail="Invalid API key or insufficient scope")
+            # Throttle write keys to bound blast radius of a leaked token.
+            if scope == "write" and _api_write_rate_limited(
+                    hashlib.sha256(token.encode()).hexdigest()):
+                raise HTTPException(
+                    status_code=429,
+                    detail="API write rate limit exceeded; retry later")
             _touch_key_usage(key)
             return key
 

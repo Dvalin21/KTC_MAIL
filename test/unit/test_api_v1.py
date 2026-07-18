@@ -103,6 +103,29 @@ def test_legacy_key_without_scope_is_write(monkeypatch):
         assert r.status_code == 201
 
 
+def test_write_rate_limit_returns_429(monkeypatch):
+    # A leaked write key must not loop-delete every mailbox. Enforce the
+    # per-token write budget and return 429 once exceeded.
+    import ktc_mail_admin.user_manager as um
+    monkeypatch.setattr(um, "user_add", lambda *a, **k: 0)
+    # Shrink the budget so the test stays fast (default is 60/60s).
+    monkeypatch.setattr(a, "_API_WRITE_RATE_LIMIT", 3)
+    token = "ktc_" + "z" * 64
+    state_dir = cfg_mod.STATE_DIR
+    (state_dir / "api-keys.json").write_text(json.dumps({"keys": [{
+        "id": "w", "key_hash": hashlib.sha256(token.encode()).hexdigest(),
+        "description": "write", "scope": "write",
+        "created_at": 0, "last_used_at": 0}]}), encoding="utf-8")
+    from fastapi.testclient import TestClient
+    app = a.create_app()
+    with TestClient(app) as c:
+        hdr = {"Authorization": f"Bearer {token}"}
+        codes = [c.post("/api/v1/users", headers=hdr,
+                        json={"email": f"u{i}@y.com", "password": "pw"}).status_code
+                 for i in range(5)]
+        assert 429 in codes, f"expected 429 after budget; got {codes}"
+
+
 def test_revoke_by_api_requires_write_key(client):
     # read key -> 403 (revoke is a write action)
     r = client.delete("/api/keys/write",

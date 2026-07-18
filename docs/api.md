@@ -45,9 +45,24 @@ Authorization: Bearer ktc_<64-hex-chars>
 | POST | `/api/v1/quarantine/{message_id}/release` | write | Release a quarantined message to Inbox |
 | POST | `/api/v1/quarantine/{message_id}/confirm` | write | Confirm a message as spam (train filter) |
 
-All responses are JSON.
+ All responses are JSON.
 
-## Examples
+ ### Domains are read-only by design
+
+ `/api/v1/domains` is **GET-only**. Domains are infrastructure configuration
+ (they drive DNS, TLS certificates and transport maps), so adding or removing a
+ domain is a global server setting and lives exclusively behind the
+ session-authenticated admin panel — never the API. This is enforced at
+ startup by the boundary guard in `admin_server.create_app()`.
+
+ ### Write-rate limit
+
+ `write`-scoped keys are throttled to **60 write operations per 60 seconds per
+ key** (Redis sliding window; in-process fallback if Redis is down). Exceeding
+ it returns `429 Too Many Requests`. This bounds the blast radius of a leaked
+ write key. `read` keys are unlimited (read-only, cheap).
+
+ ## Examples
 
 Issue a key in the GUI (scope `read` for dashboards, `write` for provisioning),
 then:
