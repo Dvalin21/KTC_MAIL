@@ -81,6 +81,7 @@ from .config import (
     Branding,
     load_profile,
     save_branding,
+    save_profile,
     _EMAIL_RE,
     _valid_email,
     validate_domain,
@@ -2485,6 +2486,10 @@ def create_app() -> FastAPI:
 
         error = request.query_params.get("error", "")
         msg = request.query_params.get("msg", "")
+        # Apply-pipeline step results (from the last add/modify/delete), so the
+        # operator sees exactly which steps succeeded / warned.
+        apply_raw = request.query_params.get("apply", "")
+        apply_results = apply_raw.split("|") if apply_raw else []
 
         return templates.TemplateResponse(
             request, "domains.html",
@@ -2494,6 +2499,7 @@ def create_app() -> FastAPI:
                 "domains": rows,
                 "error": error,
                 "msg": msg,
+                "apply_results": apply_results,
             },
         )
 
@@ -2572,6 +2578,16 @@ def create_app() -> FastAPI:
                             "detail": f"{exc} -- renew timer will retry"})
         return results
 
+    def _summarize_apply(results: list[dict[str, str]]) -> list[str]:
+        """Compact per-step summary lines for the Domains page banner."""
+        out: list[str] = []
+        for r in results:
+            step = r.get("step", "?")
+            status = r.get("status", "done")
+            detail = r.get("detail", "")
+            out.append(f"{step}: {status} — {detail}")
+        return out
+
     @app.post("/domains/add")
     async def domains_add(request: Request):
         if not require_role(request, "operator"):
@@ -2589,11 +2605,13 @@ def create_app() -> FastAPI:
             edit_profile_domains(profile, "add", new=new_domain)
         except ValueError as exc:
             return _safe_redirect("/domains", query={"error": str(exc)})
-        _apply_domain_changes(profile)
+        results = _apply_domain_changes(profile)
         audit_log("domain_add", actor_email(request), new_domain,
                   client_ip(request))
-        return _safe_redirect("/domains",
-                              query={"msg": f"Added {new_domain}"})
+        return _safe_redirect("/domains", query={
+            "msg": f"Added {new_domain}",
+            "apply": "|".join(_summarize_apply(results)),
+        })
 
     @app.post("/domains/modify")
     async def domains_modify(request: Request):
@@ -2613,11 +2631,13 @@ def create_app() -> FastAPI:
             edit_profile_domains(profile, "modify", old=old, new=new)
         except ValueError as exc:
             return _safe_redirect("/domains", query={"error": str(exc)})
-        _apply_domain_changes(profile)
+        results = _apply_domain_changes(profile)
         audit_log("domain_modify", actor_email(request),
                   f"{old} -> {new}", client_ip(request))
-        return _safe_redirect("/domains",
-                              query={"msg": f"Renamed {old} to {new}"})
+        return _safe_redirect("/domains", query={
+            "msg": f"Renamed {old} to {new}",
+            "apply": "|".join(_summarize_apply(results)),
+        })
 
     @app.post("/domains/delete")
     async def domains_delete(request: Request):
@@ -2636,11 +2656,13 @@ def create_app() -> FastAPI:
             edit_profile_domains(profile, "delete", old=target)
         except ValueError as exc:
             return _safe_redirect("/domains", query={"error": str(exc)})
-        _apply_domain_changes(profile)
+        results = _apply_domain_changes(profile)
         audit_log("domain_delete", actor_email(request), target,
                   client_ip(request))
-        return _safe_redirect("/domains",
-                              query={"msg": f"Removed {target}"})
+        return _safe_redirect("/domains", query={
+            "msg": f"Removed {target}",
+            "apply": "|".join(_summarize_apply(results)),
+        })
 
     # ── Options (mailcow-style unified server policy) ───────────────────────
 

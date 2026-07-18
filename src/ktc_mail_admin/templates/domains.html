@@ -10,6 +10,16 @@
 {% if msg %}
 <div class="msg msg-ok">{{ msg }}</div>
 {% endif %}
+{% if apply_results %}
+<div class="card apply-status">
+  <h3>Apply result</h3>
+  <ul>
+    {% for line in apply_results %}
+    <li class="{% if 'warn' in line %}warn{% elif 'error' in line %}err{% else %}ok{% endif %}">{{ line }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
 
 <div class="card">
   <form method="post" action="/domains/add" class="row">
@@ -48,7 +58,7 @@
                    pattern="[a-z0-9.-]+" class="domain-edit" required>
             <button type="submit" class="btn btn-sm">Modify</button>
           </form>
-          <form method="post" action="/domains/delete" class="inline">
+          <form method="post" action="/domains/delete" class="inline delete-form">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="domain" value="{{ d.domain }}">
             <button type="submit" class="btn btn-sm btn-danger"
@@ -76,6 +86,25 @@
          padding: .1rem .4rem; border-radius: .3rem; }
   .btn-danger { background: #b91c1c; }
   .btn-danger:disabled { background: #475569; cursor: not-allowed; }
+  .apply-status ul { list-style: none; padding: 0; margin: 0; }
+  .apply-status li { padding: .25rem .5rem; border-radius: .3rem; margin-bottom: .25rem; }
+  .apply-status li.ok { background: #052e16; color: #86efac; }
+  .apply-status li.warn { background: #422006; color: #fcd34d; }
+  .apply-status li.err { background: #450a0a; color: #fca5a5; }
 </style>
+
+<script>
+  // Confirm before deleting a domain (cannot be undone without re-adding).
+  document.querySelectorAll('form.delete-form').forEach(function (f) {
+    f.addEventListener('submit', function (e) {
+      var dom = f.querySelector('input[name="domain"]').value;
+      if (!confirm('Delete domain "' + dom + '"? This removes it from the '\n
+                  + 'server config (DNS, TLS, transports). Mailboxes on it are '\n
+                  + 'NOT auto-deleted.')) {
+        e.preventDefault();
+      }
+    });
+  });
+</script>
 
 {% endblock %}
