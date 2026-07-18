@@ -12,6 +12,15 @@
 {% endif %}
 
 <div class="card">
+  <form method="post" action="/domains/add" class="row">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="text" name="domain" placeholder="add.example.com" required
+           pattern="[a-z0-9.-]+" class="grow">
+    <button type="submit" class="btn">Add domain</button>
+  </form>
+</div>
+
+<div class="card">
   <table>
     <thead>
       <tr>
@@ -20,22 +29,53 @@
         <th>Quota ceiling</th>
         <th>Usage</th>
         <th>DNS</th>
+        <th>Actions</th>
       </tr>
     </thead>
     <tbody>
       {% for d in domains %}
       <tr>
-        <td>{{ d.domain }}</td>
+        <td>{{ d.domain }}{% if d.primary %} <span class="tag">primary</span>{% endif %}</td>
         <td>{{ d.mailboxes }}</td>
         <td>{{ d.quota_display }}</td>
         <td>{{ d.usage_display }}</td>
         <td><a class="btn btn-sm" href="/dns?domain={{ d.domain }}">Check</a></td>
+        <td class="actions">
+          <form method="post" action="/domains/modify" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="old_domain" value="{{ d.domain }}">
+            <input type="text" name="new_domain" value="{{ d.domain }}"
+                   pattern="[a-z0-9.-]+" class="domain-edit" required>
+            <button type="submit" class="btn btn-sm">Modify</button>
+          </form>
+          <form method="post" action="/domains/delete" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="domain" value="{{ d.domain }}">
+            <button type="submit" class="btn btn-sm btn-danger"
+                    {% if d.primary %}disabled
+                            title="Primary domain cannot be removed"{% endif %}>
+              Delete
+            </button>
+          </form>
+        </td>
       </tr>
       {% else %}
-      <tr><td colspan="5" style="color:#64748b">No domains found.</td></tr>
+      <tr><td colspan="6" style="color:#64748b">No domains found.</td></tr>
       {% endfor %}
     </tbody>
   </table>
 </div>
+
+<style>
+  .row { display: flex; gap: .5rem; align-items: center; }
+  .grow { flex: 1; }
+  .inline { display: inline-flex; gap: .35rem; align-items: center; margin: 0; }
+  .domain-edit { width: 12rem; }
+  .actions { display: flex; gap: .5rem; flex-wrap: wrap; }
+  .tag { font-size: .7rem; background: #1e293b; color: #cbd5e1;
+         padding: .1rem .4rem; border-radius: .3rem; }
+  .btn-danger { background: #b91c1c; }
+  .btn-danger:disabled { background: #475569; cursor: not-allowed; }
+</style>
 
 {% endblock %}

@@ -106,3 +106,10 @@ curl -X PUT -H "Authorization: Bearer $KTC_WRITE_KEY" \
   options — is **admin-panel only** and is intentionally NOT exposed via the
   API. The schema (`/openapi.json`, `/docs`, `/redoc`) is served only to
   authenticated admins; it is not anonymously discoverable.
+- **Domains are managed in the admin panel, not the API.** `GET
+  /api/v1/domains` is read-only (tenant-scoped listing). Adding, renaming, or
+  removing a domain is a global infrastructure change (it rewrites DNS, TLS
+  SANs, transport maps and firewall rules), so it lives exclusively behind the
+  session-authenticated **Domains** page (`/domains`), which offers Add,
+  Modify, and Delete buttons. This is enforced by the boundary guard — no
+  `POST`/`PUT`/`DELETE` `/api/v1/domains` route exists.

@@ -83,6 +83,7 @@ from .config import (
     save_branding,
     _EMAIL_RE,
     _valid_email,
+    validate_domain,
 )
 
 # ── Quarantine helpers (module-level: pure + subprocess, unit-testable) ────────
@@ -875,6 +876,48 @@ def _login_rate_clear(ip: str) -> None:
 
 
 # ── FastAPI app setup ─────────────────────────────────────────────────────────
+
+
+def edit_profile_domains(profile: "SetupProfile", action: str,
+                         old: str | None = None,
+                         new: str | None = None) -> "SetupProfile":
+    """Mutate a SetupProfile's hosted domains. Pure + testable.
+
+    Actions:
+      add    -> append *new* (must be valid + not already hosted)
+      modify -> rename *old* to *new* (primary if old == profile.domain,
+                else an alias; new must be valid + unique)
+      delete -> remove *old* (cannot be the primary domain; must be hosted)
+
+    Raises ValueError("msg") on any invalid input; the caller maps that to a
+    redirect error. Returns the same profile object, mutated in place.
+    """
+    if action == "add":
+        if not new or not validate_domain(new):
+            raise ValueError("Invalid domain name")
+        if new in profile.all_domains:
+            raise ValueError(f"{new} already hosted")
+        profile.domains = [*profile.domains, new]
+    elif action == "modify":
+        if not old or not new or not validate_domain(new):
+            raise ValueError("Invalid domain names")
+        if new != old and new in profile.all_domains:
+            raise ValueError(f"{new} already hosted")
+        if profile.domain == old:
+            profile.domain = new
+        else:
+            profile.domains = [new if d == old else d for d in profile.domains]
+    elif action == "delete":
+        if not old:
+            raise ValueError("Domain required")
+        if profile.domain == old:
+            raise ValueError("Cannot remove the primary domain")
+        if old not in profile.domains:
+            raise ValueError(f"{old} not hosted")
+        profile.domains = [d for d in profile.domains if d != old]
+    else:
+        raise ValueError(f"Unknown action: {action}")
+    return profile
 
 
 def create_app() -> FastAPI:
@@ -2438,7 +2481,7 @@ def create_app() -> FastAPI:
         if not require_role(request, "operator"):
             return login_redirect()
 
-        rows = um.domain_stats()
+        rows = _hosted_domains()
 
         error = request.query_params.get("error", "")
         msg = request.query_params.get("msg", "")
@@ -2453,6 +2496,151 @@ def create_app() -> FastAPI:
                 "msg": msg,
             },
         )
+
+    # ── Domain CRUD (admin-panel only; global infra config) ──────────────
+    # Domains are part of SetupProfile and drive DNS, TLS SANs, transport
+    # maps and firewall rules. They are intentionally NOT exposed via the
+    # REST API (see the boundary guard in create_app). All mutation happens
+    # here, session-authenticated, and re-applies the full mail stack.
+
+    def _hosted_domains() -> list[dict[str, object]]:
+        """Source-of-truth domain list: profile.all_domains (primary first).
+
+        Mailbox counts are merged best-effort from um.domain_stats() so the
+        table reflects reality even for domains with zero mailboxes.
+        """
+        profile = load_profile()
+        if profile is None:
+            return []
+        counts = {r["domain"]: r for r in um.domain_stats()}
+        out: list[dict[str, object]] = []
+        for i, dom in enumerate(profile.all_domains):
+            stat = counts.get(dom, {})
+            out.append({
+                "domain": dom,
+                "primary": i == 0,
+                "mailboxes": stat.get("mailboxes", 0),
+                "quota_display": stat.get("quota_display", "—"),
+                "usage_display": stat.get("usage_display", "—"),
+            })
+        return out
+
+    def _apply_domain_changes(profile: SetupProfile) -> list[dict[str, str]]:
+        """Re-render + reload the mail stack after a domain change.
+
+        Mirrors the initial-setup apply pipeline. Each step is isolated so a
+        non-fatal failure (e.g. DNS provider error) is reported as a warning
+        rather than aborting the whole operation.
+        """
+        results: list[dict[str, str]] = []
+        try:
+            save_profile(profile)
+            results.append({"step": "Profile", "status": "done",
+                            "detail": f"saved to {SETUP_PATH}"})
+        except Exception as exc:
+            results.append({"step": "Profile", "status": "error",
+                            "detail": str(exc)})
+            return results
+
+        try:
+            from ktc_mail_admin.config_renderer import write_all
+            written = write_all(profile, dest=Path("/etc"))
+            results.append({"step": "Mail configs", "status": "done",
+                            "detail": f"{len(written)} files written"})
+        except Exception as exc:
+            results.append({"step": "Mail configs", "status": "error",
+                            "detail": str(exc)})
+
+        try:
+            from ktc_mail_admin.acme_manager import reload_services
+            reload_services(profile)
+            results.append({"step": "Mail services", "status": "done",
+                            "detail": "services reloaded"})
+        except Exception as exc:
+            results.append({"step": "Mail services", "status": "error",
+                            "detail": str(exc)})
+
+        # TLS cert SANs include every hosted domain; re-issue so the new
+        # domain is covered. Non-fatal: the renew timer retries.
+        try:
+            from ktc_mail_admin.acme_manager import issue as acme_issue
+            acme_issue(SETUP_PATH, dry_run=False)
+            results.append({"step": "TLS certificate", "status": "done",
+                            "detail": "cert re-issued for new SAN set"})
+        except Exception as exc:
+            results.append({"step": "TLS certificate", "status": "warn",
+                            "detail": f"{exc} -- renew timer will retry"})
+        return results
+
+    @app.post("/domains/add")
+    async def domains_add(request: Request):
+        if not require_role(request, "operator"):
+            return login_redirect()
+        form = await request.form()
+        if not validate_csrf(request, str(form.get("csrf_token", ""))):
+            return _safe_redirect("/domains",
+                                  query={"error": "Invalid session token"})
+        new_domain = str(form.get("domain", "")).strip().lower()
+        profile = load_profile()
+        if profile is None:
+            return _safe_redirect("/domains",
+                                  query={"error": "No setup profile found"})
+        try:
+            edit_profile_domains(profile, "add", new=new_domain)
+        except ValueError as exc:
+            return _safe_redirect("/domains", query={"error": str(exc)})
+        _apply_domain_changes(profile)
+        audit_log("domain_add", actor_email(request), new_domain,
+                  client_ip(request))
+        return _safe_redirect("/domains",
+                              query={"msg": f"Added {new_domain}"})
+
+    @app.post("/domains/modify")
+    async def domains_modify(request: Request):
+        if not require_role(request, "operator"):
+            return login_redirect()
+        form = await request.form()
+        if not validate_csrf(request, str(form.get("csrf_token", ""))):
+            return _safe_redirect("/domains",
+                                  query={"error": "Invalid session token"})
+        old = str(form.get("old_domain", "")).strip().lower()
+        new = str(form.get("new_domain", "")).strip().lower()
+        profile = load_profile()
+        if profile is None:
+            return _safe_redirect("/domains",
+                                  query={"error": "No setup profile found"})
+        try:
+            edit_profile_domains(profile, "modify", old=old, new=new)
+        except ValueError as exc:
+            return _safe_redirect("/domains", query={"error": str(exc)})
+        _apply_domain_changes(profile)
+        audit_log("domain_modify", actor_email(request),
+                  f"{old} -> {new}", client_ip(request))
+        return _safe_redirect("/domains",
+                              query={"msg": f"Renamed {old} to {new}"})
+
+    @app.post("/domains/delete")
+    async def domains_delete(request: Request):
+        if not require_role(request, "operator"):
+            return login_redirect()
+        form = await request.form()
+        if not validate_csrf(request, str(form.get("csrf_token", ""))):
+            return _safe_redirect("/domains",
+                                  query={"error": "Invalid session token"})
+        target = str(form.get("domain", "")).strip().lower()
+        profile = load_profile()
+        if profile is None:
+            return _safe_redirect("/domains",
+                                  query={"error": "No setup profile found"})
+        try:
+            edit_profile_domains(profile, "delete", old=target)
+        except ValueError as exc:
+            return _safe_redirect("/domains", query={"error": str(exc)})
+        _apply_domain_changes(profile)
+        audit_log("domain_delete", actor_email(request), target,
+                  client_ip(request))
+        return _safe_redirect("/domains",
+                              query={"msg": f"Removed {target}"})
 
     # ── Options (mailcow-style unified server policy) ───────────────────────
 
