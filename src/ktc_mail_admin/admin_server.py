@@ -3094,32 +3094,53 @@ def create_app() -> FastAPI:
     API_KEYS_PATH = STATE_DIR / "api-keys.json"
 
     def _load_api_keys() -> list[dict[str, Any]]:
-        """Load API keys from disk. Returns list of dicts with metadata."""
+        """Load API keys from disk. Returns list of dicts with metadata.
+
+        The on-disk format is ``{"keys": [...]}`` (see _save_api_keys); an
+        older bare-list format is tolerated for backward compatibility.
+        """
         try:
             data = read_json(API_KEYS_PATH)
-            return data if isinstance(data, list) else []
         except (FileNotFoundError, ValueError):
             return []
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            return data.get("keys", [])
+        return []
 
     def _save_api_keys(keys: list[dict[str, Any]]) -> None:
         """Persist API key list to disk."""
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         save_json_private(API_KEYS_PATH, {"keys": keys})
 
-    def _verify_api_key(token: str) -> bool:
+    def _verify_api_key(token: str, scope: str | None = None) -> bool:
         """Check if a Bearer token matches any stored API key (SHA-256).
 
         Constant-time compare against stored hashes. Does NOT mutate or
         persist state — last_used_at is left to key-creation time, avoiding a
         read-modify-write of the whole key file on every authenticated request
         (which would be a concurrency race under parallel calls).
+
+        Scope: if ``scope`` is given, the matched key must grant it. Keys
+        created before scope existed carry no ``scope`` field and are treated
+        as ``write`` (legacy full-power) so they keep working. ``read`` is
+        satisfied by either a ``read`` or ``write`` key; ``write`` requires a
+        ``write`` key.
         """
         if not token.startswith("ktc_"):
             return False
         token_hash = hashlib.sha256(token.encode()).hexdigest()
         keys = _load_api_keys()
         for key in keys:
-            if hmac.compare_digest(key.get("key_hash", ""), token_hash):
+            if not hmac.compare_digest(key.get("key_hash", ""), token_hash):
+                continue
+            if scope is None:
+                return True
+            key_scope = key.get("scope", "write")  # legacy keys => write
+            if scope == "read" and key_scope in ("read", "write"):
+                return True
+            if scope == "write" and key_scope == "write":
                 return True
         return False
 
@@ -3154,6 +3175,9 @@ def create_app() -> FastAPI:
                 status_code=403,
             )
         description = str(form.get("description", "")).strip()
+        scope = str(form.get("scope", "read")).strip().lower()
+        if scope not in ("read", "write"):
+            scope = "read"
 
         raw_key = "ktc_" + secrets.token_hex(32)
         key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
@@ -3163,6 +3187,7 @@ def create_app() -> FastAPI:
             "id": secrets.token_hex(8),
             "key_hash": key_hash,
             "description": description or "Unnamed key",
+            "scope": scope,
             "created_at": int(time.time()),
             "last_used_at": 0,
         })
@@ -3174,6 +3199,7 @@ def create_app() -> FastAPI:
                 "request": request,
                 "raw_key": raw_key,
                 "description": description,
+                "scope": scope,
                 "csrf_token": get_csrf_token(request),
             },
         )
@@ -3201,11 +3227,41 @@ def create_app() -> FastAPI:
 
     # ── API routes (key-authenticated) ─────────────────────────────
 
+    def _api_key_from_request(request: Request) -> str | None:
+        """Extract a Bearer token from the Authorization header, else None."""
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.startswith("Bearer "):
+            return auth_header[7:].strip()
+        return None
+
+    def require_api_key(scope: str = "read"):
+        """FastAPI dependency: authorize via Bearer API key with ``scope``.
+
+        Returns the key metadata dict on success. Raises 401 if no/invalid
+        token, 403 if the token lacks the required scope. Session auth is NOT
+        accepted on /api/v1 — machine clients use keys.
+        """
+        from fastapi import Depends, HTTPException
+
+        def _dep(request: Request):
+            token = _api_key_from_request(request)
+            if not token:
+                raise HTTPException(status_code=401, detail="API key required")
+            if not _verify_api_key(token, scope=scope):
+                # Distinguish missing key vs insufficient scope is not possible
+                # without revealing which; return 403 (forbidden) uniformly.
+                raise HTTPException(
+                    status_code=403,
+                    detail="Invalid API key or insufficient scope")
+            return True
+
+        return Depends(_dep)
+
     @app.get("/api/status")
     async def api_status(request: Request):
-        # Accept session auth OR Bearer token
-        auth_header = request.headers.get("authorization", "")
-        if auth_header.startswith("Bearer ") and _verify_api_key(auth_header[7:]):
+        # Accept session auth OR Bearer token (read scope)
+        token = _api_key_from_request(request)
+        if token and _verify_api_key(token, scope="read"):
             pass  # authorized via API key
         elif not require_role(request, "readonly"):
             return login_redirect()
@@ -3257,6 +3313,159 @@ def create_app() -> FastAPI:
             "setup_exists": SETUP_PATH.exists(),
             "timestamp": int(time.time()),
         }
+
+    # ── REST resource API (/api/v1) ──────────────────────────────────
+    # Machine-facing JSON surface. Every handler reuses the SAME backend
+    # functions the HTML routes call (user_manager, rspamd/Redis helpers),
+    # so there is exactly one code path per action — no duplicated logic.
+    # Auth: Bearer API key only, via require_api_key(scope). No session.
+
+    @app.get("/api/v1/domains", dependencies=[require_api_key("read")])
+    async def api_v1_domains():
+        """List configured mail domains with per-domain mailbox counts."""
+        return {"domains": um.domain_stats()}
+
+    @app.get("/api/v1/users", dependencies=[require_api_key("read")])
+    async def api_v1_users():
+        """List mailboxes with quota and message stats."""
+        users: list[dict[str, object]] = []
+        lines = um._read_lines(um.PASSWD_FILE)
+        for line in lines:
+            parsed = um._parse_passwd(line)
+            if not parsed:
+                continue
+            email = parsed["email"]
+            stats = um.user_stats(email)
+            users.append({
+                "email": email,
+                "quota": parsed.get("quota", "1G"),
+                "messages": stats["messages"],
+                "last_login": stats["last_login"],
+            })
+        return {"users": sorted(users, key=lambda u: u["email"])}
+
+    @app.post("/api/v1/users", dependencies=[require_api_key("write")])
+    async def api_v1_user_add(request: Request):
+        """Add a mailbox. Body: {email, password, quota?}."""
+        body = await request.json()
+        email = str(body.get("email", "")).strip().lower()
+        password = str(body.get("password", ""))
+        quota = str(body.get("quota", "1G"))
+        if not _valid_email(email):
+            return JSONResponse({"error": "invalid email"}, status_code=400)
+        if not password:
+            return JSONResponse({"error": "password required"}, status_code=400)
+        if um.user_add(email, password=password, quota=quota, dry_run=False) != 0:
+            return JSONResponse({"error": f"failed to add {email}"}, status_code=409)
+        audit_log("user_add", "api", email, client_ip(request))
+        return JSONResponse({"email": email, "status": "created"}, status_code=201)
+
+    @app.delete("/api/v1/users/{email}", dependencies=[require_api_key("write")])
+    async def api_v1_user_del(email: str, request: Request):
+        email = email.strip().lower()
+        if not _valid_email(email):
+            return JSONResponse({"error": "invalid email"}, status_code=400)
+        if um.user_delete(email, dry_run=False) != 0:
+            return JSONResponse({"error": f"failed to remove {email}"}, status_code=409)
+        audit_log("user_del", "api", email, client_ip(request))
+        return JSONResponse({"email": email, "status": "deleted"})
+
+    @app.post("/api/v1/users/{email}/password", dependencies=[require_api_key("write")])
+    async def api_v1_user_passwd(email: str, request: Request):
+        email = email.strip().lower()
+        if not _valid_email(email):
+            return JSONResponse({"error": "invalid email"}, status_code=400)
+        body = await request.json()
+        password = str(body.get("password", ""))
+        if not password:
+            return JSONResponse({"error": "password required"}, status_code=400)
+        if um.user_passwd(email, dry_run=False, password=password) != 0:
+            return JSONResponse({"error": f"failed to change password for {email}"},
+                                status_code=409)
+        audit_log("user_passwd", "api", email, client_ip(request))
+        return JSONResponse({"email": email, "status": "password changed"})
+
+    @app.get("/api/v1/spam-policy", dependencies=[require_api_key("read")])
+    async def api_v1_spam_policy():
+        """List active rspamd user/domain overrides."""
+        return {"overrides": _load_spam_overrides()}
+
+    @app.put("/api/v1/spam-policy", dependencies=[require_api_key("write")])
+    async def api_v1_spam_policy_set(request: Request):
+        """Set a spam-policy override. Body: {target, target_type, reject,
+        add_header, greylist?}."""
+        body = await request.json()
+        target = str(body.get("target", "")).strip().lower()
+        target_type = str(body.get("target_type", "user"))
+        if not target:
+            return JSONResponse({"error": "target required"}, status_code=400)
+        if target_type == "user":
+            if not _valid_email(target):
+                return JSONResponse({"error": "invalid email"}, status_code=400)
+            key = f"setting:user:{target}"
+        else:
+            domain = target.split("@")[-1]
+            if not re.match(r"^[a-z0-9.-]+\.[a-z]{2,}$", domain):
+                return JSONResponse({"error": "invalid domain"}, status_code=400)
+            key = f"setting:domain:{domain}"
+        try:
+            reject = float(body.get("reject", ""))
+            add_header = float(body.get("add_header", ""))
+        except (ValueError, TypeError):
+            return JSONResponse(
+                {"error": "reject and add_header must be numbers"}, status_code=400)
+        greylist = None
+        greylist_raw = str(body.get("greylist", "")).strip()
+        if greylist_raw:
+            try:
+                greylist = float(greylist_raw)
+            except ValueError:
+                return JSONResponse({"error": "greylist must be a number"},
+                                    status_code=400)
+        ucl = build_spam_policy_ucl(reject, add_header, greylist)
+        try:
+            _get_redis().set(key, ucl)
+        except Exception:
+            return JSONResponse({"error": "redis unavailable"}, status_code=503)
+        audit_log("spam_policy_set", "api", f"{key} -> {ucl}", client_ip(request))
+        return JSONResponse({"key": key, "ucl": ucl})
+
+    @app.get("/api/v1/quarantine", dependencies=[require_api_key("read")])
+    async def api_v1_quarantine():
+        """List suspected spam from rspamd history."""
+        return {"rows": rspamc_history_rows()}
+
+    @app.post("/api/v1/quarantine/{message_id}/release",
+              dependencies=[require_api_key("write")])
+    async def api_v1_quarantine_release(message_id: str, request: Request):
+        body = await request.json()
+        user = str(body.get("user", "")).strip().lower()
+        if not message_id or not user:
+            return JSONResponse({"error": "message_id and user required"},
+                                status_code=400)
+        res = quarantine_release(message_id, user)
+        audit_log("quarantine_release", "api", f"{user} {message_id}",
+                  client_ip(request))
+        return JSONResponse({
+            "moved": res.get("moved", False),
+            "status": "released" if res.get("moved") else "release unavailable",
+        })
+
+    @app.post("/api/v1/quarantine/{message_id}/confirm",
+              dependencies=[require_api_key("write")])
+    async def api_v1_quarantine_confirm(message_id: str, request: Request):
+        body = await request.json()
+        user = str(body.get("user", "")).strip().lower()
+        if not message_id or not user:
+            return JSONResponse({"error": "message_id and user required"},
+                                status_code=400)
+        res = quarantine_confirm(message_id, user)
+        audit_log("quarantine_confirm", "api", f"{user} {message_id}",
+                  client_ip(request))
+        return JSONResponse({
+            "learned": res.get("learned", False),
+            "status": "confirmed spam" if res.get("learned") else "trainer unavailable",
+        })
 
     return app
 

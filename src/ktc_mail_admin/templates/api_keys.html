@@ -20,6 +20,13 @@
         <label>Description</label>
         <input name="description" placeholder="e.g. CI/CD deployment" required>
       </div>
+      <div class="form-row">
+        <label>Scope</label>
+        <select name="scope">
+          <option value="read">read (read-only access)</option>
+          <option value="write">write (full control)</option>
+        </select>
+      </div>
       <button type="submit">Generate Key</button>
     </form>
   </div>
@@ -28,8 +35,9 @@
     <h2>Active Keys</h2>
     {% if keys %}
     <table>
-      <tr>
+       <tr>
         <th>Description</th>
+        <th>Scope</th>
         <th>Created</th>
         <th>Last Used</th>
         <th></th>
@@ -37,6 +45,7 @@
       {% for key in keys %}
       <tr>
         <td>{{ key.description }}</td>
+        <td>{{ key.scope if key.scope else 'write' }}</td>
         <td>{{ key.created_at|datetime_from_ts }}</td>
         <td>{{ key.last_used_at|datetime_from_ts if key.last_used_at else 'never' }}</td>
         <td>
